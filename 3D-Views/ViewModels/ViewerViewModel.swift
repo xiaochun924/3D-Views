@@ -38,6 +38,39 @@ final class ViewerViewModel: ObservableObject {
     @Published var pickedPoints: [SCNVector3] = []
     @Published var lastDistance: Float?
 
+    // MARK: - Test cube (no OCCT needed)
+
+    func loadTestCube() async {
+        isLoading = true
+        loadError = nil
+        loadedFileName = "test-cube"
+        defer { isLoading = false }
+
+        let root = SCNNode()
+        root.name = "CADRoot"
+
+        let box = SCNBox(width: 40, height: 40, length: 40, chamferRadius: 2)
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.systemBlue
+        material.lightingModel = .physicallyBased
+        box.materials = [material]
+
+        let node = SCNNode(geometry: box)
+        node.name = "test-cube"
+        root.addChildNode(node)
+
+        let (min, max) = root.boundingBox
+        let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
+        root.position = SCNVector3(-center.x, -center.y, -center.z)
+
+        self.sceneRoot = root
+        self.fileName = "Test Cube"
+        self.triangleCount = 12
+        self.entityCount = 1
+        self.pickedPoints = []
+        self.lastDistance = nil
+    }
+
     // MARK: - Loading
 
     func loadFile(url: URL) async {
@@ -163,7 +196,7 @@ final class ViewerViewModel: ObservableObject {
         lastDistance = nil
     }
 
-    // MARK: - Math helpers (replaces SCNVector3 operator extensions)
+    // MARK: - Math helpers
 
     private func distance(between a: SCNVector3, and b: SCNVector3) -> Float {
         let dx = b.x - a.x
