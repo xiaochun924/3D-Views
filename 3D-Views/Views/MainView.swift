@@ -14,15 +14,6 @@ struct MainView: View {
     @State private var showImporter = false
     @State private var showHelp = false
 
-    /// Explicitly declare the CAD UTIs we imported in Info.plist so the
-    /// document picker lets .step/.stp/.stl files be tapped (public.data
-    /// alone can leave them greyed out).
-    private static let allowedContentTypes: [UTType] = [
-        UTType("com.xiaochun.step") ?? .data,
-        UTType("com.xiaochun.stl") ?? .data,
-        .data
-    ]
-
     private var errorBinding: Binding<Bool> {
         Binding(
             get: { viewModel.loadError != nil },
@@ -44,17 +35,9 @@ struct MainView: View {
             .padding(.bottom, 24)
         }
         .background(Color(.systemBackground))
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: Self.allowedContentTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
+        .sheet(isPresented: $showImporter) {
+            DocumentPicker { url in
                 Task { await viewModel.loadFile(url: url) }
-            case .failure(let err):
-                viewModel.loadError = err.localizedDescription
             }
         }
         .onOpenURL { url in
@@ -113,6 +96,18 @@ struct MainView: View {
 
     private var bottomDock: some View {
         VStack(spacing: 12) {
+            if viewModel.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading model…")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 40)
+                .background(.ultraThinMaterial, in: Capsule())
+            }
+
             if let dist = viewModel.lastDistance {
                 HStack(spacing: 8) {
                     Image(systemName: "ruler")
@@ -159,6 +154,7 @@ struct MainView: View {
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.lastDistance != nil)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.isLoading)
     }
 
     private func dockButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
