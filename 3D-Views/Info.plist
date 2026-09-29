@@ -22,11 +22,10 @@
 	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
-	</dict>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -43,14 +42,10 @@
 				<string>step</string>
 				<string>stp</string>
 			</array>
-			<key>CFBundleTypeMIMETypes</key>
-			<array>
-				<string>application/step</string>
-			</array>
-			<key>CFBundleTypeIconFiles</key>
-			<array/>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
 			<key>LSHandlerRank</key>
-			<string>Alternate</string>
+			<string>Default</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>com.xiaochun.step</string>
@@ -63,14 +58,10 @@
 			<array>
 				<string>stl</string>
 			</array>
-			<key>CFBundleTypeMIMETypes</key>
-			<array>
-				<string>model/stl</string>
-			</array>
-			<key>CFBundleTypeIconFiles</key>
-			<array/>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
 			<key>LSHandlerRank</key>
-			<string>Alternate</string>
+			<string>Default</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>com.xiaochun.stl</string>
@@ -95,8 +86,6 @@
 					<string>step</string>
 					<string>stp</string>
 				</array>
-				<key>public.mime-type</key>
-				<string>application/step</string>
 			</dict>
 		</dict>
 		<dict>
@@ -114,8 +103,6 @@
 				<array>
 					<string>stl</string>
 				</array>
-				<key>public.mime-type</key>
-				<string>model/stl</string>
 			</dict>
 		</dict>
 	</array>
