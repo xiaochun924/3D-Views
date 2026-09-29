@@ -14,6 +14,15 @@ struct MainView: View {
     @State private var showImporter = false
     @State private var showHelp = false
 
+    /// Explicitly declare the CAD UTIs we imported in Info.plist so the
+    /// document picker lets .step/.stp/.stl files be tapped (public.data
+    /// alone can leave them greyed out).
+    private static let allowedContentTypes: [UTType] = [
+        UTType("com.xiaochun.step") ?? .data,
+        UTType("com.xiaochun.stl") ?? .data,
+        .data
+    ]
+
     private var errorBinding: Binding<Bool> {
         Binding(
             get: { viewModel.loadError != nil },
@@ -37,7 +46,7 @@ struct MainView: View {
         .background(Color(.systemBackground))
         .fileImporter(
             isPresented: $showImporter,
-            allowedContentTypes: [.data],
+            allowedContentTypes: Self.allowedContentTypes,
             allowsMultipleSelection: false
         ) { result in
             switch result {
