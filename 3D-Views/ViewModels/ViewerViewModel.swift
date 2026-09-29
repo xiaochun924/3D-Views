@@ -16,30 +16,18 @@ enum InteractionMode: Equatable {
 @MainActor
 final class ViewerViewModel: ObservableObject {
 
-    // MARK: - Loaded document
-
     @Published var fileName: String = ""
     @Published var loadedFileName: String = ""
     @Published var isLoading: Bool = false
     @Published var loadError: String?
-    @Published var entityCount: Int = 0
-    @Published var triangleCount: Int = 0
-    @Published var lengthUnit: String = "millimeter"
     @Published var debugInfo: String = ""
-
-    /// The root node holding the loaded CAD geometry.
-    @Published var sceneRoot: SCNNode?
-
-    // MARK: - Interaction
-
+    @Published var scene: SCNScene?
     @Published var mode: InteractionMode = .orbit
     @Published var displayUnit: DisplayUnit = .millimeter
-
-    /// Picked points in model coordinates.
     @Published var pickedPoints: [SCNVector3] = []
     @Published var lastDistance: Float?
 
-    // MARK: - Test cube (no OCCT needed)
+    // MARK: - Test cube
 
     func loadTestCube() async {
         isLoading = true
@@ -47,39 +35,18 @@ final class ViewerViewModel: ObservableObject {
         loadedFileName = "test-cube"
         defer { isLoading = false }
 
-        let root = SCNNode()
-        root.name = "CADRoot"
+        let box = SCNBox(width: 50, height: 50, length: 50, chamferRadius: 3)
+        let mat = SCNMaterial()
+        mat.diffuse.contents = UIColor.systemRed
+        mat.lightingModel = .blinn
+        box.materials = [mat]
 
-        // Big bright cube with simple diffuse material (not PBR).
-        let box = SCNBox(width: 80, height: 80, length: 80, chamferRadius: 4)
-        let material = SCNMaterial()
-        material.diffuse.contents = UIColor.systemRed
-        material.lightingModel = .blinn
-        material.specular.contents = UIColor.white
-        box.materials = [material]
-
-        let node = SCNNode(geometry: box)
-        node.name = "test-cube"
-        root.addChildNode(node)
-
-        let boxBounds = root.boundingBox
-        let center = SCNVector3(
-            (boxBounds.min.x + boxBounds.max.x) / 2,
-            (boxBounds.min.y + boxBounds.max.y) / 2,
-            (boxBounds.min.z + boxBounds.max.z) / 2
-        )
-        root.position = SCNVector3(-center.x, -center.y, -center.z)
-
-        self.sceneRoot = root
-        self.fileName = "Test Cube"
-        self.triangleCount = 12
-        self.entityCount = 1
-        self.pickedPoints = []
-        self.lastDistance = nil
-        self.debugInfo = "cube added, root children: \(root.childNodes.count)"
+        scene = Self.buildScene(geometry: box, modelName: "Test Cube")
+        fileName = "Test Cube"
+        debugInfo = "cube loaded"
     }
 
-    // MARK: - Loading
+    // MARK: - File loading
 
     func loadFile(url: URL) async {
         isLoading = true
@@ -101,9 +68,7 @@ final class ViewerViewModel: ObservableObject {
                 .appendingPathComponent("Incoming", isDirectory: true)
             try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
             let dest = destDir.appendingPathComponent(url.lastPathComponent)
-            if fm.fileExists(atPath: dest.path) {
-                try fm.removeItem(at: dest)
-            }
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
             try fm.copyItem(at: url, to: dest)
             localURL = dest
         } catch {
@@ -114,81 +79,118 @@ final class ViewerViewModel: ObservableObject {
         if needsAccess { url.stopAccessingSecurityScopedResource() }
 
         do {
-            let root = SCNNode()
-            root.name = "CADRoot"
+            let geometry: SCNGeometry
 
             if ext == "step" || ext == "stp" {
                 let shape = try Shape.loadSTEP(from: localURL)
-                self.lengthUnit = "millimeter"
-
-                guard let mesh = shape.mesh(linearDeflection: 0.1, angularDeflection: 0.5) else {
-                    loadError = "Failed to tessellate the STEP model."
+                guard let mesh = shape.mesh(linearDeflection: 0.5, angularDeflection: 0.5) else {
+                    loadError = "Failed to tessellate STEP."
                     return
                 }
-
-                let geometry = mesh.sceneKitGeometry()
-                let material = SCNMaterial()
-                material.diffuse.contents = UIColor(red: 0.75, green: 0.82, blue: 0.92, alpha: 1.0)
-                material.lightingModel = .blinn
-                geometry.materials = [material]
-
-                let partNode = SCNNode(geometry: geometry)
-                partNode.name = "step-part"
-                root.addChildNode(partNode)
-
-                self.triangleCount = mesh.triangleCount
-                self.entityCount = 1
+                geometry = mesh.sceneKitGeometry()
+                let mat = SCNMaterial()
+                mat.diffuse.contents = UIColor(red: 0.75, green: 0.82, blue: 0.92, alpha: 1.0)
+                mat.lightingModel = .blinn
+                mat.isDoubleSided = true
+                geometry.materials = [mat]
             } else {
                 guard let shape = Shape.readSTL(from: localURL.path) else {
-                    loadError = "Failed to read STL file."
+                    loadError = "Failed to read STL."
                     return
                 }
-                guard let mesh = shape.mesh(linearDeflection: 0.1) else {
-                    loadError = "Failed to tessellate STL mesh."
+                guard let mesh = shape.mesh(linearDeflection: 0.5) else {
+                    loadError = "Failed to tessellate STL."
                     return
                 }
-
-                let geometry = mesh.sceneKitGeometry()
-                let material = SCNMaterial()
-                material.diffuse.contents = UIColor(red: 0.70, green: 0.78, blue: 0.88, alpha: 1.0)
-                material.lightingModel = .blinn
-                geometry.materials = [material]
-
-                let stlNode = SCNNode(geometry: geometry)
-                stlNode.name = "stl-part"
-                root.addChildNode(stlNode)
-
-                self.triangleCount = mesh.triangleCount
-                self.entityCount = 1
+                geometry = mesh.sceneKitGeometry()
+                let mat = SCNMaterial()
+                mat.diffuse.contents = UIColor(red: 0.7, green: 0.78, blue: 0.88, alpha: 1.0)
+                mat.lightingModel = .blinn
+                geometry.materials = [mat]
             }
 
-            let boxBounds = root.boundingBox
-            let center = SCNVector3(
-                (boxBounds.min.x + boxBounds.max.x) / 2,
-                (boxBounds.min.y + boxBounds.max.y) / 2,
-                (boxBounds.min.z + boxBounds.max.z) / 2
-            )
-            root.position = SCNVector3(-center.x, -center.y, -center.z)
-
-            self.sceneRoot = root
-            self.fileName = url.lastPathComponent
-            self.pickedPoints = []
-            self.lastDistance = nil
-            self.debugInfo = "loaded \(root.childNodes.count) nodes"
+            scene = Self.buildScene(geometry: geometry, modelName: url.lastPathComponent)
+            fileName = url.lastPathComponent
+            debugInfo = "loaded \(url.lastPathComponent)"
         } catch {
-            loadError = "Failed to load file: \(error.localizedDescription)"
+            loadError = "Failed to load: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Scene builder (from stl-viewer)
+
+    static func buildScene(geometry: SCNGeometry, modelName: String) -> SCNScene {
+        let scene = SCNScene()
+
+        let modelNode = SCNNode(geometry: geometry)
+        modelNode.name = "model"
+
+        // Center the model using pivot
+        let (bbMin, bbMax) = geometry.boundingBox
+        let center = SCNVector3(
+            (bbMin.x + bbMax.x) / 2,
+            (bbMin.y + bbMax.y) / 2,
+            (bbMin.z + bbMax.z) / 2
+        )
+        modelNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
+        scene.rootNode.addChildNode(modelNode)
+
+        let sizeX = bbMax.x - bbMin.x
+        let sizeY = bbMax.y - bbMin.y
+        let sizeZ = bbMax.z - bbMin.z
+        let maxDim = max(sizeX, sizeY, sizeZ, 1)
+        let camDist = maxDim * 2.0
+
+        // Camera
+        let camera = SCNCamera()
+        camera.automaticallyAdjustsZRange = true
+        let cameraNode = SCNNode()
+        cameraNode.camera = camera
+        cameraNode.position = SCNVector3(0, camDist * 0.3, camDist)
+        cameraNode.look(at: SCNVector3Zero)
+        scene.rootNode.addChildNode(cameraNode)
+
+        // Key light
+        let keyLight = SCNLight()
+        keyLight.type = .directional
+        keyLight.intensity = 800
+        let keyNode = SCNNode()
+        keyNode.light = keyLight
+        keyNode.position = SCNVector3(camDist, camDist, camDist)
+        keyNode.look(at: SCNVector3Zero)
+        scene.rootNode.addChildNode(keyNode)
+
+        // Fill light
+        let fillLight = SCNLight()
+        fillLight.type = .omni
+        fillLight.intensity = 400
+        let fillNode = SCNNode()
+        fillNode.light = fillLight
+        fillNode.position = SCNVector3(-camDist * 0.8, camDist * 0.5, camDist * 0.5)
+        scene.rootNode.addChildNode(fillNode)
+
+        // Ambient
+        let ambient = SCNLight()
+        ambient.type = .ambient
+        ambient.intensity = 300
+        let ambientNode = SCNNode()
+        ambientNode.light = ambient
+        scene.rootNode.addChildNode(ambientNode)
+
+        return scene
     }
 
     // MARK: - Measurement
 
-    func addPickedPoint(_ point: SCNVector3) {
-        pickedPoints.append(point)
+    func handleTap(_ worldPos: SCNVector3) {
+        guard mode == .measurePoint else { return }
+        pickedPoints.append(worldPos)
         if pickedPoints.count == 2 {
             let a = pickedPoints[0], b = pickedPoints[1]
-            lastDistance = distance(between: a, and: b)
+            let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
+            lastDistance = (dx*dx + dy*dy + dz*dz).squareRoot()
         } else if pickedPoints.count > 2 {
-            pickedPoints = [point]
+            pickedPoints = [worldPos]
             lastDistance = nil
         }
     }
@@ -196,14 +198,5 @@ final class ViewerViewModel: ObservableObject {
     func resetMeasurement() {
         pickedPoints = []
         lastDistance = nil
-    }
-
-    // MARK: - Math helpers
-
-    private func distance(between a: SCNVector3, and b: SCNVector3) -> Float {
-        let dx = b.x - a.x
-        let dy = b.y - a.y
-        let dz = b.z - a.z
-        return (dx*dx + dy*dy + dz*dz).squareRoot()
     }
 }
