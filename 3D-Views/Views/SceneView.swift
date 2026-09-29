@@ -15,12 +15,15 @@ struct SceneView: UIViewRepresentable {
         let scnView = SCNView()
         scnView.allowsCameraControl = true
         scnView.autoenablesDefaultLighting = false
-        scnView.antialiasingMode = .multisampling4X
+        scnView.antialiasingMode = .multisampling8X
         scnView.backgroundColor = UIColor.systemBackground
         scnView.scene = scene
+        scnView.preferredFramesPerSecond = 60
+        scnView.rendersContinuously = true
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
+        tap.numberOfTapsRequired = 1
         scnView.addGestureRecognizer(tap)
         context.coordinator.scnView = scnView
         return scnView
@@ -51,7 +54,8 @@ struct SceneView: UIViewRepresentable {
                 .searchMode: SCNHitTestSearchMode.closest.rawValue,
                 .ignoreHiddenNodes: true
             ])
-            guard let hit = hits.first else { return }
+            // Skip measurement nodes
+            guard let hit = hits.first(where: { $0.node.name?.hasPrefix("measure_") != true }) else { return }
             onMeasureTap?(hit.worldCoordinates)
         }
     }
