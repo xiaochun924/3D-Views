@@ -19,6 +19,7 @@ final class ViewerViewModel: ObservableObject {
     // MARK: - Loaded document
 
     @Published var fileName: String = ""
+    @Published var loadedFileName: String = ""
     @Published var isLoading: Bool = false
     @Published var loadError: String?
     @Published var entityCount: Int = 0
@@ -42,6 +43,7 @@ final class ViewerViewModel: ObservableObject {
     func loadFile(url: URL) async {
         isLoading = true
         loadError = nil
+        loadedFileName = url.lastPathComponent
         defer { isLoading = false }
 
         let ext = url.pathExtension.lowercased()
