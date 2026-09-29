@@ -10,27 +10,16 @@ import Foundation
 
 /// A single lexical token in a STEP physical file.
 enum STEPToken: Equatable {
-    /// An entity reference, e.g. `#42`
     case reference(Int)
-    /// A numeric literal (integer or real)
     case number(Double)
-    /// An entity / type name, e.g. `CARTESIAN_POINT`
     case name(String)
-    /// A quoted string literal, e.g. `'hello'`
     case string(String)
-    /// An enumeration value, e.g. `.UNSPECIFIED.`
     case enumeration(String)
-    /// A `$` (unspecified / null) value
     case undefined
-    /// `(`
     case lparen
-    /// `)`
     case rparen
-    /// `;`
     case semicolon
-    /// `=`
     case equals
-    /// `*` (begin/end of exchange)
     case asterisk
 }
 
@@ -51,8 +40,6 @@ enum STEPTokenError: Error, CustomStringConvertible {
 /// Splits a STEP file's DATA section into a token stream.
 enum STEPTokenizer {
 
-    /// Tokenizes the whole file. The header section is skipped by callers;
-    /// this tokenizer works on any substring.
     static func tokenize(_ text: String) throws -> [STEPToken] {
         var tokens: [STEPToken] = []
         tokens.reserveCapacity(4096)
@@ -64,13 +51,11 @@ enum STEPTokenizer {
         while i < n {
             let c = Character(scalars[i])
 
-            // Whitespace / comments.
             if c.isWhitespace || c.isNewline {
                 i += 1
                 continue
             }
             if c == "(" {
-                // STEP comments are parenthesized and may nest.
                 var depth = 1
                 i += 1
                 while i < n, depth > 0 {
@@ -93,7 +78,7 @@ enum STEPTokenizer {
                 i += 1
                 var num = ""
                 while i < n, Character(scalars[i]).isNumber {
-                    num.append(scalars[i]); i += 1
+                    num.append(Character(scalars[i])); i += 1
                 }
                 guard let v = Int(num) else {
                     throw STEPTokenError.unexpectedCharacter(c, i)
@@ -105,7 +90,6 @@ enum STEPTokenizer {
                 while i < n {
                     let cc = Character(scalars[i])
                     if cc == "'" {
-                        // Doubled '' is an escaped quote.
                         if i + 1 < n, Character(scalars[i + 1]) == "'" {
                             str.append("'")
                             i += 2
@@ -119,11 +103,10 @@ enum STEPTokenizer {
                 }
                 tokens.append(.string(str))
             case ".":
-                // Enumeration: .NAME.
                 i += 1
                 var name = ""
                 while i < n, Character(scalars[i]).isLetter || Character(scalars[i]).isNumber {
-                    name.append(scalars[i]); i += 1
+                    name.append(Character(scalars[i])); i += 1
                 }
                 if i < n, Character(scalars[i]) == "." { i += 1 }
                 tokens.append(.enumeration(name))
