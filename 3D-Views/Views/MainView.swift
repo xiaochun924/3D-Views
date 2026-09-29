@@ -6,10 +6,10 @@
 import SwiftUI
 import SceneKit
 import UniformTypeIdentifiers
+import UIKit
 
 struct MainView: View {
     @StateObject private var viewModel = ViewerViewModel()
-    @State private var showImporter = false
     @State private var showHelp = false
     @State private var debugMsg: String = ""
 
@@ -28,7 +28,6 @@ struct MainView: View {
             floatingGlassBar
 
             VStack {
-                // Debug banner — always visible
                 debugBanner
                 Spacer()
                 bottomDock
@@ -36,25 +35,6 @@ struct MainView: View {
             .padding(.bottom, 24)
         }
         .background(Color(.systemBackground))
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: false
-        ) { result in
-            debugMsg = "picker callback fired"
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else {
-                    debugMsg = "picker returned no urls"
-                    return
-                }
-                debugMsg = "got: \(url.lastPathComponent)"
-                Task { await viewModel.loadFile(url: url) }
-            case .failure(let error):
-                debugMsg = "picker error: \(error.localizedDescription)"
-                viewModel.loadError = "Picker error: \(error.localizedDescription)"
-            }
-        }
         .onOpenURL { url in
             debugMsg = "onOpenURL: \(url.lastPathComponent)"
             Task { await viewModel.loadFile(url: url) }
@@ -72,19 +52,24 @@ struct MainView: View {
     }
 
     private var debugBanner: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(debugMsg.isEmpty ? Color.gray : Color.orange)
-                .frame(width: 8, height: 8)
-            Text(debugMsg.isEmpty ? "ready" : debugMsg)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .lineLimit(1)
-            if viewModel.isLoading {
-                ProgressView().controlSize(.mini)
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(debugMsg.isEmpty ? Color.gray : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(debugMsg.isEmpty ? "ready" : debugMsg)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                if viewModel.isLoading {
+                    ProgressView().controlSize(.mini)
+                }
             }
+            Text(viewModel.debugInfo)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
-        .frame(height: 28)
+        .frame(minHeight: 28)
         .background(.ultraThinMaterial, in: Capsule())
         .padding(.top, 52)
     }
@@ -151,8 +136,8 @@ struct MainView: View {
 
             HStack(spacing: 12) {
                 dockButton(icon: "folder", label: "Open") {
-                    debugMsg = "Open tapped"
-                    showImporter = true
+                    debugMsg = "opening picker..."
+                    presentPicker()
                 }
 
                 dockButton(icon: "cube.box", label: "Test") {
@@ -178,6 +163,34 @@ struct MainView: View {
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.lastDistance != nil)
+    }
+
+    private func presentPicker() {
+        debugMsg = "presenting picker"
+        DispatchQueue.main.async {
+            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                  let rootVC = windowScene.windows.first?.rootViewController else {
+                self.debugMsg = "no root VC"
+                return
+            }
+
+            var types: [UTType] = [.data]
+            if let step = UTType("public.item") { types.append(step) }
+
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
+            picker.allowsMultipleSelection = false
+            picker.modalPresentationStyle = .formSheet
+
+            let delegate = PickerDelegate { url in
+                self.debugMsg = "picked: \(url.lastPathComponent)"
+                Task { await self.viewModel.loadFile(url: url) }
+            }
+            picker.delegate = delegate
+            objc_setAssociatedObject(picker, &AssociatedKeys.delegate, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+
+            rootVC.present(picker, animated: true)
+            self.debugMsg = "picker presented"
+        }
     }
 
     private func dockButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
@@ -206,14 +219,37 @@ struct MainView: View {
     }
 }
 
+// MARK: - Picker Delegate
+
+private enum AssociatedKeys {
+    static var delegate: UInt8 = 0
+}
+
+private class PickerDelegate: NSObject, UIDocumentPickerDelegate {
+    let onPick: (URL) -> Void
+
+    init(onPick: @escaping (URL) -> Void) {
+        self.onPick = onPick
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        controller.dismiss(animated: true)
+        guard let url = urls.first else { return }
+        onPick(url)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        controller.dismiss(animated: true)
+    }
+}
+
 struct HelpView: View {
     @Environment(\.dismiss) var dismiss
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("3D Views")
-                        .font(.title).bold()
+                    Text("3D Views").font(.title).bold()
                     Text("STEP / STL viewer with measurement.")
                     Text("Tap Open to pick a file, or Test to load a demo cube.")
                 }
