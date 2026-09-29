@@ -21,6 +21,15 @@ struct ViewerView: View {
                     viewModel.handleTap(screenPoint: point, in: view)
                 },
                 onViewReady: { view in viewModel.attach(view: view) },
+                onPreview: { point, view in
+                    viewModel.handlePreview(screenPoint: point, in: view)
+                },
+                onPreviewCommitted: { view in
+                    viewModel.commitPreview(in: view)
+                },
+                onPreviewCancelled: { _ in
+                    viewModel.clearPreview()
+                },
                 measureMode: viewModel.mode == .measure
             )
             .ignoresSafeArea()

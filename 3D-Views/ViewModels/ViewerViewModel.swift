@@ -191,7 +191,20 @@ final class ViewerViewModel: ObservableObject {
     @Published var closestPointA: SCNVector3?
     @Published var closestPointB: SCNVector3?
 
+    /// The entity the finger is currently over, reported by a press-and-hold before the
+    /// measurement is committed. Every desktop CAD app has this second state — OCCT's
+    /// highlight presentation as against its selection presentation — because measuring
+    /// the wrong face is otherwise only discoverable after committing.
+    @Published var previewEntity: PickEntity?
+
+    /// Where on that entity the finger is, for placing the preselect marker.
+    @Published var previewPoint: SCNVector3?
+
     private var measureGroup: SCNNode?
+    private var previewGroup: SCNNode?
+
+    /// Snap kind of the preselect, kept private because it only colours the highlight.
+    private var previewKind: SnapKind?
     private var modelNode: SCNNode?
     private var snapPoints: [SnapPoint] = []
 
@@ -722,13 +735,72 @@ final class ViewerViewModel: ObservableObject {
     func handleTap(screenPoint: CGPoint, in view: SCNView) {
         guard mode == .measure else { return }
         guard let (snapped, kind, entity) = snap(screenPoint: screenPoint, in: view) else { return }
+        commitPick(point: snapped, kind: kind, entity: entity, in: view)
+    }
 
+    // MARK: - Preselect
+
+    /// Reports the entity under the finger while a press-and-hold is in progress.
+    ///
+    /// Nothing is committed here: this exists so the entity about to be measured can be
+    /// highlighted first. Every mainstream CAD application keeps preselection and
+    /// selection as two distinct states (in OCCT, the highlight presentation as against
+    /// the selection presentation) because a face picked by eye on a phone is easy to
+    /// get wrong, and without a preview the mistake only surfaces after committing.
+    func handlePreview(screenPoint: CGPoint, in view: SCNView) {
+        guard mode == .measure else { return }
+
+        guard let (point, kind, entity) = snap(screenPoint: screenPoint, in: view) else {
+            clearPreview()
+            return
+        }
+
+        // Skip the rebuild when the highlight would not change: a drag across one face
+        // fires many updates, and each one projects every snap point and re-highlights.
+        if entity == previewEntity, let current = previewPoint,
+           Self.distance(current, point) < max(modelDim, 1) * 0.001 {
+            return
+        }
+
+        previewPoint = point
+        previewKind = kind
+        previewEntity = entity
+        updatePreviewVisuals(in: view)
+    }
+
+    /// Commits the preselected entity and drops the highlight.
+    ///
+    /// This is the release half of press-and-hold. The tap recognizer is made to wait
+    /// for the hold to fail, so a hold that has begun never also delivers a tap and this
+    /// is the only path that commits its pick — and it commits exactly the entity the
+    /// user was watching highlighted. Holding over empty space commits nothing.
+    func commitPreview(in view: SCNView) {
+        defer { clearPreview() }
+        guard mode == .measure,
+              let entity = previewEntity,
+              let point = previewPoint else { return }
+        commitPick(point: point, kind: previewKind ?? .face, entity: entity, in: view)
+    }
+
+    /// Drops the preselect highlight without committing anything.
+    func clearPreview() {
+        previewPoint = nil
+        previewKind = nil
+        previewEntity = nil
+        previewGroup?.removeFromParentNode()
+        previewGroup = nil
+    }
+
+    /// Shared commit for both interaction paths — a quick tap and the release of a
+    /// press-and-hold — so the two can never diverge in how they fill the arrays.
+    private func commitPick(point: SCNVector3, kind: SnapKind, entity: PickEntity,
+                            in view: SCNView) {
         if pickedPoints.count >= requiredPickCount {
-            pickedPoints = [snapped]
+            pickedPoints = [point]
             pickedKinds = [kind]
             pickedEntities = [entity]
         } else {
-            pickedPoints.append(snapped)
+            pickedPoints.append(point)
             pickedKinds.append(kind)
             pickedEntities.append(entity)
         }
@@ -755,6 +827,11 @@ final class ViewerViewModel: ObservableObject {
         pickedEntities.prefix(pickedPoints.count).map(\.description)
     }
 
+    /// Name of the entity currently under the finger, if any.
+    var previewEntityName: String? {
+        previewEntity?.description
+    }
+
     /// Screen-space snapping.
     ///
     /// Every candidate is projected to the viewport and compared in 2D points, so the
@@ -778,7 +855,8 @@ final class ViewerViewModel: ObservableObject {
         let cameraPosition = view.pointOfView?.worldPosition
         var frontWorld: SCNVector3?
         var frontDistance = Float.greatestFiniteMagnitude
-        var frontFaceIndex: Int32?
+        // `SCNHitTestResult.faceIndex` is an `Int`, not the `Int32` the mesh tables use.
+        var frontFaceIndex: Int?
         if let cameraPosition {
             for hit in modelHits {
                 let d = Self.distance(cameraPosition, hit.worldCoordinates)
@@ -848,10 +926,10 @@ final class ViewerViewModel: ObservableObject {
     /// face association is dropped — so the mapping has to be captured at load time
     /// from `trianglesWithFaces()`, whose order matches `Mesh.indices`, which is in
     /// turn the order `SCNHitTestResult.faceIndex` numbers triangles in.
-    private func faceEntity(for triangleIndex: Int32?) -> PickEntity {
+    private func faceEntity(for triangleIndex: Int?) -> PickEntity {
         guard let triangleIndex, triangleIndex >= 0,
-              Int(triangleIndex) < triangleToFace.count else { return .freePoint }
-        return .face(Int(triangleToFace[Int(triangleIndex)]))
+              triangleIndex < triangleToFace.count else { return .freePoint }
+        return .face(Int(triangleToFace[triangleIndex]))
     }
 
     /// Closest edge polyline to a screen point, within the snap radius.
@@ -887,11 +965,15 @@ final class ViewerViewModel: ObservableObject {
                         screenPoint,
                         CGPoint(x: CGFloat(previous.x), y: CGFloat(previous.y)),
                         CGPoint(x: CGFloat(current.x), y: CGFloat(current.y)))
+                    // Spelled out rather than left as one nested tuple literal: mixing
+                    // the `CGFloat` parameter into `Float` arithmetic made the expression
+                    // too complex for the type-checker to solve in reasonable time.
                     let a = pts[i - 1], b = pts[i]
-                    best = (SCNVector3(a.x + (b.x - a.x) * t,
-                                       a.y + (b.y - a.y) * t,
-                                       a.z + (b.z - a.z) * t),
-                            entry.edgeIndex)
+                    let tf = Float(t)
+                    let point = SCNVector3(a.x + (b.x - a.x) * tf,
+                                           a.y + (b.y - a.y) * tf,
+                                           a.z + (b.z - a.z) * tf)
+                    best = (point: point, edgeIndex: entry.edgeIndex)
                 }
             }
         }
@@ -1160,6 +1242,72 @@ final class ViewerViewModel: ObservableObject {
     }
 
     // MARK: - Visuals
+
+    /// Highlights the entity the finger is over during a press-and-hold.
+    ///
+    /// Deliberately styled unlike a committed marker — yellow, translucent, and with the
+    /// entity's name beside it — because it means "this is what you will measure if you
+    /// lift now", not "this has been measured". It is rebuilt on every change of entity
+    /// and removed the moment the finger lifts.
+    private func updatePreviewVisuals(in view: SCNView?) {
+        previewGroup?.removeFromParentNode()
+        previewGroup = nil
+
+        guard let scene, let point = previewPoint else { return }
+
+        let unitsPerPoint = view.map { self.unitsPerPoint(at: point, in: $0) }
+            ?? CGFloat(modelDim) * 0.003
+        let radius = Float(unitsPerPoint) * 4.0
+
+        let group = SCNNode()
+        group.name = "preview_group"
+
+        let sphere = SCNSphere(radius: CGFloat(radius))
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.systemYellow.withAlphaComponent(0.85)
+        material.emission.contents = UIColor.systemYellow.withAlphaComponent(0.35)
+        material.lightingModel = .constant
+        // Drawn over the surface it highlights: the point generally sits *on* the model,
+        // so depth testing alone would clip away most of the sphere.
+        material.readsFromDepthBuffer = true
+        material.writesToDepthBuffer = false
+        sphere.materials = [material]
+
+        let dot = SCNNode(geometry: sphere)
+        dot.position = point
+        dot.name = "preview_dot"
+        group.addChildNode(dot)
+
+        if let name = previewEntityName {
+            let text = SCNText(string: name, extrusionDepth: 0.1)
+            text.font = UIFont.boldSystemFont(ofSize: 10)
+            text.firstMaterial?.diffuse.contents = UIColor.systemYellow
+            text.firstMaterial?.lightingModel = .constant
+
+            let labelNode = SCNNode(geometry: text)
+            let (tMin, tMax) = text.boundingBox
+            let textHeight = tMax.y - tMin.y
+            if textHeight > 1e-6 {
+                let desiredHeight = Float(unitsPerPoint) * 14
+                let s = desiredHeight / textHeight
+                labelNode.scale = SCNVector3(s, s, s)
+            }
+            labelNode.pivot = SCNMatrix4MakeTranslation(
+                (tMin.x + tMax.x) / 2, (tMin.y + tMax.y) / 2, (tMin.z + tMax.z) / 2)
+            // Offset above the finger: the label must not sit under the hand that is
+            // holding the screen.
+            labelNode.position = SCNVector3(point.x, point.y + radius * 3.0, point.z)
+            labelNode.name = "preview_label"
+
+            let billboard = SCNBillboardConstraint()
+            billboard.freeAxes = .all
+            labelNode.constraints = [billboard]
+            group.addChildNode(labelNode)
+        }
+
+        scene.rootNode.addChildNode(group)
+        previewGroup = group
+    }
 
     /// Rebuilds the measurement annotations.
     ///
