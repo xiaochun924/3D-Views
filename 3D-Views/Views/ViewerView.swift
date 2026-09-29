@@ -32,9 +32,9 @@ struct ViewerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .alert(isPresented: errorBinding) {
-            Alert(title: Text("Error"),
+            Alert(title: Text("错误"),
                   message: Text(viewModel.loadError ?? ""),
-                  dismissButton: .default(Text("OK")))
+                  dismissButton: .default(Text("确定")))
         }
         .task {
             await viewModel.loadFile(url: file.fileURL)
@@ -51,7 +51,7 @@ struct ViewerView: View {
     private var debugBanner: some View {
         HStack(spacing: 6) {
             Circle().fill(viewModel.isLoading ? Color.orange : Color.green).frame(width: 8, height: 8)
-            Text(viewModel.isLoading ? "loading..." : (viewModel.debugInfo.isEmpty ? "ready" : viewModel.debugInfo))
+            Text(viewModel.isLoading ? "加载中..." : (viewModel.debugInfo.isEmpty ? "就绪" : viewModel.debugInfo))
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .lineLimit(1)
             if viewModel.isLoading { ProgressView().controlSize(.mini) }
@@ -67,7 +67,7 @@ struct ViewerView: View {
             if let dist = viewModel.lastDistance {
                 HStack(spacing: 8) {
                     Image(systemName: "ruler").foregroundStyle(.blue)
-                    Text("Distance: \(viewModel.displayUnit.format(dist))")
+                    Text("距离: \(viewModel.displayUnit.format(dist))")
                         .font(.system(size: 15, weight: .semibold, design: .monospaced))
                     Button { viewModel.resetMeasurement() } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -80,7 +80,7 @@ struct ViewerView: View {
             HStack(spacing: 12) {
                 dockButton(
                     icon: viewModel.mode == .measurePoint ? "ruler.fill" : "ruler",
-                    label: viewModel.mode == .measurePoint ? "Measuring" : "Measure",
+                    label: viewModel.mode == .measurePoint ? "测量中" : "测量",
                     highlighted: viewModel.mode == .measurePoint
                 ) {
                     viewModel.mode = viewModel.mode == .measurePoint ? .orbit : .measurePoint
