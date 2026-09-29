@@ -40,7 +40,6 @@ final class ViewerViewModel: ObservableObject {
     @Published var measureResult: MeasureResult?
 
     private var measureGroup: SCNNode?
-    private var modelScale: Float = 1
 
     // MARK: - Load
 
@@ -126,8 +125,6 @@ final class ViewerViewModel: ObservableObject {
         edgeMat.diffuse.contents = UIColor(red: 0.12, green: 0.28, blue: 0.16, alpha: 0.9)
         edgeMat.fillMode = .lines
         edgeMat.lightingModel = .constant
-        edgeMat.polygonOffset = SCNVector3(-1, -1, -1)
-        edgeMat.polygonOffsetFactor = -1
         edgeGeo.materials = [edgeMat]
         let edgeNode = SCNNode(geometry: edgeGeo)
         edgeNode.name = "edges"
