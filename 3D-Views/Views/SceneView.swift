@@ -134,10 +134,15 @@ struct SceneView: UIViewRepresentable {
         }
 
         func frameCamera(to node: SCNNode, in scnView: SCNView) {
-            let (min, max) = node.boundingBox
-            let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
-            let extent = max.x - min.x
-            let dist = max(CGFloat(extent) * 1.5 + 30, 60)
+            let box = node.boundingBox
+            let center = SCNVector3(
+                (box.min.x + box.max.x) / 2,
+                (box.min.y + box.max.y) / 2,
+                (box.min.z + box.max.z) / 2
+            )
+            let extent = box.max.x - box.min.x
+            let distVal = CGFloat(extent) * 1.5 + 30
+            let dist = Swift.max(distVal, 60)
 
             guard let camera = scnView.pointOfView else { return }
             let worldCenter = node.convertPosition(center, to: nil)
