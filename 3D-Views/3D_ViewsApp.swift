@@ -9,7 +9,7 @@ import SwiftUI
 struct ViewsApp: App {
     var body: some Scene {
         WindowGroup {
-            MainView()
+            HomeView()
         }
     }
 }
