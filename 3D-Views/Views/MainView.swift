@@ -14,6 +14,13 @@ struct MainView: View {
     @State private var showImporter = false
     @State private var showHelp = false
 
+    private var errorBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.loadError != nil },
+            set: { if !$0 { viewModel.loadError = nil } }
+        )
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             SceneView(viewModel: viewModel)
@@ -48,13 +55,11 @@ struct MainView: View {
         .sheet(isPresented: $showHelp) {
             HelpView()
         }
-        .alert(isPresented: .constant(viewModel.loadError != nil)) {
+        .alert(isPresented: errorBinding) {
             Alert(
                 title: Text("Cannot open file"),
                 message: Text(viewModel.loadError ?? ""),
-                dismissButton: .default(Text("OK")) {
-                    viewModel.loadError = nil
-                }
+                dismissButton: .default(Text("OK"))
             )
         }
     }
