@@ -102,7 +102,7 @@ struct MainView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 40)
                 .background(.ultraThinMaterial, in: Capsule())
-                .transition(.move(edge: .bottom).combined(with: .opacity()))
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(spacing: 12) {
