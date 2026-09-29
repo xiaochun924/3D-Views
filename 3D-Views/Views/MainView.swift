@@ -10,7 +10,6 @@ struct MainView: View {
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showHelp = false
     @State private var debugMsg: String = ""
-    @State private var showImporter = false
 
     private var errorBinding: Binding<Bool> {
         Binding(
@@ -41,23 +40,6 @@ struct MainView: View {
         .onOpenURL { url in
             debugMsg = "opening: \(url.lastPathComponent)"
             Task { await viewModel.loadFile(url: url) }
-        }
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else {
-                    debugMsg = "no url"
-                    return
-                }
-                debugMsg = "picked: \(url.lastPathComponent)"
-                Task { await viewModel.loadFile(url: url) }
-            case .failure(let error):
-                debugMsg = "import error: \(error.localizedDescription)"
-            }
         }
         .sheet(isPresented: $showHelp) { HelpView() }
         .alert(isPresented: errorBinding) {
@@ -119,7 +101,15 @@ struct MainView: View {
             HStack(spacing: 12) {
                 dockButton(icon: "folder", label: "Open") {
                     debugMsg = "opening files..."
-                    showImporter = true
+                    DocumentPicker.shared.present(
+                        onPicked: { url in
+                            debugMsg = "picked: \(url.lastPathComponent)"
+                            Task { await viewModel.loadFile(url: url) }
+                        },
+                        onCancel: {
+                            debugMsg = "cancelled"
+                        }
+                    )
                 }
                 dockButton(icon: "cube.box", label: "Test") {
                     debugMsg = "loading test cube..."
