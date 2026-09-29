@@ -15,7 +15,7 @@ struct SceneView: UIViewRepresentable {
         let scnView = SCNView()
         scnView.allowsCameraControl = true
         scnView.autoenablesDefaultLighting = false
-        scnView.antialiasingMode = .multisampling8X
+        scnView.antialiasingMode = .multisampling4X
         scnView.backgroundColor = UIColor.systemBackground
         scnView.scene = scene
 
