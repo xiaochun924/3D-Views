@@ -11,12 +11,10 @@ import CoreGraphics
 
 enum Tessellator {
 
-    /// Build renderable geometry from the STEP model.
     static func build(_ model: STEPModel) -> STEPGeometry {
         let resolver = STEPResolver(model: model)
         var result = STEPGeometry()
 
-        // 1. Tessellate every curve into a 3D polyline (wireframe).
         for entity in model.order.compactMap({ model.entities[$0] }) {
             guard let polyline = tessellateCurve(entity, resolver: resolver) else { continue }
             if polyline.count >= 2 {
@@ -24,21 +22,18 @@ enum Tessellator {
             }
         }
 
-        // 2. Build filled faces for planar ADVANCED_FACEs.
         for face in model.entities(ofType: "ADVANCED_FACE") {
             if let mesh = tessellatePlanarFace(face, resolver: resolver) {
                 result.surfaceMeshes.append(mesh)
             }
         }
 
-        // 3. Build cylinder patches for CYLINDRICAL_SURFACE faces.
         for face in model.entities(ofType: "ADVANCED_FACE") {
             if let mesh = tessellateCylindricalFace(face, resolver: resolver) {
                 result.surfaceMeshes.append(mesh)
             }
         }
 
-        // 4. Collect all points for bounding box.
         var allPoints: [SCNVector3] = []
         for p in result.edgePolylines { allPoints.append(contentsOf: p) }
         for m in result.surfaceMeshes {
@@ -70,13 +65,11 @@ enum Tessellator {
 
     // MARK: - Curves
 
-    /// Returns a polyline approximating a curve entity, or nil if unsupported.
     static func tessellateCurve(_ e: STEPEntity, resolver: STEPResolver) -> [SCNVector3]? {
         switch e.type {
         case "LINE":
             let p0 = resolver.point(e.arguments[safe: 1]?.referenceValue)
             let dir = resolver.direction(e.arguments[safe: 2]?.referenceValue)
-            // Direction vector in LINE has magnitude = length.
             guard let p0, let dir else { return nil }
             return [p0, p0 + dir]
 
@@ -100,7 +93,6 @@ enum Tessellator {
                                    segments: 64)
 
         case "B_SPLINE_CURVE", "B_SPLINE_CURVE_WITH_KNOTS":
-            // Best effort: control points become the polyline.
             guard case .list(let ptsRefs) = e.arguments[safe: 3] ?? .list([]) else { return nil }
             var pts: [SCNVector3] = []
             for ref in ptsRefs {
@@ -145,7 +137,6 @@ enum Tessellator {
 
     // MARK: - Planar faces
 
-    /// For an ADVANCED_FACE on a PLANE, ear-clip the boundary loop into triangles.
     static func tessellatePlanarFace(_ face: STEPEntity, resolver: STEPResolver) -> SCNGeometry? {
         guard face.type == "ADVANCED_FACE" else { return nil }
         guard case .list(let loopsRefs) = face.arguments[safe: 1] ?? .list([]),
@@ -229,7 +220,7 @@ enum Tessellator {
                 guard let edge = resolver.model[edgeRef.referenceValue],
                       edge.type == "EDGE_CURVE",
                       let curveRef = edge.arguments[safe: 3]?.referenceValue,
-                      let curve = resolver.model[curveRef.referenceValue],
+                      let curve = resolver.model[curveRef],
                       curve.type == "CIRCLE",
                       let poly = tessellateCurve(curve, resolver: resolver)
                 else { continue }
