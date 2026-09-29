@@ -1,0 +1,81 @@
+name: 3D-Views
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build:
+    name: Build ${{ matrix.project }}
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [3D-Views]
+        scheme: [3D-Views]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 查看 Xcode 与 iOS SDK 版本
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i "ios" || true
+      - name: 安装 XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+      - name: 生成 Xcode 工程
+        run: |
+          cd "${{ matrix.project }}"
+          xcodegen generate
+      - name: 编译
+        run: |
+          set -o pipefail
+          cd "${{ matrix.project }}"
+          xcodebuild \
+            -project "${{ matrix.project }}.xcodeproj" \
+            -scheme "${{ matrix.scheme }}" \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_IDENTITY="" \
+            clean build
+      - name: 打包 IPA
+        run: |
+          cd "${{ matrix.project }}"
+          APP=$(find build -type d -name "*.app" | head -1)
+          if [ -z "$APP" ]; then
+            echo "未找到 .app 产物"; exit 1
+          fi
+          echo "产物: $APP"
+          rm -rf Payload && mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -qr "../${{ matrix.project }}-unsigned.ipa" Payload
+          ls -lh "../${{ matrix.project }}-unsigned.ipa"
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "${{ matrix.project }}"
+          IPA="../${{ matrix.project }}-unsigned.ipa"
+          RELEASE_TAG="unsigned-ipa"
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$RELEASE_TAG" \
+            --title "3D-Views" \
+            --notes "自签版本" \
+            "$IPA"
+      - name: 上传 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.project }}-unsigned-ipa
+          path: ${{ matrix.project }}-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

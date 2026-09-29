@@ -1,0 +1,23 @@
+### Xcode ###
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.xcscmblueprint
+*.xccheckout
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+# XcodeGen generates the project file
+3D-Views/3D-Views.xcodeproj/
+3D-Views/3D-Views.xcodeproj/xcuserdata/
+
+### macOS ###
+.DS_Store
+
+### Swift Package Manager ###
+.build/
+Packages/
+Package.resolved
