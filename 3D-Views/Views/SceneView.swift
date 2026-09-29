@@ -23,6 +23,7 @@ struct SceneView: UIViewRepresentable {
                                          action: #selector(Coordinator.handleTap(_:)))
         tap.numberOfTapsRequired = 1
         tap.cancelsTouchesInView = false
+        tap.delegate = context.coordinator
         scnView.addGestureRecognizer(tap)
         context.coordinator.scnView = scnView
         return scnView
@@ -41,24 +42,53 @@ struct SceneView: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         weak var scnView: SCNView?
         var measureMode = false
         var onMeasureTap: ((SCNVector3) -> Void)?
 
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard measureMode, let scnView else { return }
             let point = gesture.location(in: scnView)
-            let hits = scnView.hitTest(point, options: [
-                .searchMode: SCNHitTestSearchMode.closest.rawValue,
-                .ignoreHiddenNodes: true
-            ])
-            // Skip measure overlay nodes, only hit actual model
-            guard let hit = hits.first(where: { node in
-                let name = node.node.name ?? ""
-                return !name.hasPrefix("measure_") && name != "edges"
-            }) else { return }
-            onMeasureTap?(hit.worldCoordinates)
+
+            let modelNode = scnView.scene?.rootNode.childNode(withName: "model", recursively: true)
+
+            var hits: [SCNHitTestResult] = []
+            if let modelNode {
+                hits = scnView.hitTest(point, options: [
+                    .rootNode: modelNode,
+                    .searchMode: SCNHitTestSearchMode.all.rawValue,
+                    .ignoreHiddenNodes: true
+                ])
+            }
+
+            if hits.isEmpty {
+                hits = scnView.hitTest(point, options: [
+                    .searchMode: SCNHitTestSearchMode.all.rawValue
+                ])
+            }
+
+            let worldPos: SCNVector3?
+            if let modelNode {
+                if let direct = hits.first(where: { $0.node === modelNode }) {
+                    worldPos = direct.worldCoordinates
+                } else if let any = hits.first {
+                    worldPos = modelNode.convertPosition(any.localCoordinates, from: any.node)
+                } else {
+                    worldPos = nil
+                }
+            } else {
+                worldPos = hits.first?.worldCoordinates
+            }
+
+            if let worldPos {
+                onMeasureTap?(worldPos)
+            }
         }
     }
 }
