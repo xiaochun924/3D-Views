@@ -165,8 +165,6 @@ final class ViewerViewModel: ObservableObject {
         if pickedPoints.count > 2 {
             pickedPoints = [worldPos]
         }
-        updateMeasureMarkers()
-
         if pickedPoints.count == 2 {
             let a = pickedPoints[0], b = pickedPoints[1]
             let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
@@ -174,6 +172,7 @@ final class ViewerViewModel: ObservableObject {
         } else {
             lastDistance = nil
         }
+        updateMeasureMarkers()
     }
 
     func resetMeasurement() {
@@ -189,10 +188,8 @@ final class ViewerViewModel: ObservableObject {
         let group = SCNNode()
         group.name = "measure_group"
 
-        let markerSize: Float = 1.5
-
         for (i, point) in pickedPoints.enumerated() {
-            let sphere = SCNSphere(radius: CGFloat(markerSize))
+            let sphere = SCNSphere(radius: 1.5)
             let mat = SCNMaterial()
             mat.diffuse.contents = UIColor.systemBlue
             mat.emission.contents = UIColor.systemBlue
@@ -208,36 +205,36 @@ final class ViewerViewModel: ObservableObject {
             label.firstMaterial?.diffuse.contents = UIColor.white
             label.firstMaterial?.lightingModel = .constant
             let labelNode = SCNNode(geometry: label)
-            labelNode.position = SCNVector3(point.x, point.y + markerSize * 2, point.z)
+            labelNode.position = SCNVector3(point.x, point.y + 3, point.z)
             labelNode.scale = SCNVector3(0.05, 0.05, 0.05)
-            labelNode.name = "measure_label"
             group.addChildNode(labelNode)
         }
 
-        if pickedPoints.count == 2 {
+        if pickedPoints.count == 2, let dist = lastDistance {
             let a = pickedPoints[0], b = pickedPoints[1]
-            let source = SCNGeometrySource(vertices: [a, b])
-            let indices: [Int32] = [0, 1]
-            let element = SCNGeometryElement(indices: indices, primitiveType: .line)
-            let lineGeo = SCNGeometry(sources: [source], elements: [element])
-            let lineMat = SCNMaterial()
-            lineMat.diffuse.contents = UIColor.systemBlue
-            lineMat.lightingModel = .constant
-            lineGeo.materials = [lineMat]
-            let lineNode = SCNNode(geometry: lineGeo)
-            lineNode.name = "measure_line"
-            group.addChildNode(lineNode)
-
             let mid = SCNVector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
-            let dist = lastDistance ?? 0
-            let text = SCNText(string: String(format: "%.2f %@", dist, displayUnit.rawValue), extrusionDepth: 0.2)
+
+            // Cylinder between points
+            let cylinder = SCNCylinder(radius: 0.4, height: CGFloat(dist))
+            let cylMat = SCNMaterial()
+            cylMat.diffuse.contents = UIColor.systemBlue
+            cylMat.lightingModel = .constant
+            cylinder.materials = [cylMat]
+            let cylNode = SCNNode(geometry: cylinder)
+            cylNode.position = mid
+            cylNode.look(at: b)
+            cylNode.eulerAngles.x += Float.pi / 2
+            group.addChildNode(cylNode)
+
+            // Distance label
+            let distStr = String(format: "%.2f", dist) + " " + displayUnit.rawValue
+            let text = SCNText(string: distStr, extrusionDepth: 0.2)
             text.font = UIFont.boldSystemFont(ofSize: 8)
             text.firstMaterial?.diffuse.contents = UIColor.systemBlue
             text.firstMaterial?.lightingModel = .constant
             let textNode = SCNNode(geometry: text)
-            textNode.position = SCNVector3(mid.x, mid.y + 2, mid.z)
+            textNode.position = SCNVector3(mid.x, mid.y + 3, mid.z)
             textNode.scale = SCNVector3(0.05, 0.05, 0.05)
-            textNode.name = "measure_dist_label"
             group.addChildNode(textNode)
         }
 
