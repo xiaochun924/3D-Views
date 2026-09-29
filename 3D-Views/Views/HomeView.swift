@@ -8,7 +8,6 @@ import SwiftUI
 struct HomeView: View {
     @StateObject private var history = FileHistory.shared
     @State private var navPath = NavigationPath()
-    @State private var pendingFile: RecentFile?
     @State private var showSettings = false
 
     var body: some View {
@@ -16,14 +15,14 @@ struct HomeView: View {
             List {
                 if history.files.isEmpty {
                     ContentUnavailableView(
-                        "No Files Yet",
+                        "暂无文件",
                         systemImage: "cube.transparent",
-                        description: Text("Tap Open to import a STEP or STL file.")
+                        description: Text("点击右上角按钮导入 STEP 或 STL 文件。")
                     )
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                 } else {
-                    Section("Recent Files") {
+                    Section("最近文件") {
                         ForEach(history.files) { file in
                             Button {
                                 navPath.append(file)
@@ -57,7 +56,7 @@ struct HomeView: View {
                     }
                 }
             }
-            .navigationTitle("3D Views")
+            .navigationTitle("3D 看图")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
