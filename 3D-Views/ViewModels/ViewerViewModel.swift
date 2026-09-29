@@ -19,12 +19,47 @@ enum SnapKind: String {
     case midpoint = "中点"
     case center = "圆心"
     case quadrant = "象限点"
+    case face = "面"
     case none = ""
+
+    /// Disambiguation priority: vertices win over edge-derived points, which win over
+    /// a bare surface hit. Mirrors the "prefer edges over surfaces, then nearest of the
+    /// same type" rule used by production CAD snapping engines.
+    var priority: Int {
+        switch self {
+        case .endpoint, .center, .quadrant: return 0
+        case .midpoint: return 1
+        case .face: return 2
+        case .none: return 3
+        }
+    }
 }
 
 struct SnapPoint {
     let position: SCNVector3
     let kind: SnapKind
+}
+
+/// Standard orthographic viewing directions offered by the 「视图」 control.
+enum ViewDirection: String, CaseIterable, Identifiable {
+    case front = "前视图"
+    case back = "后视图"
+    case left = "左视图"
+    case right = "右视图"
+    case top = "俯视图"
+    case bottom = "仰视图"
+    case iso = "等轴测"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .front, .back: return "rectangle"
+        case .left, .right: return "rectangle.portrait"
+        case .top, .bottom: return "rectangle.portrait.rotate"
+        case .iso: return "cube"
+        }
+    }
 }
 
 enum MeasureType: String, CaseIterable, Identifiable {
@@ -79,7 +114,33 @@ final class ViewerViewModel: ObservableObject {
     private var measureGroup: SCNNode?
     private var modelNode: SCNNode?
     private var snapPoints: [SnapPoint] = []
-    private var snapThreshold: Float = 1
+
+    /// Set by `SceneView` once the renderer exists. Only used for screen-space sizing
+    /// of annotations and for hit-testing; deliberately not `@Published`, so attaching
+    /// it never triggers a view update.
+    weak var renderView: SCNView?
+
+    func attach(view: SCNView) {
+        renderView = view
+    }
+
+    /// Screen-space snap radius, in points. Replaces the old world-space threshold
+    /// (`max(maxDim, 10) * 0.04`), which made snapping depend on zoom level instead of
+    /// on the finger. 14 pt is a comfortable touch target on iPhone and iPad alike.
+    private let snapScreenRadius: CGFloat = 14
+
+    /// Largest model dimension, cached for fallbacks and for camera framing.
+    private var modelDim: Float = 10
+
+    /// Distance at which the camera frames the model.
+    private var cameraDistance: Float = 24
+
+    init() {
+        if let raw = UserDefaults.standard.string(forKey: "defaultUnit"),
+           let unit = DisplayUnit(rawValue: raw) {
+            displayUnit = unit
+        }
+    }
 
     var isComplete: Bool {
         pickedPoints.count == measureType.requiredPoints
@@ -126,27 +187,49 @@ final class ViewerViewModel: ObservableObject {
                 geometry = mesh.sceneKitGeometry()
             }
 
-            let built = Self.buildScene(geometry: geometry)
+            let (bbMin, bbMax) = geometry.boundingBox
+            let sizeX = bbMax.x - bbMin.x
+            let sizeY = bbMax.y - bbMin.y
+            let sizeZ = bbMax.z - bbMin.z
+            let maxDim = max(max(sizeX, sizeY), sizeZ)
+            modelDim = max(maxDim, 1)
+            cameraDistance = modelDim * 2.4
+
+            let center = SCNVector3(
+                (bbMin.x + bbMax.x) / 2,
+                (bbMin.y + bbMax.y) / 2,
+                (bbMin.z + bbMax.z) / 2
+            )
+
+            // Real B-rep edge polylines. Previously the app duplicated the *triangle*
+            // mesh and rendered it with `fillMode = .lines`, which draws every
+            // tessellation triangle edge (thousands of hairlines) rather than the
+            // model's actual edges — the main cause of the "unclear model" report.
+            //
+            // Only drewable for BREP formats: an STL has no genuine edge structure, so
+            // its edge set is just every facet boundary — the same noise again.
+            let isBrep = (ext == "step" || ext == "stp")
+            let edgeGeometry = isBrep
+                ? shape.flatMap { $0.edgeMesh(deflection: 0.1) }
+                       .flatMap { Self.makeEdgeGeometry(from: $0) }
+                : nil
+
+            let built = Self.buildScene(
+                geometry: geometry,
+                edgeGeometry: edgeGeometry,
+                center: center,
+                cameraDistance: cameraDistance
+            )
             scene = built
             fileName = url.lastPathComponent
 
             let mNode = built.rootNode.childNode(withName: "model", recursively: true)
             modelNode = mNode
 
-            if let mNode, let shape, let geo = mNode.geometry {
-                let (bbMin, bbMax) = geo.boundingBox
-                let maxDim = max(max(bbMax.x - bbMin.x, bbMax.y - bbMin.y), bbMax.z - bbMin.z)
-                let safeMax = max(maxDim, 10)
-                snapThreshold = safeMax * 0.04
-
-                if ext == "step" || ext == "stp" {
-                    snapPoints = buildSnapDatabase(shape: shape, modelNode: mNode)
-                } else {
-                    snapPoints = Self.extractVertices(from: geo).map {
-                        SnapPoint(position: mNode.convertPosition($0, to: nil),
-                                  kind: .endpoint)
-                    }
-                }
+            if let mNode {
+                snapPoints = buildSnapDatabase(shape: shape, geometry: geometry, modelNode: mNode)
+            } else {
+                snapPoints = []
             }
 
             clearMeasure()
@@ -155,18 +238,61 @@ final class ViewerViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Edge geometry
+
+    /// Builds a single line-primitive geometry from the kernel's edge polylines.
+    private static func makeEdgeGeometry(from data: OCCTSwift.EdgeMeshData) -> SCNGeometry? {
+        let verts = data.vertices
+        guard verts.count >= 2 else { return nil }
+
+        var indices: [UInt32] = []
+        indices.reserveCapacity(verts.count * 2)
+
+        let starts = data.segmentStarts
+        for i in 0..<starts.count {
+            let start = starts[i]
+            // `segmentStarts` carries a trailing sentinel equal to `vertices.count`
+            // in some versions; treating the last entry as an empty range makes both
+            // layouts safe.
+            let end = (i + 1 < starts.count) ? starts[i + 1] : verts.count
+            guard start >= 0, end <= verts.count, end - start >= 2 else { continue }
+            for k in start..<(end - 1) {
+                indices.append(UInt32(k))
+                indices.append(UInt32(k + 1))
+            }
+        }
+
+        guard indices.count >= 2 else { return nil }
+
+        let source = SCNGeometrySource(vertices: verts.map {
+            SCNVector3($0.x, $0.y, $0.z)
+        })
+        let element = SCNGeometryElement(indices: indices, primitiveType: .line)
+        return SCNGeometry(sources: [source], elements: [element])
+    }
+
     // MARK: - Snap Database
 
-    private func buildSnapDatabase(shape: OCCTSwift.Shape, modelNode: SCNNode) -> [SnapPoint] {
-        var result: [SnapPoint] = []
+    private func buildSnapDatabase(shape: OCCTSwift.Shape?,
+                                   geometry: SCNGeometry,
+                                   modelNode: SCNNode) -> [SnapPoint] {
         let toWorld: (SIMD3<Double>) -> SCNVector3 = { local in
             modelNode.convertPosition(
                 SCNVector3(Float(local.x), Float(local.y), Float(local.z)), to: nil)
         }
 
-        let vertices = shape.vertices()
+        var result: [SnapPoint] = []
+
+        guard let shape else {
+            // STL fallback: the mesh has no B-rep topology, so the vertices are the
+            // only meaningful snap candidates.
+            return Self.extractVertices(from: geometry).map {
+                SnapPoint(position: modelNode.convertPosition($0, to: nil), kind: .endpoint)
+            }
+        }
+
         var seen = Set<SIMD3<Int64>>()
-        for v in vertices {
+        for v in shape.vertices() {
             let key = quantize(v)
             if seen.insert(key).inserted {
                 result.append(SnapPoint(position: toWorld(v), kind: .endpoint))
@@ -182,8 +308,7 @@ final class ViewerViewModel: ObservableObject {
 
                 let refDir = simd_normalize(pts[0] - circle.center)
                 let perpDir = simd_cross(circle.normal, refDir)
-                let directions = [refDir, perpDir, -refDir, -perpDir]
-                for d in directions {
+                for d in [refDir, perpDir, -refDir, -perpDir] {
                     result.append(SnapPoint(position: toWorld(circle.center + circle.radius * d),
                                             kind: .quadrant))
                 }
@@ -271,90 +396,104 @@ final class ViewerViewModel: ObservableObject {
 
     // MARK: - Scene
 
-    static func buildScene(geometry: SCNGeometry) -> SCNScene {
+    static func buildScene(geometry: SCNGeometry,
+                           edgeGeometry: SCNGeometry?,
+                           center: SCNVector3,
+                           cameraDistance: Float) -> SCNScene {
         let scene = SCNScene()
 
+        // A neutral machined-steel grey reads far better against the light backdrop
+        // than the previous mid-green, which sat at almost the same luminance as the
+        // background and flattened facet-to-facet shading differences.
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.30, green: 0.62, blue: 0.38, alpha: 1.0)
-        mat.specular.contents = UIColor(white: 0.5, alpha: 1.0)
-        mat.shininess = 0.3
+        mat.diffuse.contents = UIColor(red: 0.62, green: 0.66, blue: 0.72, alpha: 1.0)
+        mat.specular.contents = UIColor(white: 0.35, alpha: 1.0)
+        mat.shininess = 0.18
         mat.lightingModel = .phong
         mat.isDoubleSided = true
         geometry.materials = [mat]
 
+        // The kernel returns geometry in its own arbitrary coordinate frame, so a
+        // container node carries the recentring offset. An explicit child `position`
+        // is used rather than `SCNNode.pivot`, whose sign convention is easy to get
+        // backwards and which would silently mirror the model instead of centring it.
+        let modelRoot = SCNNode()
+        modelRoot.name = "modelRoot"
+        modelRoot.position = SCNVector3(-center.x, -center.y, -center.z)
+        scene.rootNode.addChildNode(modelRoot)
+
         let modelNode = SCNNode(geometry: geometry)
         modelNode.name = "model"
+        modelRoot.addChildNode(modelNode)
 
-        let (bbMin, bbMax) = geometry.boundingBox
-        let sizeX = bbMax.x - bbMin.x
-        let sizeY = bbMax.y - bbMin.y
-        let sizeZ = bbMax.z - bbMin.z
-        let maxDim = max(max(sizeX, sizeY), sizeZ)
-        let safeDim = max(maxDim, 1)
+        if let edgeGeometry {
+            let edgeMat = SCNMaterial()
+            edgeMat.diffuse.contents = UIColor(red: 0.13, green: 0.16, blue: 0.20, alpha: 1.0)
+            edgeMat.lightingModel = .constant
+            edgeMat.isDoubleSided = true
+            // Depth-tested against the shaded surface so hidden edges stay hidden,
+            // but not depth-writing, which removes the stipple that a coplanar
+            // overlay otherwise produces.
+            edgeMat.readsFromDepthBuffer = true
+            edgeMat.writesToDepthBuffer = false
+            edgeGeometry.materials = [edgeMat]
 
-        let center = SCNVector3(
-            (bbMin.x + bbMax.x) / 2,
-            (bbMin.y + bbMax.y) / 2,
-            (bbMin.z + bbMax.z) / 2
-        )
-        modelNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
-        scene.rootNode.addChildNode(modelNode)
+            // A hair of outward inflation keeps the wireframe off the shaded surface
+            // in the depth buffer. It is applied through an explicit anchor pair rather
+            // than `SCNNode.pivot` so the expansion is provably about the model centre:
+            // v -> center + 1.0015 * (v - center).
+            let edgeAnchor = SCNNode()
+            edgeAnchor.name = "edgeAnchor"
+            edgeAnchor.position = center
+            edgeAnchor.scale = SCNVector3(1.0015, 1.0015, 1.0015)
 
-        let edgeGeo = geometry.copy() as! SCNGeometry
-        let edgeMat = SCNMaterial()
-        edgeMat.diffuse.contents = UIColor(red: 0.12, green: 0.28, blue: 0.16, alpha: 0.9)
-        edgeMat.fillMode = .lines
-        edgeMat.lightingModel = .constant
-        edgeGeo.materials = [edgeMat]
-        let edgeNode = SCNNode(geometry: edgeGeo)
-        edgeNode.name = "edges"
-        edgeNode.scale = SCNVector3(1.002, 1.002, 1.002)
-        modelNode.addChildNode(edgeNode)
-
-        let camDist = safeDim * 2.0
-        let origin = SCNVector3(0, 0, 0)
+            let edgeNode = SCNNode(geometry: edgeGeometry)
+            edgeNode.name = "edges"
+            edgeNode.position = SCNVector3(-center.x, -center.y, -center.z)
+            edgeAnchor.addChildNode(edgeNode)
+            modelNode.addChildNode(edgeAnchor)
+        }
 
         let camera = SCNCamera()
-        camera.automaticallyAdjustsZRange = true
+        camera.fieldOfView = 45
+        camera.automaticallyAdjustsZRange = false
+        camera.zNear = Double(max(cameraDistance * 0.01, 0.01))
+        camera.zFar = Double(cameraDistance * 12)
+        camera.wantsHDR = false
+        camera.bloomIntensity = 0
+
         let cameraNode = SCNNode()
+        cameraNode.name = "camera"
         cameraNode.camera = camera
-        cameraNode.position = SCNVector3(0, camDist * 0.3, camDist)
-        cameraNode.look(at: origin)
+        cameraNode.position = SCNVector3(0, cameraDistance * 0.32, cameraDistance)
+        cameraNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(cameraNode)
 
+        // Three lights instead of four: a key, a fill and low ambient. The removed
+        // back light contributed little and cost a full extra shading pass.
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 1200
+        keyLight.intensity = 1100
         let keyNode = SCNNode()
         keyNode.light = keyLight
-        keyNode.position = SCNVector3(camDist * 0.6, camDist, camDist * 0.6)
-        keyNode.look(at: origin)
+        keyNode.position = SCNVector3(cameraDistance * 0.6, cameraDistance, cameraDistance * 0.6)
+        keyNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(keyNode)
 
         let fillLight = SCNLight()
         fillLight.type = .directional
-        fillLight.intensity = 500
+        fillLight.intensity = 450
         fillLight.color = UIColor(white: 0.85, alpha: 1.0)
         let fillNode = SCNNode()
         fillNode.light = fillLight
-        fillNode.position = SCNVector3(-camDist * 0.7, camDist * 0.3, camDist * 0.5)
-        fillNode.look(at: origin)
+        fillNode.position = SCNVector3(-cameraDistance * 0.7, cameraDistance * 0.25, cameraDistance * 0.5)
+        fillNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(fillNode)
-
-        let backLight = SCNLight()
-        backLight.type = .directional
-        backLight.intensity = 600
-        backLight.color = UIColor(white: 0.9, alpha: 1.0)
-        let backNode = SCNNode()
-        backNode.light = backLight
-        backNode.position = SCNVector3(0, camDist * 0.5, -camDist)
-        backNode.look(at: origin)
-        scene.rootNode.addChildNode(backNode)
 
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 250
-        ambient.color = UIColor(white: 0.75, alpha: 1.0)
+        ambient.intensity = 320
+        ambient.color = UIColor(white: 0.78, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.light = ambient
         scene.rootNode.addChildNode(ambientNode)
@@ -362,11 +501,96 @@ final class ViewerViewModel: ObservableObject {
         return scene
     }
 
+    // MARK: - Camera control
+
+    /// The camera actually being rendered through.
+    ///
+    /// Deliberately not `childNode(withName: "camera")`: with
+    /// `allowsCameraControl` enabled SceneKit may install its own camera and assign
+    /// it to the view's `pointOfView`, in which case moving a named node would have
+    /// no visible effect. Commanding the live `pointOfView` works either way.
+    private var cameraNode: SCNNode? {
+        renderView?.pointOfView
+            ?? scene?.rootNode.childNode(withName: "camera", recursively: true)
+    }
+
+    func resetView() {
+        guard let camNode = cameraNode else { return }
+        camNode.position = SCNVector3(0, cameraDistance * 0.32, cameraDistance)
+        camNode.look(at: SCNVector3(0, 0, 0))
+    }
+
+    func setViewDirection(_ direction: ViewDirection) {
+        guard let camNode = cameraNode else { return }
+        let r = cameraDistance
+        let target = SCNVector3(0, 0, 0)
+
+        switch direction {
+        case .front:
+            camNode.position = SCNVector3(0, 0, r)
+            camNode.look(at: target)
+        case .back:
+            camNode.position = SCNVector3(0, 0, -r)
+            camNode.look(at: target)
+        case .left:
+            camNode.position = SCNVector3(-r, 0, 0)
+            camNode.look(at: target)
+        case .right:
+            camNode.position = SCNVector3(r, 0, 0)
+            camNode.look(at: target)
+        case .top:
+            camNode.position = SCNVector3(0, r, 0)
+            // Straight down: the default up vector is parallel to the view direction,
+            // so supply an explicit up in the model's -Z.
+            camNode.look(at: target, up: SCNVector3(0, 0, -1), localFront: SCNVector3(0, 0, -1))
+        case .bottom:
+            camNode.position = SCNVector3(0, -r, 0)
+            camNode.look(at: target, up: SCNVector3(0, 0, 1), localFront: SCNVector3(0, 0, -1))
+        case .iso:
+            camNode.position = SCNVector3(r * 0.58, r * 0.52, r * 0.62)
+            camNode.look(at: target)
+        }
+    }
+
     // MARK: - Measure
 
-    func handleTap(_ rawWorldPos: SCNVector3) {
+    /// World units that one screen point spans at the given world position.
+    ///
+    /// Calibrated by projecting a known world offset perpendicular to the view, so it
+    /// is exact for perspective and orthographic cameras alike and needs no assumption
+    /// about the camera's field-of-view axis.
+    private func unitsPerPoint(at anchor: SCNVector3, in view: SCNView) -> CGFloat {
+        let fallback = CGFloat(modelDim) * 0.003
+        guard let pov = view.pointOfView else { return fallback }
+
+        let m = pov.simdWorldTransform
+        var right = SIMD3<Float>(m.columns.0.x, m.columns.0.y, m.columns.0.z)
+        let len = simd_length(right)
+        guard len > 1e-6 else { return fallback }
+        right /= len
+
+        let probe = max(modelDim, 1) * 0.02
+        let a = view.projectPoint(anchor)
+        let b = view.projectPoint(SCNVector3(anchor.x + right.x * probe,
+                                             anchor.y + right.y * probe,
+                                             anchor.z + right.z * probe))
+        let dx = CGFloat(b.x - a.x)
+        let dy = CGFloat(b.y - a.y)
+        let screenLen = (dx * dx + dy * dy).squareRoot()
+        guard screenLen > 0.01 else { return fallback }
+        return CGFloat(probe) / screenLen
+    }
+
+    /// Convenience entry point used by `SceneView`, which has already attached itself
+    /// through `attach(view:)`.
+    func handleTap(screenPoint: CGPoint) {
+        guard let view = renderView else { return }
+        handleTap(screenPoint: screenPoint, in: view)
+    }
+
+    func handleTap(screenPoint: CGPoint, in view: SCNView) {
         guard mode == .measure else { return }
-        let (snapped, kind) = snap(rawWorldPos)
+        guard let (snapped, kind) = snap(screenPoint: screenPoint, in: view) else { return }
 
         if pickedPoints.count >= measureType.requiredPoints {
             pickedPoints = [snapped]
@@ -377,20 +601,78 @@ final class ViewerViewModel: ObservableObject {
         }
 
         computeResults()
-        updateMeasureVisuals()
+        updateMeasureVisuals(in: view)
     }
 
-    private func snap(_ raw: SCNVector3) -> (SCNVector3, SnapKind) {
-        guard !snapPoints.isEmpty else { return (raw, .none) }
-        var best: SnapPoint?
-        var bestDist: Float = snapThreshold
-        for sp in snapPoints {
-            let dx = sp.position.x - raw.x, dy = sp.position.y - raw.y, dz = sp.position.z - raw.z
-            let d = (dx*dx + dy*dy + dz*dz).squareRoot()
-            if d < bestDist { bestDist = d; best = sp }
+    /// Screen-space snapping.
+    ///
+    /// Every candidate is projected to the viewport and compared in 2D points, so the
+    /// effective tolerance is constant on screen at any zoom level. Candidates hidden
+    /// behind the front-most surface under the tap are rejected.
+    private func snap(screenPoint: CGPoint, in view: SCNView) -> (SCNVector3, SnapKind)? {
+        let modelHits = view.hitTest(screenPoint, options: [
+            .searchMode: SCNHitTestSearchMode.all.rawValue,
+            .ignoreHiddenNodes: true
+        ]).filter { $0.node === modelNode }
+
+        let cameraPosition = view.pointOfView?.worldPosition
+        var frontWorld: SCNVector3?
+        var frontDistance = Float.greatestFiniteMagnitude
+        if let cameraPosition {
+            for hit in modelHits {
+                let d = Self.distance(cameraPosition, hit.worldCoordinates)
+                if d < frontDistance {
+                    frontDistance = d
+                    frontWorld = hit.worldCoordinates
+                }
+            }
         }
-        if let best { return (best.position, best.kind) }
-        return (raw, .none)
+
+        let occlusionTolerance = max(modelDim, 1) * 0.004
+        var bestKind: SnapKind?
+        var bestPoint: SCNVector3?
+        var bestScreenDistance = CGFloat.greatestFiniteMagnitude
+        var bestPriority = Int.max
+
+        for candidate in snapPoints {
+            let projected = view.projectPoint(candidate.position)
+            guard projected.z >= 0, projected.z <= 1 else { continue }
+
+            let dx = CGFloat(projected.x) - screenPoint.x
+            let dy = CGFloat(projected.y) - screenPoint.y
+            let screenDistance = (dx * dx + dy * dy).squareRoot()
+            guard screenDistance <= snapScreenRadius else { continue }
+
+            if let cameraPosition, frontWorld != nil {
+                let d = Self.distance(cameraPosition, candidate.position)
+                if d - frontDistance > occlusionTolerance { continue }
+            }
+
+            let priority = candidate.kind.priority
+            if priority < bestPriority ||
+                (priority == bestPriority && screenDistance < bestScreenDistance) {
+                bestPriority = priority
+                bestScreenDistance = screenDistance
+                bestKind = candidate.kind
+                bestPoint = candidate.position
+            }
+        }
+
+        if let bestPoint, let bestKind {
+            return (bestPoint, bestKind)
+        }
+
+        // Nothing close enough: fall back to the surface directly under the tap. Tapping
+        // empty space is ignored rather than adding a stray point.
+        if let frontWorld {
+            return (frontWorld, .face)
+        }
+        return nil
+    }
+
+    private static func distance(_ a: SCNVector3, _ b: SCNVector3) -> Float {
+        let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
+        return (dx * dx + dy * dy + dz * dz).squareRoot()
     }
 
     private func computeResults() {
@@ -417,6 +699,7 @@ final class ViewerViewModel: ObservableObject {
             let dot = v1.x*v2.x + v1.y*v2.y + v1.z*v2.z
             let m1 = (v1.x*v1.x + v1.y*v1.y + v1.z*v1.z).squareRoot()
             let m2 = (v2.x*v2.x + v2.y*v2.y + v2.z*v2.z).squareRoot()
+            guard m1 > 1e-6, m2 > 1e-6 else { return }
             let cosAngle = max(-1, min(1, dot / (m1 * m2)))
             angleResult = acos(cosAngle) * 180 / Float.pi
 
@@ -455,6 +738,15 @@ final class ViewerViewModel: ObservableObject {
         return (center, radius)
     }
 
+    /// Removes the most recently picked point and recomputes.
+    func undoLastPoint() {
+        guard !pickedPoints.isEmpty else { return }
+        pickedPoints.removeLast()
+        if !pickedKinds.isEmpty { pickedKinds.removeLast() }
+        computeResults()
+        updateMeasureVisuals(in: renderView)
+    }
+
     func selectMeasureType(_ type: MeasureType) {
         measureType = type
         clearMeasure()
@@ -471,6 +763,13 @@ final class ViewerViewModel: ObservableObject {
         measureGroup = nil
     }
 
+    /// Changes the display unit and remembers it, so `SettingsView` and the viewer
+    /// toolbar stay in agreement across launches.
+    func setUnit(_ unit: DisplayUnit) {
+        displayUnit = unit
+        UserDefaults.standard.set(unit.rawValue, forKey: "defaultUnit")
+    }
+
     func toggleMeasureMode() {
         mode = mode == .measure ? .orbit : .measure
         if mode == .orbit { clearMeasure() }
@@ -478,32 +777,40 @@ final class ViewerViewModel: ObservableObject {
 
     // MARK: - Visuals
 
-    private func updateMeasureVisuals() {
-        guard let scene else { return }
+    /// Rebuilds the measurement annotations.
+    ///
+    /// Marker, line and label sizes are derived from the live camera through
+    /// `unitsPerPoint(at:in:)`, so they hold a constant size on screen instead of the
+    /// previous arbitrary fraction of the model's bounding box.
+    private func updateMeasureVisuals(in view: SCNView?) {
         measureGroup?.removeFromParentNode()
 
-        let mNode = scene.rootNode.childNode(withName: "model", recursively: true)
-        let (bbMin, bbMax) = mNode?.boundingBox ?? (SCNVector3(-10,-10,-10), SCNVector3(10,10,10))
-        let maxDim = max(max(bbMax.x - bbMin.x, bbMax.y - bbMin.y), bbMax.z - bbMin.z)
-        let markerR = max(maxDim, 10) * 0.012
+        guard let scene else { return }
+
+        let anchor = labelAnchor() ?? SCNVector3(0, 0, 0)
+        let unitsPerPoint = view.map { self.unitsPerPoint(at: anchor, in: $0) }
+            ?? CGFloat(modelDim) * 0.003
+
+        let markerRadius = Float(unitsPerPoint) * 3.0
+        let lineRadius = Float(unitsPerPoint) * 0.9
 
         let group = SCNNode()
         group.name = "measure_group"
 
         for (i, point) in pickedPoints.enumerated() {
             let kind = i < pickedKinds.count ? pickedKinds[i] : .none
-            addMarker(at: point, kind: kind, index: i, radius: markerR, to: group)
+            addMarker(at: point, kind: kind, index: i, radius: markerRadius, to: group)
         }
 
         if pickedPoints.count >= 2 {
             for i in 0..<pickedPoints.count-1 {
                 addCylinderLine(from: pickedPoints[i], to: pickedPoints[i+1],
-                                maxDim: maxDim, to: group)
+                                lineRadius: lineRadius, to: group)
             }
         }
 
-        if measureType == .radius, let center = radiusCenter, let radius = radiusResult {
-            let centerSphere = SCNSphere(radius: CGFloat(markerR * 0.8))
+        if measureType == .radius, let center = radiusCenter, radiusResult != nil {
+            let centerSphere = SCNSphere(radius: CGFloat(markerRadius * 0.8))
             let cm = SCNMaterial()
             cm.diffuse.contents = UIColor.systemBlue
             cm.emission.contents = UIColor.systemBlue
@@ -515,18 +822,30 @@ final class ViewerViewModel: ObservableObject {
             group.addChildNode(cn)
 
             addCylinderLine(from: center, to: pickedPoints[0],
-                            maxDim: maxDim, to: group, color: .systemBlue)
+                            lineRadius: lineRadius, to: group, color: .systemBlue)
         }
 
-        if let labelString = currentLabelString(), let anchor = labelAnchor() {
-            let labelText = SCNText(string: labelString, extrusionDepth: 0.1)
-            labelText.font = UIFont.boldSystemFont(ofSize: 8)
-            labelText.firstMaterial?.diffuse.contents = UIColor.label
-            labelText.firstMaterial?.lightingModel = .constant
-            let labelNode = SCNNode(geometry: labelText)
-            let labelScale = max(maxDim, 10) * 0.003
-            labelNode.scale = SCNVector3(labelScale, labelScale, labelScale)
-            labelNode.position = SCNVector3(anchor.x, anchor.y + markerR * 2.5, anchor.z)
+        if let labelString = currentLabelString(), let labelAnchor = labelAnchor() {
+            let text = SCNText(string: labelString, extrusionDepth: 0.1)
+            text.font = UIFont.boldSystemFont(ofSize: 10)
+            text.firstMaterial?.diffuse.contents = UIColor.label
+            text.firstMaterial?.lightingModel = .constant
+
+            let labelNode = SCNNode(geometry: text)
+            let (tMin, tMax) = text.boundingBox
+            let textHeight = tMax.y - tMin.y
+            if textHeight > 1e-6 {
+                let desiredHeight = Float(unitsPerPoint) * 13
+                let s = desiredHeight / textHeight
+                labelNode.scale = SCNVector3(s, s, s)
+            }
+            // Centre the text on its own origin so the billboard rotates about the
+            // anchor point instead of the baseline's left edge.
+            labelNode.pivot = SCNMatrix4MakeTranslation(
+                (tMin.x + tMax.x) / 2, (tMin.y + tMax.y) / 2, (tMin.z + tMax.z) / 2)
+            labelNode.position = SCNVector3(labelAnchor.x,
+                                            labelAnchor.y + markerRadius * 2.5,
+                                            labelAnchor.z)
             labelNode.name = "measure_label"
             let billboard = SCNBillboardConstraint()
             billboard.freeAxes = .all
@@ -539,17 +858,18 @@ final class ViewerViewModel: ObservableObject {
     }
 
     private func addMarker(at point: SCNVector3, kind: SnapKind, index: Int,
-                           radius markerR: Float, to group: SCNNode) {
+                           radius markerRadius: Float, to group: SCNNode) {
         let color: UIColor
         switch kind {
         case .endpoint: color = UIColor.systemRed
         case .center: color = UIColor.systemBlue
         case .midpoint: color = UIColor.systemOrange
         case .quadrant: color = UIColor.systemPurple
+        case .face: color = UIColor.systemTeal
         case .none: color = UIColor.systemRed
         }
 
-        let sphere = SCNSphere(radius: CGFloat(markerR))
+        let sphere = SCNSphere(radius: CGFloat(markerRadius))
         let mat = SCNMaterial()
         mat.diffuse.contents = color
         mat.emission.contents = color
@@ -567,9 +887,16 @@ final class ViewerViewModel: ObservableObject {
         text.firstMaterial?.emission.contents = UIColor.black
         text.firstMaterial?.lightingModel = .constant
         let textNode = SCNNode(geometry: text)
-        textNode.position = SCNVector3(point.x, point.y + markerR * 2.2, point.z)
-        let s = markerR * 0.04
-        textNode.scale = SCNVector3(s, s, s)
+
+        let (tMin, tMax) = text.boundingBox
+        let textHeight = tMax.y - tMin.y
+        if textHeight > 1e-6 {
+            let s = (markerRadius * 1.6) / textHeight
+            textNode.scale = SCNVector3(s, s, s)
+        }
+        textNode.pivot = SCNMatrix4MakeTranslation(
+            (tMin.x + tMax.x) / 2, (tMin.y + tMax.y) / 2, (tMin.z + tMax.z) / 2)
+        textNode.position = SCNVector3(point.x, point.y + markerRadius * 2.2, point.z)
         textNode.name = "measure_num"
         let billboard = SCNBillboardConstraint()
         billboard.freeAxes = .all
@@ -578,12 +905,11 @@ final class ViewerViewModel: ObservableObject {
     }
 
     private func addCylinderLine(from a: SCNVector3, to b: SCNVector3,
-                                 maxDim: Float, to group: SCNNode,
+                                 lineRadius: Float, to group: SCNNode,
                                  color: UIColor = UIColor.systemRed) {
         let dx = b.x-a.x, dy = b.y-a.y, dz = b.z-a.z
         let dist = (dx*dx + dy*dy + dz*dz).squareRoot()
         guard dist > 1e-6 else { return }
-        let lineRadius = max(maxDim, 10) * 0.004
         let cylinder = SCNCylinder(radius: CGFloat(lineRadius), height: CGFloat(dist))
         let cylMat = SCNMaterial()
         cylMat.diffuse.contents = color

@@ -18,6 +18,7 @@ struct SettingsView: View {
                     Text("毫米").tag("mm")
                     Text("厘米").tag("cm")
                     Text("英寸").tag("in")
+                    Text("米").tag("m")
                 }
                 Toggle("显示网格", isOn: $showGrid)
                 Toggle("自动旋转", isOn: $autoRotate)

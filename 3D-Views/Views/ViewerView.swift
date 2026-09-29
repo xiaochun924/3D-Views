@@ -9,6 +9,7 @@ import SceneKit
 struct ViewerView: View {
     let file: RecentFile
     @StateObject private var viewModel = ViewerViewModel()
+    @State private var showSettings = false
 
     var body: some View {
         ZStack {
@@ -16,7 +17,10 @@ struct ViewerView: View {
 
             SceneView(
                 scene: viewModel.scene,
-                onMeasureTap: { pos in viewModel.handleTap(pos) },
+                onMeasureTap: { point, view in
+                    viewModel.handleTap(screenPoint: point, in: view)
+                },
+                onViewReady: { view in viewModel.attach(view: view) },
                 measureMode: viewModel.mode == .measure
             )
             .ignoresSafeArea()
@@ -81,6 +85,11 @@ struct ViewerView: View {
         .task {
             await viewModel.loadFile(url: file.fileURL)
         }
+        .sheet(isPresented: $showSettings) {
+            // `SettingsView` supplies its own title and "完成" button, so it needs a
+            // navigation container of its own when presented as a sheet.
+            NavigationStack { SettingsView() }
+        }
     }
 
     private var errorBinding: Binding<Bool> {
@@ -92,7 +101,7 @@ struct ViewerView: View {
 
     private var instructionText: String {
         switch viewModel.measureType {
-        case .distance, .linear: return "点选模型上的两个点"
+        case .distance, .linear: return "点选两点；靠近顶点或圆心会自动吸附"
         case .angle: return "依次点选：点1、角顶点、点3"
         case .radius: return "在圆弧上点选三个点"
         }
@@ -126,7 +135,8 @@ struct ViewerView: View {
             }
             .padding(.vertical, 10)
 
-            if viewModel.measureType == .distance || viewModel.measureType == .linear {
+            if (viewModel.measureType == .distance || viewModel.measureType == .linear),
+               viewModel.pickedPoints.count >= 2 {
                 Divider()
                 HStack(spacing: 0) {
                     deltaColumn(label: "X", value: viewModel.pickedPoints[1].x - viewModel.pickedPoints[0].x, color: .red)
@@ -186,8 +196,18 @@ struct ViewerView: View {
 
     private var measureToolbar: some View {
         HStack(spacing: 0) {
-            Button { viewModel.toggleMeasureMode() } label: {
-                Image(systemName: "arrow.uturn.backward")
+            // Backsteps one point at a time so a mis-tap never forces the whole
+            // measurement to be restarted; leaves measure mode once there is nothing
+            // left to take back.
+            Button {
+                if viewModel.pickedPoints.isEmpty {
+                    viewModel.toggleMeasureMode()
+                } else {
+                    viewModel.undoLastPoint()
+                }
+            } label: {
+                Image(systemName: viewModel.pickedPoints.isEmpty
+                      ? "arrow.uturn.backward" : "arrow.uturn.backward.circle")
                     .font(.system(size: 18, weight: .medium))
                     .foregroundColor(.white)
                     .frame(width: 48, height: 48)
@@ -201,7 +221,7 @@ struct ViewerView: View {
                     }
                     Menu {
                         ForEach(DisplayUnit.allCases, id: \.self) { unit in
-                            Button(unit.rawValue) { viewModel.displayUnit = unit }
+                            Button(unit.rawValue) { viewModel.setUnit(unit) }
                         }
                     } label: {
                         VStack(spacing: 3) {
@@ -236,9 +256,26 @@ struct ViewerView: View {
     private var mainToolbar: some View {
         HStack(spacing: 0) {
             toolbarButton(icon: "ruler", label: "测量") { viewModel.toggleMeasureMode() }
-            toolbarButton(icon: "arrow.2.squarepath", label: "复位") { }
-            toolbarButton(icon: "cube", label: "视图") { }
-            toolbarButton(icon: "slider.horizontal.3", label: "设置") { }
+            toolbarButton(icon: "arrow.2.squarepath", label: "复位") { viewModel.resetView() }
+
+            Menu {
+                ForEach(ViewDirection.allCases) { direction in
+                    Button {
+                        viewModel.setViewDirection(direction)
+                    } label: {
+                        Label(direction.rawValue, systemImage: direction.icon)
+                    }
+                }
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "cube").font(.system(size: 20, weight: .medium))
+                    Text("视图").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity)
+            }
+
+            toolbarButton(icon: "slider.horizontal.3", label: "设置") { showSettings = true }
         }
         .padding(.horizontal, 8)
         .frame(height: 64)

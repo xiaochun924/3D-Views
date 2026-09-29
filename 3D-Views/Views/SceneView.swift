@@ -8,24 +8,35 @@ import SceneKit
 
 struct SceneView: UIViewRepresentable {
     let scene: SCNScene?
-    var onMeasureTap: ((SCNVector3) -> Void)?
+    /// Screen point plus the live renderer. Picking is done in the view model, in
+    /// screen space, so the tap must not be resolved to a world point here.
+    var onMeasureTap: ((CGPoint, SCNView) -> Void)?
+    /// Hands the renderer to the view model so it can size annotations in screen
+    /// space and command the camera the view is actually rendering through.
+    var onViewReady: ((SCNView) -> Void)?
     var measureMode: Bool
 
     func makeUIView(context: Context) -> SCNView {
         let scnView = SCNView()
         scnView.allowsCameraControl = true
         scnView.autoenablesDefaultLighting = false
+        // iOS defaults this to `.none` (macOS defaults to 4x), so without an explicit
+        // setting every edge on every iPhone and iPad is badly aliased.
         scnView.antialiasingMode = .multisampling4X
-        scnView.backgroundColor = UIColor(red: 0.93, green: 0.93, blue: 0.94, alpha: 1.0)
+        scnView.backgroundColor = UIColor(red: 0.91, green: 0.92, blue: 0.94, alpha: 1.0)
         scnView.scene = scene
 
+        // Simultaneous recognition is what lets SceneKit's own camera-control pans and
+        // pinches keep working alongside this tap.
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
         tap.numberOfTapsRequired = 1
         tap.cancelsTouchesInView = false
         tap.delegate = context.coordinator
         scnView.addGestureRecognizer(tap)
+
         context.coordinator.scnView = scnView
+        onViewReady?(scnView)
         return scnView
     }
 
@@ -45,7 +56,7 @@ struct SceneView: UIViewRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         weak var scnView: SCNView?
         var measureMode = false
-        var onMeasureTap: ((SCNVector3) -> Void)?
+        var onMeasureTap: ((CGPoint, SCNView) -> Void)?
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
@@ -53,42 +64,8 @@ struct SceneView: UIViewRepresentable {
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard measureMode, let scnView else { return }
-            let point = gesture.location(in: scnView)
-
-            let modelNode = scnView.scene?.rootNode.childNode(withName: "model", recursively: true)
-
-            var hits: [SCNHitTestResult] = []
-            if let modelNode {
-                hits = scnView.hitTest(point, options: [
-                    .rootNode: modelNode,
-                    .searchMode: SCNHitTestSearchMode.all.rawValue,
-                    .ignoreHiddenNodes: true
-                ])
-            }
-
-            if hits.isEmpty {
-                hits = scnView.hitTest(point, options: [
-                    .searchMode: SCNHitTestSearchMode.all.rawValue
-                ])
-            }
-
-            let worldPos: SCNVector3?
-            if let modelNode {
-                if let direct = hits.first(where: { $0.node === modelNode }) {
-                    worldPos = direct.worldCoordinates
-                } else if let any = hits.first {
-                    worldPos = modelNode.convertPosition(any.localCoordinates, from: any.node)
-                } else {
-                    worldPos = nil
-                }
-            } else {
-                worldPos = hits.first?.worldCoordinates
-            }
-
-            if let worldPos {
-                onMeasureTap?(worldPos)
-            }
+            guard measureMode, let scnView = gesture.view as? SCNView else { return }
+            onMeasureTap?(gesture.location(in: scnView), scnView)
         }
     }
 }
