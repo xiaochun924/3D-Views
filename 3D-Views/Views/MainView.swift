@@ -41,8 +41,21 @@ struct MainView: View {
                 viewModel.loadError = err.localizedDescription
             }
         }
+        .onOpenURL { url in
+            // File opened via "Open with" / share sheet from Files.app
+            Task { await viewModel.loadFile(url: url) }
+        }
         .sheet(isPresented: $showHelp) {
             HelpView()
+        }
+        .alert(isPresented: .constant(viewModel.loadError != nil)) {
+            Alert(
+                title: Text("Cannot open file"),
+                message: Text(viewModel.loadError ?? ""),
+                dismissButton: .default(Text("OK")) {
+                    viewModel.loadError = nil
+                }
+            )
         }
     }
 
@@ -172,6 +185,12 @@ struct HelpView: View {
                                     "STEP (.step / .stp) — native CAD exchange format.",
                                     "STL (.stl) — triangulated mesh.",
                                     "SolidWorks (.SLDPRT / .SLDASM) cannot be opened directly; please use File ▸ Save As ▸ STEP in SolidWorks first, then open the exported .step file here."
+                                ])
+                    helpSection(title: "How to open a file",
+                                items: [
+                                    "Method 1: tap the Open button in the dock, then pick a .step/.stp/.stl file.",
+                                    "Method 2: in the Files app, long-press a CAD file, choose Share ▸ 3D Views, or tap the file and pick 3D Views as the target app.",
+                                    "The model will load automatically once 3D Views opens."
                                 ])
                     helpSection(title: "Gestures",
                                 items: [
