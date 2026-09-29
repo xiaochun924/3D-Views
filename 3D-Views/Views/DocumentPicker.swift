@@ -2,8 +2,7 @@
 //  DocumentPicker.swift
 //  3D-Views
 //
-//  UIKit-backed document picker presented as a sheet. More reliable than
-//  SwiftUI's .fileImporter for custom CAD UTIs on iOS 17.
+//  UIKit-backed document picker presented as a sheet.
 //
 
 import SwiftUI
@@ -18,13 +17,8 @@ struct DocumentPicker: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        // Try our imported UTIs first, fall back to .data so every file is tappable.
-        var types: [UTType] = []
-        if let step = UTType("com.xiaochun.step") { types.append(step) }
-        if let stl = UTType("com.xiaochun.stl") { types.append(stl) }
-        types.append(.data)
-
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
+        // Use .data so ALL files are tappable in the browser, regardless of UTI.
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data])
         picker.allowsMultipleSelection = false
         picker.delegate = context.coordinator
         return picker
@@ -40,8 +34,13 @@ struct DocumentPicker: UIViewControllerRepresentable {
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            controller.dismiss(animated: true)
             guard let url = urls.first else { return }
             onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            controller.dismiss(animated: true)
         }
     }
 }
