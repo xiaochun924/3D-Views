@@ -63,7 +63,7 @@ struct SceneView: UIViewRepresentable {
 
             let hits = scnView.hitTest(point, options: [
                 .searchMode: SCNHitTestSearchMode.all.rawValue,
-                .ignoreChildNodesHitTest: false
+                .ignoreChildNodes: false
             ])
             guard let hit = hits.first else { return }
             let worldPos = hit.worldCoordinates
@@ -107,7 +107,6 @@ struct SceneView: UIViewRepresentable {
             let element = SCNGeometryElement(indices: [0, 1], primitiveType: .line)
             let geo = SCNGeometry(sources: [source], elements: [element])
             geo.firstMaterial?.diffuse.contents = UIColor.systemBlue
-            geo.firstMaterial?.lineWidth = 3
             let node = SCNNode(geometry: geo)
             node.name = lineNodeName
             root.addChildNode(node)
