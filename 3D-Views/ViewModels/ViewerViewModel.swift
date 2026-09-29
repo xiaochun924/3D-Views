@@ -56,7 +56,7 @@ final class ViewerViewModel: ObservableObject {
 
         let ext = url.pathExtension.lowercased()
         guard ext == "step" || ext == "stp" || ext == "stl" else {
-            loadError = "Unsupported file type. Please open a .step, .stp or .stl file."
+            loadError = "Unsupported file type."
             return
         }
 
@@ -117,7 +117,7 @@ final class ViewerViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Scene builder (from stl-viewer)
+    // MARK: - Scene builder
 
     static func buildScene(geometry: SCNGeometry, modelName: String) -> SCNScene {
         let scene = SCNScene()
@@ -125,7 +125,6 @@ final class ViewerViewModel: ObservableObject {
         let modelNode = SCNNode(geometry: geometry)
         modelNode.name = "model"
 
-        // Center the model using pivot
         let (bbMin, bbMax) = geometry.boundingBox
         let center = SCNVector3(
             (bbMin.x + bbMax.x) / 2,
@@ -138,8 +137,9 @@ final class ViewerViewModel: ObservableObject {
         let sizeX = bbMax.x - bbMin.x
         let sizeY = bbMax.y - bbMin.y
         let sizeZ = bbMax.z - bbMin.z
-        let maxDim = max(sizeX, sizeY, sizeZ, 1)
-        let camDist = maxDim * 2.0
+        let maxDim = max(max(sizeX, sizeY), sizeZ)
+        let safeDim = max(maxDim, 1)
+        let camDist = safeDim * 2.0
 
         // Camera
         let camera = SCNCamera()
