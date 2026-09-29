@@ -16,7 +16,6 @@ class PickerDelegate: NSObject, UIDocumentPickerDelegate {
         guard let url = urls.first else { return }
         onPick?(url)
     }
-
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         controller.dismiss(animated: true)
     }
@@ -37,8 +36,13 @@ struct MainView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            SceneView(viewModel: viewModel)
-                .ignoresSafeArea()
+            // 3D scene fills entire screen
+            SceneView(
+                scene: viewModel.scene,
+                onMeasureTap: { pos in viewModel.handleTap(pos) },
+                measureMode: viewModel.mode == .measurePoint
+            )
+            .ignoresSafeArea()
 
             floatingGlassBar
 
@@ -51,75 +55,43 @@ struct MainView: View {
         }
         .background(Color(.systemBackground))
         .onOpenURL { url in
-            debugMsg = "onOpenURL: \(url.lastPathComponent)"
+            debugMsg = "opening: \(url.lastPathComponent)"
             Task { await viewModel.loadFile(url: url) }
         }
-        .sheet(isPresented: $showHelp) {
-            HelpView()
-        }
+        .sheet(isPresented: $showHelp) { HelpView() }
         .alert(isPresented: errorBinding) {
-            Alert(
-                title: Text("Cannot open file"),
-                message: Text(viewModel.loadError ?? ""),
-                dismissButton: .default(Text("OK"))
-            )
+            Alert(title: Text("Error"),
+                  message: Text(viewModel.loadError ?? ""),
+                  dismissButton: .default(Text("OK")))
         }
     }
 
     private var debugBanner: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(debugMsg.isEmpty ? Color.gray : Color.orange)
-                    .frame(width: 8, height: 8)
-                Text(debugMsg.isEmpty ? "ready" : debugMsg)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .lineLimit(1)
-                if viewModel.isLoading {
-                    ProgressView().controlSize(.mini)
-                }
-            }
-            Text(viewModel.debugInfo)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
+        HStack(spacing: 6) {
+            Circle().fill(debugMsg.isEmpty ? Color.gray : Color.orange).frame(width: 8, height: 8)
+            Text(debugMsg.isEmpty ? "ready" : debugMsg)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .lineLimit(1)
+            if viewModel.isLoading { ProgressView().controlSize(.mini) }
         }
         .padding(.horizontal, 12)
-        .frame(minHeight: 28)
+        .frame(height: 28)
         .background(.ultraThinMaterial, in: Capsule())
         .padding(.top, 52)
     }
 
     private var floatingGlassBar: some View {
         HStack(spacing: 12) {
-            Button {
-                debugMsg = "tapped cube"
-            } label: {
-                Image(systemName: "cube.transparent")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 38, height: 38)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-
-            HStack(spacing: 6) {
-                Image(systemName: "rotate.3d")
-                    .font(.system(size: 12, weight: .semibold))
-                Text(viewModel.fileName.isEmpty ? "3D Views" : viewModel.fileName)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 38)
-            .background(.ultraThinMaterial, in: Capsule())
-
+            Text(viewModel.fileName.isEmpty ? "3D Views" : viewModel.fileName)
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 14)
+                .frame(height: 38)
+                .background(.ultraThinMaterial, in: Capsule())
             Spacer()
-
-            Button {
-                showHelp = true
-            } label: {
+            Button { showHelp = true } label: {
                 Image(systemName: "questionmark.circle")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
                     .frame(width: 38, height: 38)
                     .background(.ultraThinMaterial, in: Circle())
             }
@@ -132,21 +104,15 @@ struct MainView: View {
         VStack(spacing: 12) {
             if let dist = viewModel.lastDistance {
                 HStack(spacing: 8) {
-                    Image(systemName: "ruler")
-                        .foregroundStyle(.blue)
+                    Image(systemName: "ruler").foregroundStyle(.blue)
                     Text("Distance: \(viewModel.displayUnit.format(dist))")
                         .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    Button {
-                        viewModel.resetMeasurement()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                    Button { viewModel.resetMeasurement() } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
                 }
-                .padding(.horizontal, 16)
-                .frame(height: 40)
+                .padding(.horizontal, 16).frame(height: 40)
                 .background(.ultraThinMaterial, in: Capsule())
-                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(spacing: 12) {
@@ -154,12 +120,10 @@ struct MainView: View {
                     debugMsg = "opening picker..."
                     presentPicker()
                 }
-
                 dockButton(icon: "cube.box", label: "Test") {
-                    debugMsg = "Test cube tapped"
+                    debugMsg = "loading test cube..."
                     Task { await viewModel.loadTestCube() }
                 }
-
                 dockButton(
                     icon: viewModel.mode == .measurePoint ? "ruler.fill" : "ruler",
                     label: "Measure",
@@ -167,7 +131,6 @@ struct MainView: View {
                 ) {
                     viewModel.mode = viewModel.mode == .measurePoint ? .orbit : .measurePoint
                 }
-
                 Menu {
                     ForEach(DisplayUnit.allCases, id: \.self) { unit in
                         Button(unit.rawValue) { viewModel.displayUnit = unit }
@@ -177,14 +140,13 @@ struct MainView: View {
                 }
             }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.lastDistance != nil)
     }
 
     private func presentPicker() {
         let delegate = PickerDelegate()
         delegate.onPick = { url in
-            self.debugMsg = "picked: \(url.lastPathComponent)"
-            Task { await self.viewModel.loadFile(url: url) }
+            debugMsg = "got: \(url.lastPathComponent)"
+            Task { await viewModel.loadFile(url: url) }
         }
         self.pickerDelegate = delegate
 
@@ -198,34 +160,38 @@ struct MainView: View {
             debugMsg = "no root VC"
             return
         }
-
         rootVC.present(picker, animated: true)
         debugMsg = "picker shown"
     }
 
     private func dockButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            dockButtonContent(icon: icon, label: label, highlighted: highlighted)
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(highlighted ? Color.white : Color.primary)
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(highlighted ? Color.white : Color.secondary)
+            }
+            .frame(width: 60, height: 56)
+            .background {
+                if highlighted {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.blue)
+                } else {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.ultraThinMaterial)
+                }
+            }
         }
     }
 
-    private func dockButtonContent(icon: String, label: String, highlighted: Bool = false) -> some View {
+    private func dockButtonContent(icon: String, label: String) -> some View {
         VStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(highlighted ? Color.white : Color.primary)
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(highlighted ? Color.white : Color.secondary)
+            Image(systemName: icon).font(.system(size: 18, weight: .medium)).foregroundStyle(.primary)
+            Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
         }
         .frame(width: 60, height: 56)
-        .background {
-            if highlighted {
-                RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.blue)
-            } else {
-                RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.ultraThinMaterial)
-            }
-        }
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.ultraThinMaterial))
     }
 }
 
@@ -233,14 +199,11 @@ struct HelpView: View {
     @Environment(\.dismiss) var dismiss
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("3D Views").font(.title).bold()
-                    Text("STEP / STL viewer with measurement.")
-                    Text("Tap Open to pick a file, or Test to load a demo cube.")
-                }
-                .padding()
+            VStack(spacing: 12) {
+                Text("3D Views").font(.title).bold()
+                Text("STEP / STL viewer. Tap Open to import, Test for demo cube.")
             }
+            .padding()
             .navigationTitle("About")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
