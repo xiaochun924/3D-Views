@@ -224,7 +224,10 @@ enum Tessellator {
                       curve.type == "CIRCLE",
                       let poly = tessellateCurve(curve, resolver: resolver)
                 else { continue }
-                let c = poly.reduce(SCNVector3(0,0,0), +) / Float(poly.count)
+                let sum = poly.reduce(SCNVector3(0,0,0), +)
+                let c = SCNVector3(sum.x / Float(poly.count),
+                                   sum.y / Float(poly.count),
+                                   sum.z / Float(poly.count))
                 circles.append((c, poly))
             }
         }
