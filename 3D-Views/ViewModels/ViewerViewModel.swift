@@ -50,10 +50,29 @@ final class ViewerViewModel: ObservableObject {
             return
         }
 
+        // Incoming URLs (fileImporter, "Open in" from Files, share sheet) are
+        // security-scoped and may point to file providers (iCloud, etc.) whose
+        // contents are not yet on disk. Copy to a plain local temp file so the
+        // C++ OCCT loader gets a readable, absolute path.
         let needsAccess = url.startAccessingSecurityScopedResource()
-        defer {
+        let localURL: URL
+        do {
+            let fm = FileManager.default
+            let destDir = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("Incoming", isDirectory: true)
+            try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+            let dest = destDir.appendingPathComponent(url.lastPathComponent)
+            if fm.fileExists(atPath: dest.path) {
+                try fm.removeItem(at: dest)
+            }
+            try fm.copyItem(at: url, to: dest)
+            localURL = dest
+        } catch {
             if needsAccess { url.stopAccessingSecurityScopedResource() }
+            loadError = "Cannot read file: \(error.localizedDescription)"
+            return
         }
+        if needsAccess { url.stopAccessingSecurityScopedResource() }
 
         do {
             let root = SCNNode()
@@ -61,7 +80,7 @@ final class ViewerViewModel: ObservableObject {
 
             if ext == "step" || ext == "stp" {
                 // Use OpenCASCADE via OCCTSwift for full B-rep STEP parsing.
-                let shape = try Shape.loadSTEP(from: url)
+                let shape = try Shape.loadSTEP(from: localURL)
                 self.lengthUnit = "millimeter"
 
                 guard let mesh = shape.mesh(linearDeflection: 0.1, angularDeflection: 0.5) else {
@@ -86,7 +105,7 @@ final class ViewerViewModel: ObservableObject {
                 self.entityCount = 1
             } else {
                 // STL: use OCCT's STL reader as well.
-                guard let shape = Shape.readSTL(from: url.path) else {
+                guard let shape = Shape.readSTL(from: localURL.path) else {
                     loadError = "Failed to read STL file."
                     return
                 }
