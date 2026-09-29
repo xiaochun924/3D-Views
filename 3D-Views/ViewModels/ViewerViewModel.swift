@@ -84,7 +84,6 @@ final class ViewerViewModel: ObservableObject {
     static func buildScene(geometry: SCNGeometry) -> SCNScene {
         let scene = SCNScene()
 
-        // Material: clean light gray with blinn lighting
         let mat = SCNMaterial()
         mat.diffuse.contents = UIColor(red: 0.82, green: 0.86, blue: 0.92, alpha: 1.0)
         mat.specular.contents = UIColor(white: 0.3, alpha: 1.0)
@@ -113,28 +112,23 @@ final class ViewerViewModel: ObservableObject {
         let camDist = safeDim * 2.0
         let origin = SCNVector3(0, 0, 0)
 
-        // Camera
         let camera = SCNCamera()
         camera.automaticallyAdjustsZRange = true
-        camera.wantsHDR = true
         let cameraNode = SCNNode()
         cameraNode.camera = camera
         cameraNode.position = SCNVector3(0, camDist * 0.3, camDist)
         cameraNode.look(at: origin)
         scene.rootNode.addChildNode(cameraNode)
 
-        // Key light
         let keyLight = SCNLight()
         keyLight.type = .directional
         keyLight.intensity = 1200
-        keyLight.castsShadow = true
         let keyNode = SCNNode()
         keyNode.light = keyLight
         keyNode.position = SCNVector3(camDist, camDist, camDist)
         keyNode.look(at: origin)
         scene.rootNode.addChildNode(keyNode)
 
-        // Fill light
         let fillLight = SCNLight()
         fillLight.type = .omni
         fillLight.intensity = 600
@@ -143,7 +137,6 @@ final class ViewerViewModel: ObservableObject {
         fillNode.position = SCNVector3(-camDist * 0.8, camDist * 0.5, camDist * 0.5)
         scene.rootNode.addChildNode(fillNode)
 
-        // Rim light for edge definition
         let rimLight = SCNLight()
         rimLight.type = .directional
         rimLight.intensity = 800
@@ -154,7 +147,6 @@ final class ViewerViewModel: ObservableObject {
         rimNode.look(at: origin)
         scene.rootNode.addChildNode(rimNode)
 
-        // Ambient
         let ambient = SCNLight()
         ambient.type = .ambient
         ambient.intensity = 400
@@ -200,7 +192,6 @@ final class ViewerViewModel: ObservableObject {
         let markerSize: Float = 1.5
 
         for (i, point) in pickedPoints.enumerated() {
-            // Sphere marker
             let sphere = SCNSphere(radius: CGFloat(markerSize))
             let mat = SCNMaterial()
             mat.diffuse.contents = UIColor.systemBlue
@@ -212,7 +203,6 @@ final class ViewerViewModel: ObservableObject {
             marker.name = "measure_dot"
             group.addChildNode(marker)
 
-            // Label
             let label = SCNText(string: "\(i + 1)", extrusionDepth: 0.3)
             label.font = UIFont.boldSystemFont(ofSize: 8)
             label.firstMaterial?.diffuse.contents = UIColor.white
@@ -224,11 +214,11 @@ final class ViewerViewModel: ObservableObject {
             group.addChildNode(labelNode)
         }
 
-        // Line between two points
         if pickedPoints.count == 2 {
             let a = pickedPoints[0], b = pickedPoints[1]
             let source = SCNGeometrySource(vertices: [a, b])
-            let element = SCNGeometryElement(indices: [0, 1], primitiveType: .line)
+            let indices: [Int32] = [0, 1]
+            let element = SCNGeometryElement(indices: indices, primitiveType: .line)
             let lineGeo = SCNGeometry(sources: [source], elements: [element])
             let lineMat = SCNMaterial()
             lineMat.diffuse.contents = UIColor.systemBlue
@@ -238,7 +228,6 @@ final class ViewerViewModel: ObservableObject {
             lineNode.name = "measure_line"
             group.addChildNode(lineNode)
 
-            // Distance label at midpoint
             let mid = SCNVector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
             let dist = lastDistance ?? 0
             let text = SCNText(string: String(format: "%.2f %@", dist, displayUnit.rawValue), extrusionDepth: 0.2)
