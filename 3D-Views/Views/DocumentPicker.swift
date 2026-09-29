@@ -2,45 +2,61 @@
 //  DocumentPicker.swift
 //  3D-Views
 //
-//  UIKit-backed document picker presented as a sheet.
-//
 
 import SwiftUI
-import UniformTypeIdentifiers
 import UIKit
+import UniformTypeIdentifiers
 
-struct DocumentPicker: UIViewControllerRepresentable {
-    let onPick: (URL) -> Void
+/// 原生文件选择器（顶层模态直接弹出）
+/// 嵌套模态在部分 iOS 上会导致文件行不可点、选不中文件；
+/// 这里改成从当前最顶层控制器直接 present。
+/// asCopy: true —— 所选文件会被复制进 App 沙盒，读取无需安全作用域访问。
+final class DocumentPicker: NSObject, UIDocumentPickerDelegate {
+    static let shared = DocumentPicker()
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onPick: onPick)
-    }
+    private var onPicked: ((URL) -> Void)?
+    private var onCancel: (() -> Void)?
 
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        // Use .data so ALL files are tappable in the browser, regardless of UTI.
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data])
+    func present(allowedContentTypes: [UTType] = [.data],
+                 onPicked: @escaping (URL) -> Void,
+                 onCancel: @escaping () -> Void) {
+        guard let top = Self.topViewController() else {
+            onCancel()
+            return
+        }
+        self.onPicked = onPicked
+        self.onCancel = onCancel
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: allowedContentTypes, asCopy: true)
+        picker.delegate = self
         picker.allowsMultipleSelection = false
-        picker.delegate = context.coordinator
-        return picker
+        top.present(picker, animated: true)
     }
 
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        let cb = onPicked
+        onPicked = nil
+        onCancel = nil
+        cb?(url)
+    }
 
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        let cb = onCancel
+        onPicked = nil
+        onCancel = nil
+        cb?()
+    }
 
-        init(onPick: @escaping (URL) -> Void) {
-            self.onPick = onPick
+    private static func topViewController() -> UIViewController? {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive }),
+            let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        else { return nil }
+        var top = root
+        while let presented = top.presentedViewController {
+            top = presented
         }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            controller.dismiss(animated: true)
-            guard let url = urls.first else { return }
-            onPick(url)
-        }
-
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            controller.dismiss(animated: true)
-        }
+        return top
     }
 }
