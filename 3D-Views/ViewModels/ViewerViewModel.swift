@@ -27,25 +27,6 @@ final class ViewerViewModel: ObservableObject {
     @Published var pickedPoints: [SCNVector3] = []
     @Published var lastDistance: Float?
 
-    // MARK: - Test cube
-
-    func loadTestCube() async {
-        isLoading = true
-        loadError = nil
-        loadedFileName = "test-cube"
-        defer { isLoading = false }
-
-        let box = SCNBox(width: 50, height: 50, length: 50, chamferRadius: 3)
-        let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor.systemRed
-        mat.lightingModel = .blinn
-        box.materials = [mat]
-
-        scene = Self.buildScene(geometry: box)
-        fileName = "Test Cube"
-        debugInfo = "cube loaded"
-    }
-
     // MARK: - File loading
 
     func loadFile(url: URL) async {
@@ -56,11 +37,10 @@ final class ViewerViewModel: ObservableObject {
 
         let ext = url.pathExtension.lowercased()
         guard ext == "step" || ext == "stp" || ext == "stl" else {
-            loadError = "Unsupported file type."
+            loadError = "不支持的文件格式。"
             return
         }
 
-        // asCopy:true already gives us a local file; onOpenURL may need scoped access.
         let needsAccess = url.startAccessingSecurityScopedResource()
         defer { if needsAccess { url.stopAccessingSecurityScopedResource() } }
 
@@ -70,7 +50,7 @@ final class ViewerViewModel: ObservableObject {
             if ext == "step" || ext == "stp" {
                 let shape = try Shape.loadSTEP(from: url)
                 guard let mesh = shape.mesh(linearDeflection: 0.5, angularDeflection: 0.5) else {
-                    loadError = "Failed to tessellate STEP."
+                    loadError = "STEP 文件网格化失败。"
                     return
                 }
                 geometry = mesh.sceneKitGeometry()
@@ -81,11 +61,11 @@ final class ViewerViewModel: ObservableObject {
                 geometry.materials = [mat]
             } else {
                 guard let shape = Shape.readSTL(from: url.path) else {
-                    loadError = "Failed to read STL."
+                    loadError = "STL 文件读取失败。"
                     return
                 }
                 guard let mesh = shape.mesh(linearDeflection: 0.5) else {
-                    loadError = "Failed to tessellate STL."
+                    loadError = "STL 文件网格化失败。"
                     return
                 }
                 geometry = mesh.sceneKitGeometry()
@@ -97,9 +77,9 @@ final class ViewerViewModel: ObservableObject {
 
             scene = Self.buildScene(geometry: geometry)
             fileName = url.lastPathComponent
-            debugInfo = "loaded \(url.lastPathComponent)"
+            debugInfo = "已加载 \(url.lastPathComponent)"
         } catch {
-            loadError = "Failed to load: \(error.localizedDescription)"
+            loadError = "加载失败：\(error.localizedDescription)"
         }
     }
 
