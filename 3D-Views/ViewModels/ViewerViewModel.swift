@@ -29,8 +29,6 @@ final class ViewerViewModel: ObservableObject {
 
     private var measureGroup: SCNNode?
 
-    // MARK: - File loading
-
     func loadFile(url: URL) async {
         isLoading = true
         loadError = nil
@@ -48,7 +46,6 @@ final class ViewerViewModel: ObservableObject {
 
         do {
             let geometry: SCNGeometry
-
             if ext == "step" || ext == "stp" {
                 let shape = try Shape.loadSTEP(from: url)
                 guard let mesh = shape.mesh(linearDeflection: 0.1, angularDeflection: 0.2) else {
@@ -78,8 +75,6 @@ final class ViewerViewModel: ObservableObject {
             loadError = "加载失败：\(error.localizedDescription)"
         }
     }
-
-    // MARK: - Scene builder
 
     static func buildScene(geometry: SCNGeometry) -> SCNScene {
         let scene = SCNScene()
@@ -157,14 +152,10 @@ final class ViewerViewModel: ObservableObject {
         return scene
     }
 
-    // MARK: - Measurement
-
     func handleTap(_ worldPos: SCNVector3) {
         guard mode == .measurePoint else { return }
         pickedPoints.append(worldPos)
-        if pickedPoints.count > 2 {
-            pickedPoints = [worldPos]
-        }
+        if pickedPoints.count > 2 { pickedPoints = [worldPos] }
         if pickedPoints.count == 2 {
             let a = pickedPoints[0], b = pickedPoints[1]
             let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
@@ -188,7 +179,7 @@ final class ViewerViewModel: ObservableObject {
         let group = SCNNode()
         group.name = "measure_group"
 
-        for (i, point) in pickedPoints.enumerated() {
+        for point in pickedPoints {
             let sphere = SCNSphere(radius: 1.5)
             let mat = SCNMaterial()
             mat.diffuse.contents = UIColor.systemBlue
@@ -197,45 +188,7 @@ final class ViewerViewModel: ObservableObject {
             sphere.materials = [mat]
             let marker = SCNNode(geometry: sphere)
             marker.position = point
-            marker.name = "measure_dot"
             group.addChildNode(marker)
-
-            let label = SCNText(string: "\(i + 1)", extrusionDepth: 0.3)
-            label.font = UIFont.boldSystemFont(ofSize: 8)
-            label.firstMaterial?.diffuse.contents = UIColor.white
-            label.firstMaterial?.lightingModel = .constant
-            let labelNode = SCNNode(geometry: label)
-            labelNode.position = SCNVector3(point.x, point.y + 3, point.z)
-            labelNode.scale = SCNVector3(0.05, 0.05, 0.05)
-            group.addChildNode(labelNode)
-        }
-
-        if pickedPoints.count == 2, let dist = lastDistance {
-            let a = pickedPoints[0], b = pickedPoints[1]
-            let mid = SCNVector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
-
-            // Cylinder between points
-            let cylinder = SCNCylinder(radius: 0.4, height: CGFloat(dist))
-            let cylMat = SCNMaterial()
-            cylMat.diffuse.contents = UIColor.systemBlue
-            cylMat.lightingModel = .constant
-            cylinder.materials = [cylMat]
-            let cylNode = SCNNode(geometry: cylinder)
-            cylNode.position = mid
-            cylNode.look(at: b)
-            cylNode.eulerAngles.x += Float.pi / 2
-            group.addChildNode(cylNode)
-
-            // Distance label
-            let distStr = String(format: "%.2f", dist) + " " + displayUnit.rawValue
-            let text = SCNText(string: distStr, extrusionDepth: 0.2)
-            text.font = UIFont.boldSystemFont(ofSize: 8)
-            text.firstMaterial?.diffuse.contents = UIColor.systemBlue
-            text.firstMaterial?.lightingModel = .constant
-            let textNode = SCNNode(geometry: text)
-            textNode.position = SCNVector3(mid.x, mid.y + 3, mid.z)
-            textNode.scale = SCNVector3(0.05, 0.05, 0.05)
-            group.addChildNode(textNode)
         }
 
         scene.rootNode.addChildNode(group)
