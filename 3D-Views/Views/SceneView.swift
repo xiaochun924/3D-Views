@@ -23,36 +23,53 @@ struct SceneView: UIViewRepresentable {
         let cameraNode = SCNNode()
         cameraNode.camera = SCNCamera()
         cameraNode.camera?.fieldOfView = 60
-        cameraNode.position = SCNVector3(120, 90, 120)
+        cameraNode.position = SCNVector3(100, 80, 100)
         cameraNode.look(at: SCNVector3(0, 0, 0),
                         up: SCNVector3(0, 1, 0),
                         localFront: SCNVector3(0, 0, -1))
         scene.rootNode.addChildNode(cameraNode)
         scnView.pointOfView = cameraNode
 
-        // Ambient + directional lights.
+        // Lights
         let ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light?.type = .ambient
-        ambient.light?.intensity = 1000
+        ambient.light?.intensity = 1200
         scene.rootNode.addChildNode(ambient)
 
         let dirLight = SCNNode()
         dirLight.light = SCNLight()
         dirLight.light?.type = .directional
-        dirLight.light?.intensity = 1500
+        dirLight.light?.intensity = 2000
         dirLight.position = SCNVector3(50, 100, 50)
         dirLight.look(at: SCNVector3(0, 0, 0),
                       up: SCNVector3(0, 1, 0),
                       localFront: SCNVector3(0, 0, -1))
         scene.rootNode.addChildNode(dirLight)
 
-        // Simple floor plane for spatial reference.
+        // DEBUG: Hardcoded red cube at origin — should be visible on launch.
+        let debugBox = SCNBox(width: 40, height: 40, length: 40, chamferRadius: 2)
+        let debugMat = SCNMaterial()
+        debugMat.diffuse.contents = UIColor.systemRed
+        debugMat.lightingModel = .blinn
+        debugBox.materials = [debugMat]
+        let debugNode = SCNNode(geometry: debugBox)
+        debugNode.position = SCNVector3(0, 20, 0)
+        scene.rootNode.addChildNode(debugNode)
+
+        // DEBUG: Green sphere to the right.
+        let debugSphere = SCNSphere(radius: 15)
+        debugSphere.firstMaterial?.diffuse.contents = UIColor.systemGreen
+        let sphereNode = SCNNode(geometry: debugSphere)
+        sphereNode.position = SCNVector3(60, 15, 0)
+        scene.rootNode.addChildNode(sphereNode)
+
+        // Floor plane.
         let floor = SCNPlane(width: 300, height: 300)
         floor.firstMaterial?.diffuse.contents = UIColor.systemGray5
         floor.firstMaterial?.isDoubleSided = true
         let floorNode = SCNNode(geometry: floor)
-        floorNode.position = SCNVector3(0, -40, 0)
+        floorNode.position = SCNVector3(0, 0, 0)
         floorNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
         scene.rootNode.addChildNode(floorNode)
 
@@ -91,7 +108,6 @@ struct SceneView: UIViewRepresentable {
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let scnView else { return }
             let point = gesture.location(in: scnView)
-
             let hits = scnView.hitTest(point, options: [
                 .searchMode: SCNHitTestSearchMode.all.rawValue,
                 .ignoreChildNodes: false
@@ -100,7 +116,6 @@ struct SceneView: UIViewRepresentable {
             let worldPos = hit.worldCoordinates
             guard let root = loadedRoot else { return }
             let local = root.convertPosition(worldPos, from: nil)
-
             guard viewModel.mode == .measurePoint else { return }
             let countBefore = viewModel.pickedPoints.count
             viewModel.addPickedPoint(local)
@@ -152,7 +167,6 @@ struct SceneView: UIViewRepresentable {
             )
             let extent = box.max.x - box.min.x
             let dist = max(extent * 1.5 + 30, 80)
-
             guard let camera = scnView.pointOfView else { return }
             let worldCenter = node.convertPosition(center, to: nil)
             camera.position = SCNVector3(worldCenter.x + dist,
