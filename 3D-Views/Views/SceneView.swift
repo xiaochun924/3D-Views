@@ -16,12 +16,13 @@ struct SceneView: UIViewRepresentable {
         scnView.allowsCameraControl = true
         scnView.autoenablesDefaultLighting = false
         scnView.antialiasingMode = .multisampling4X
-        scnView.backgroundColor = UIColor.systemBackground
+        scnView.backgroundColor = UIColor(red: 0.93, green: 0.93, blue: 0.94, alpha: 1.0)
         scnView.scene = scene
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
         tap.numberOfTapsRequired = 1
+        tap.cancelsTouchesInView = false
         scnView.addGestureRecognizer(tap)
         context.coordinator.scnView = scnView
         return scnView
@@ -52,7 +53,11 @@ struct SceneView: UIViewRepresentable {
                 .searchMode: SCNHitTestSearchMode.closest.rawValue,
                 .ignoreHiddenNodes: true
             ])
-            guard let hit = hits.first(where: { $0.node.name?.hasPrefix("measure_") != true }) else { return }
+            // Skip measure overlay nodes, only hit actual model
+            guard let hit = hits.first(where: { node in
+                let name = node.node.name ?? ""
+                return !name.hasPrefix("measure_") && name != "edges"
+            }) else { return }
             onMeasureTap?(hit.worldCoordinates)
         }
     }
