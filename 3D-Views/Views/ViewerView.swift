@@ -36,7 +36,10 @@ struct ViewerView: View {
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
 
-            if viewModel.mode == .measure && viewModel.pickedPoints.isEmpty {
+            // Kept up until the measurement has all the picks it needs, not just until
+            // the first one: entity measurements often need two, and hiding the hint
+            // after one tap left the user with no idea what was still wanted.
+            if viewModel.mode == .measure && !viewModel.isComplete {
                 VStack {
                     Spacer().frame(height: 60)
                     HStack {
@@ -100,6 +103,13 @@ struct ViewerView: View {
     }
 
     private var instructionText: String {
+        // A STEP import keeps real B-rep topology, so the pick resolves to a face,
+        // edge or vertex and the kernel answers the question analytically. An STL is
+        // only a triangle shell — there is nothing under a tap but a point — so it
+        // keeps the older point-based wording.
+        if viewModel.usesEntityMeasurement {
+            return viewModel.measureType.entityHint
+        }
         switch viewModel.measureType {
         case .distance, .linear: return "点选两点；靠近顶点或圆心会自动吸附"
         case .angle: return "依次点选：点1、角顶点、点3"
@@ -136,14 +146,14 @@ struct ViewerView: View {
             .padding(.vertical, 10)
 
             if (viewModel.measureType == .distance || viewModel.measureType == .linear),
-               viewModel.pickedPoints.count >= 2 {
+               let delta = deltaVector {
                 Divider()
                 HStack(spacing: 0) {
-                    deltaColumn(label: "X", value: viewModel.pickedPoints[1].x - viewModel.pickedPoints[0].x, color: .red)
+                    deltaColumn(label: "X", value: delta.x, color: .red)
                     Divider().frame(height: 36)
-                    deltaColumn(label: "Y", value: viewModel.pickedPoints[1].y - viewModel.pickedPoints[0].y, color: .green)
+                    deltaColumn(label: "Y", value: delta.y, color: .green)
                     Divider().frame(height: 36)
-                    deltaColumn(label: "Z", value: viewModel.pickedPoints[1].z - viewModel.pickedPoints[0].z, color: .blue)
+                    deltaColumn(label: "Z", value: delta.z, color: .blue)
                 }
                 .padding(.vertical, 8)
             }
@@ -159,10 +169,56 @@ struct ViewerView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
             }
+
+            if !viewModel.pickedEntityNames.isEmpty {
+                Divider()
+                HStack(spacing: 8) {
+                    // Indexed rather than keyed by name: picking the same entity twice
+                    // is legal while a measurement is being assembled, and duplicate
+                    // ids would trip SwiftUI's identity check.
+                    ForEach(Array(viewModel.pickedEntityNames.enumerated()), id: \.offset) { entry in
+                        Text(entry.element)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+            }
+
+            if let message = viewModel.measureMessage {
+                Divider()
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                    Text(message)
+                        .font(.system(size: 11))
+                    Spacer()
+                }
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
         }
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, 24)
+    }
+
+    /// The vector between the two endpoints of the measurement.
+    ///
+    /// Prefers the kernel's own closest points: for two faces or two edges the
+    /// minimum-distance segment is generally nowhere near the tapped positions, so
+    /// differencing the taps would misreport the direction.
+    private var deltaVector: SCNVector3? {
+        if let a = viewModel.closestPointA, let b = viewModel.closestPointB {
+            return SCNVector3(b.x - a.x, b.y - a.y, b.z - a.z)
+        }
+        guard viewModel.pickedPoints.count >= 2 else { return nil }
+        let a = viewModel.pickedPoints[0]
+        let b = viewModel.pickedPoints[1]
+        return SCNVector3(b.x - a.x, b.y - a.y, b.z - a.z)
     }
 
     private var mainResultLabel: String {
