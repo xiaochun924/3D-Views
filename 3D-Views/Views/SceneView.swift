@@ -37,12 +37,14 @@ struct SceneView: UIViewRepresentable {
         ambient.light?.intensity = 800
         scene.rootNode.addChildNode(ambient)
 
-        // Simple grid floor for spatial reference.
-        let grid = SCNGrid()
-        let gridNode = SCNNode()
-        gridNode.geometry = grid
-        gridNode.position = SCNVector3(0, -25, 0)
-        scene.rootNode.addChildNode(gridNode)
+        // Simple floor plane for spatial reference.
+        let floor = SCNPlane(width: 200, height: 200)
+        floor.firstMaterial?.diffuse.contents = UIColor.systemGray6
+        floor.firstMaterial?.isDoubleSided = true
+        let floorNode = SCNNode(geometry: floor)
+        floorNode.position = SCNVector3(0, -25, 0)
+        floorNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+        scene.rootNode.addChildNode(floorNode)
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
@@ -135,7 +137,6 @@ struct SceneView: UIViewRepresentable {
             let (min, max) = node.boundingBox
             let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
             let extent = max.x - min.x
-            // Ensure a minimum distance so tiny models aren't glued to camera.
             let dist = max(CGFloat(extent) * 1.5 + 30, 60)
 
             guard let camera = scnView.pointOfView else { return }
@@ -143,7 +144,6 @@ struct SceneView: UIViewRepresentable {
             camera.position = SCNVector3(Float(worldCenter.x + dist),
                                          Float(worldCenter.y + dist * 0.7),
                                          Float(worldCenter.z + dist))
-            // localFront (0,0,-1) = the camera's viewing direction points AT the target.
             camera.look(at: worldCenter,
                         up: SCNVector3(0, 1, 0),
                         localFront: SCNVector3(0, 0, -1))
