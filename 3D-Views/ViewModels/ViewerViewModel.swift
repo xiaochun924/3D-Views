@@ -6,6 +6,8 @@
 import Foundation
 import SceneKit
 import SwiftUI
+import OCCTSwift
+
 enum InteractionMode: Equatable {
     case orbit
     case measurePoint
@@ -20,6 +22,7 @@ final class ViewerViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var loadError: String?
     @Published var entityCount: Int = 0
+    @Published var triangleCount: Int = 0
     @Published var lengthUnit: String = "millimeter"
 
     /// The root node holding the loaded CAD geometry.
@@ -33,9 +36,6 @@ final class ViewerViewModel: ObservableObject {
     /// Picked points in model coordinates.
     @Published var pickedPoints: [SCNVector3] = []
     @Published var lastDistance: Float?
-
-    @Published var showWireframe: Bool = true
-    @Published var showShaded: Bool = true
 
     // MARK: - Loading
 
@@ -56,36 +56,59 @@ final class ViewerViewModel: ObservableObject {
         }
 
         do {
-            let data = try Data(contentsOf: url)
             let root = SCNNode()
             root.name = "CADRoot"
 
             if ext == "step" || ext == "stp" {
-                guard let text = String(data: data, encoding: .ascii) ?? String(data: data, encoding: .utf8) else {
-                    loadError = "Could not read STEP file as text."
+                // Use OpenCASCADE via OCCTSwift for full B-rep STEP parsing.
+                let shape = try Shape.loadSTEP(from: url)
+                self.lengthUnit = "millimeter"
+
+                guard let mesh = shape.mesh(linearDeflection: 0.1, angularDeflection: 0.5) else {
+                    loadError = "Failed to tessellate the STEP model."
                     return
                 }
-                let model = try STEPParser.parse(text: text)
-                self.lengthUnit = model.lengthUnit
-                self.entityCount = model.entities.count
 
-                let geom = Tessellator.build(model)
+                let geometry = mesh.sceneKitGeometry()
+                let material = SCNMaterial()
+                material.diffuse.contents = UIColor(red: 0.75, green: 0.82, blue: 0.92, alpha: 1.0)
+                material.lightingModel = .physicallyBased
+                material.metalness.contents = 0.2
+                material.roughness.contents = 0.6
+                material.isDoubleSided = true
+                geometry.materials = [material]
 
-                if showShaded {
-                    for g in geom.surfaceMeshes {
-                        root.addChildNode(SCNNode(geometry: g))
-                    }
-                }
-                if showWireframe {
-                    for poly in geom.edgePolylines {
-                        root.addChildNode(makeEdgePolyline(poly))
-                    }
-                }
+                let partNode = SCNNode(geometry: geometry)
+                partNode.name = "step-part"
+                root.addChildNode(partNode)
+
+                self.triangleCount = mesh.triangleCount
+                self.entityCount = 1
             } else {
-                if let g = STLParser.parse(data: data) {
-                    root.addChildNode(SCNNode(geometry: g))
+                // STL: use OCCT's STL reader as well.
+                guard let shape = Shape.readSTL(from: url.path) else {
+                    loadError = "Failed to read STL file."
+                    return
                 }
-                self.entityCount = 0
+                guard let mesh = shape.mesh(linearDeflection: 0.1) else {
+                    loadError = "Failed to tessellate STL mesh."
+                    return
+                }
+
+                let geometry = mesh.sceneKitGeometry()
+                let material = SCNMaterial()
+                material.diffuse.contents = UIColor(red: 0.70, green: 0.78, blue: 0.88, alpha: 1.0)
+                material.lightingModel = .physicallyBased
+                material.metalness.contents = 0.1
+                material.roughness.contents = 0.7
+                geometry.materials = [material]
+
+                let stlNode = SCNNode(geometry: geometry)
+                stlNode.name = "stl-part"
+                root.addChildNode(stlNode)
+
+                self.triangleCount = mesh.triangleCount
+                self.entityCount = 1
             }
 
             let (min, max) = root.boundingBox
@@ -101,30 +124,13 @@ final class ViewerViewModel: ObservableObject {
         }
     }
 
-    private func makeEdgePolyline(_ points: [SCNVector3]) -> SCNNode {
-        guard points.count >= 2 else { return SCNNode() }
-        let source = SCNGeometrySource(vertices: points)
-        var indices: [Int32] = []
-        for i in 0..<(points.count - 1) {
-            indices.append(Int32(i))
-            indices.append(Int32(i + 1))
-        }
-        let element = SCNGeometryElement(indices: indices, primitiveType: .line)
-        let geo = SCNGeometry(sources: [source], elements: [element])
-        let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor.darkGray
-        mat.isLitPerPixel = false
-        geo.materials = [mat]
-        return SCNNode(geometry: geo)
-    }
-
     // MARK: - Measurement
 
     func addPickedPoint(_ point: SCNVector3) {
         pickedPoints.append(point)
         if pickedPoints.count == 2 {
             let a = pickedPoints[0], b = pickedPoints[1]
-            lastDistance = (b - a).length()
+            lastDistance = distance(between: a, and: b)
         } else if pickedPoints.count > 2 {
             pickedPoints = [point]
             lastDistance = nil
@@ -134,5 +140,14 @@ final class ViewerViewModel: ObservableObject {
     func resetMeasurement() {
         pickedPoints = []
         lastDistance = nil
+    }
+
+    // MARK: - Math helpers (replaces SCNVector3 operator extensions)
+
+    private func distance(between a: SCNVector3, and b: SCNVector3) -> Float {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let dz = b.z - a.z
+        return (dx*dx + dy*dy + dz*dz).squareRoot()
     }
 }
