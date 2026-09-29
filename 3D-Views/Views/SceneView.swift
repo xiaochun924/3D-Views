@@ -19,11 +19,30 @@ struct SceneView: UIViewRepresentable {
         scnView.defaultCameraController.interactionMode = .orbitTurntable
         scnView.antialiasingMode = .multisampling4X
 
+        // Camera positioned diagonally, looking at origin.
         let cameraNode = SCNNode()
         cameraNode.camera = SCNCamera()
-        cameraNode.position = SCNVector3(150, 150, 150)
+        cameraNode.camera?.fieldOfView = 60
+        cameraNode.position = SCNVector3(120, 90, 120)
+        cameraNode.look(at: SCNVector3(0, 0, 0),
+                        up: SCNVector3(0, 1, 0),
+                        localFront: SCNVector3(0, 0, -1))
         scene.rootNode.addChildNode(cameraNode)
         scnView.pointOfView = cameraNode
+
+        // Ambient light so the scene isn't pitch black.
+        let ambient = SCNNode()
+        ambient.light = SCNLight()
+        ambient.light?.type = .ambient
+        ambient.light?.intensity = 800
+        scene.rootNode.addChildNode(ambient)
+
+        // Simple grid floor for spatial reference.
+        let grid = SCNGrid()
+        let gridNode = SCNNode()
+        gridNode.geometry = grid
+        gridNode.position = SCNVector3(0, -25, 0)
+        scene.rootNode.addChildNode(gridNode)
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
@@ -116,11 +135,18 @@ struct SceneView: UIViewRepresentable {
             let (min, max) = node.boundingBox
             let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
             let extent = max.x - min.x
-            let dist = CGFloat(extent) * 2.5 + 50
+            // Ensure a minimum distance so tiny models aren't glued to camera.
+            let dist = max(CGFloat(extent) * 1.5 + 30, 60)
 
             guard let camera = scnView.pointOfView else { return }
-            camera.position = SCNVector3(Float(dist), Float(dist * 0.8), Float(dist))
-            camera.look(at: node.convertPosition(center, to: nil))
+            let worldCenter = node.convertPosition(center, to: nil)
+            camera.position = SCNVector3(Float(worldCenter.x + dist),
+                                         Float(worldCenter.y + dist * 0.7),
+                                         Float(worldCenter.z + dist))
+            // localFront (0,0,-1) = the camera's viewing direction points AT the target.
+            camera.look(at: worldCenter,
+                        up: SCNVector3(0, 1, 0),
+                        localFront: SCNVector3(0, 0, -1))
         }
     }
 }
