@@ -10,9 +10,9 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: 3D-Views
+      - path: .
     info:
-      path: 3D-Views/Info.plist
+      path: Info.plist
       properties:
         UILaunchScreen:
           UIColorName: ""
@@ -50,7 +50,7 @@ targets:
         MARKETING_VERSION: 1.0
         CURRENT_PROJECT_VERSION: 1
         GENERATE_INFOPLIST_FILE: false
-        INFOPLIST_FILE: 3D-Views/Info.plist
+        INFOPLIST_FILE: Info.plist
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
