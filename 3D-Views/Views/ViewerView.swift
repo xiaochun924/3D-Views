@@ -12,7 +12,9 @@ struct ViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack {
+            Color(.systemGray6).ignoresSafeArea()
+
             SceneView(
                 scene: viewModel.scene,
                 onMeasureTap: { pos in viewModel.handleTap(pos) },
@@ -21,16 +23,28 @@ struct ViewerView: View {
             .ignoresSafeArea()
 
             VStack {
-                debugBanner
+                HStack {
+                    if viewModel.isLoading {
+                        ProgressView()
+                            .tint(.white)
+                        Text("加载中...")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white)
+                    }
+                }
+                .padding(.top, 8)
                 Spacer()
-                bottomDock
             }
-            .padding(.bottom, 24)
+
+            VStack {
+                Spacer()
+                bottomBar
+            }
         }
-        .background(Color(.systemBackground))
         .navigationTitle(file.fileName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
+        .toolbarBackground(.hidden)
         .alert(isPresented: errorBinding) {
             Alert(title: Text("错误"),
                   message: Text(viewModel.loadError ?? ""),
@@ -48,81 +62,70 @@ struct ViewerView: View {
         )
     }
 
-    private var debugBanner: some View {
-        HStack(spacing: 6) {
-            Circle().fill(viewModel.isLoading ? Color.orange : Color.green).frame(width: 8, height: 8)
-            Text(viewModel.isLoading ? "加载中..." : (viewModel.debugInfo.isEmpty ? "就绪" : viewModel.debugInfo))
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .lineLimit(1)
-            if viewModel.isLoading { ProgressView().controlSize(.mini) }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 28)
-        .background(.ultraThinMaterial, in: Capsule())
-        .padding(.top, 8)
-    }
-
-    private var bottomDock: some View {
-        VStack(spacing: 12) {
+    private var bottomBar: some View {
+        VStack(spacing: 10) {
             if let dist = viewModel.lastDistance {
                 HStack(spacing: 8) {
-                    Image(systemName: "ruler").foregroundStyle(.blue)
-                    Text("距离: \(viewModel.displayUnit.format(dist))")
+                    Image(systemName: "ruler")
+                    Text(viewModel.displayUnit.format(dist))
                         .font(.system(size: 15, weight: .semibold, design: .monospaced))
                     Button { viewModel.resetMeasurement() } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        Image(systemName: "xmark.circle.fill")
                     }
                 }
                 .padding(.horizontal, 16).frame(height: 40)
                 .background(.ultraThinMaterial, in: Capsule())
             }
 
-            HStack(spacing: 12) {
-                dockButton(
-                    icon: viewModel.mode == .measurePoint ? "ruler.fill" : "ruler",
-                    label: viewModel.mode == .measurePoint ? "测量中" : "测量",
-                    highlighted: viewModel.mode == .measurePoint
-                ) {
+            HStack(spacing: 0) {
+                toolbarButton(icon: "ruler", label: "测量", highlighted: viewModel.mode == .measurePoint) {
                     viewModel.mode = viewModel.mode == .measurePoint ? .orbit : .measurePoint
+                }
+                toolbarButton(icon: "arrow.2.squarepath", label: "复位") {
+                    // TODO: reset camera
+                }
+                toolbarButton(icon: "cube", label: "视图") {
+                    // TODO: view presets
                 }
                 Menu {
                     ForEach(DisplayUnit.allCases, id: \.self) { unit in
                         Button(unit.rawValue) { viewModel.displayUnit = unit }
                     }
                 } label: {
-                    dockButtonContent(icon: "units", label: viewModel.displayUnit.rawValue)
+                    toolbarButtonContent(icon: "units", label: viewModel.displayUnit.rawValue)
                 }
             }
+            .padding(.horizontal, 8)
+            .frame(height: 64)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
         }
     }
 
-    private func dockButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
+    private func toolbarButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(highlighted ? Color.white : Color.primary)
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(highlighted ? Color.blue : Color.primary)
                 Text(label)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(highlighted ? Color.white : Color.secondary)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(highlighted ? Color.blue : Color.secondary)
             }
-            .frame(width: 60, height: 56)
-            .background {
-                if highlighted {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.blue)
-                } else {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.ultraThinMaterial)
-                }
-            }
+            .frame(maxWidth: .infinity)
         }
     }
 
-    private func dockButtonContent(icon: String, label: String) -> some View {
+    private func toolbarButtonContent(icon: String, label: String) -> some View {
         VStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 18, weight: .medium)).foregroundStyle(.primary)
-            Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.primary)
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
         }
-        .frame(width: 60, height: 56)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.ultraThinMaterial))
+        .frame(maxWidth: .infinity)
     }
 }
