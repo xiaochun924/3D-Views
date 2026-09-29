@@ -5,12 +5,21 @@ options:
   deploymentTarget:
     iOS: "17.0"
   generateEmptyDirectories: true
+packages:
+  OCCTSwift:
+    url: https://github.com/SecondMouseAU/OCCTSwift.git
+    from: 3.0.0
 targets:
   3D-Views:
     type: application
     platform: iOS
     sources:
       - path: .
+        excludes:
+          - Models/STEP/**
+          - Models/Mesh/**
+    dependencies:
+      - package: OCCTSwift
     info:
       path: Info.plist
       properties:
@@ -29,17 +38,38 @@ targets:
         CFBundleDisplayName: 3D Views
         CFBundleDevelopmentRegion: zh_CN
         CFBundleDocumentTypes:
-          - CFBundleTypeName: STEP document
+          - CFBundleTypeName: STEP CAD File
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
+            CFBundleTypeExtensions:
+              - step
+              - stp
             LSItemContentTypes:
               - public.data
-          - CFBundleTypeName: STL mesh
+          - CFBundleTypeName: STL Mesh
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
+            CFBundleTypeExtensions:
+              - stl
             LSItemContentTypes:
               - public.data
-        LSSupportsOpeningDocumentsInPlace: false
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.xiaochun.step
+            UTTypeDescription: STEP CAD File
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - step
+                - stp
+          - UTTypeIdentifier: com.xiaochun.stl
+            UTTypeDescription: STL Mesh
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - stl
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews
