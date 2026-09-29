@@ -5,10 +5,10 @@
 
 import Foundation
 
-struct RecentFile: Codable, Identifiable, Equatable {
+struct RecentFile: Codable, Identifiable, Hashable, Equatable {
     let id: UUID
     let fileName: String
-    let localPath: String  // relative to Documents/Imported/
+    let localPath: String
     let openedAt: Date
 
     var fileURL: URL {
@@ -34,7 +34,6 @@ final class FileHistory: ObservableObject {
         let importedDir = docs.appendingPathComponent("Imported")
         try? FileManager.default.createDirectory(at: importedDir, withIntermediateDirectories: true)
 
-        // Copy to Documents/Imported/ with a stable name
         let dest = importedDir.appendingPathComponent(sourceURL.lastPathComponent)
         try? FileManager.default.removeItem(at: dest)
         try? FileManager.default.copyItem(at: sourceURL, to: dest)
@@ -46,7 +45,6 @@ final class FileHistory: ObservableObject {
             openedAt: Date()
         )
         files.insert(entry, at: 0)
-        // Keep max 20
         if files.count > 20 { files = Array(files.prefix(20)) }
         save()
         return entry
