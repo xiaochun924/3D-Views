@@ -67,7 +67,7 @@ final class ViewerViewModel: ObservableObject {
 
             scene = Self.buildScene(geometry: geometry)
             fileName = url.lastPathComponent
-            debugInfo = "已加载 \(url.lastPathComponent)"
+            debugInfo = "已加载"
             pickedPoints = []
             lastDistance = nil
             measureGroup = nil
@@ -79,16 +79,27 @@ final class ViewerViewModel: ObservableObject {
     static func buildScene(geometry: SCNGeometry) -> SCNScene {
         let scene = SCNScene()
 
+        // Material: steel blue with specular highlight
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.82, green: 0.86, blue: 0.92, alpha: 1.0)
-        mat.specular.contents = UIColor(white: 0.3, alpha: 1.0)
-        mat.shininess = 0.4
-        mat.lightingModel = .blinn
+        mat.diffuse.contents = UIColor(red: 0.35, green: 0.55, blue: 0.75, alpha: 1.0)
+        mat.specular.contents = UIColor(white: 0.6, alpha: 1.0)
+        mat.shininess = 0.6
+        mat.lightingModel = .phong
         mat.isDoubleSided = true
         geometry.materials = [mat]
 
         let modelNode = SCNNode(geometry: geometry)
         modelNode.name = "model"
+
+        // Edge overlay: same geometry as lines, dark color
+        let edgeMat = SCNMaterial()
+        edgeMat.diffuse.contents = UIColor(red: 0.1, green: 0.2, blue: 0.35, alpha: 0.8)
+        edgeMat.fillMode = .lines
+        edgeMat.lightingModel = .constant
+        let edgeNode = SCNNode(geometry: geometry.copy() as? SCNGeometry ?? geometry)
+        edgeNode.geometry?.materials = [edgeMat]
+        edgeNode.name = "edges"
+        modelNode.addChildNode(edgeNode)
 
         let (bbMin, bbMax) = geometry.boundingBox
         let center = SCNVector3(
@@ -107,6 +118,7 @@ final class ViewerViewModel: ObservableObject {
         let camDist = safeDim * 2.0
         let origin = SCNVector3(0, 0, 0)
 
+        // Camera
         let camera = SCNCamera()
         camera.automaticallyAdjustsZRange = true
         let cameraNode = SCNNode()
@@ -115,36 +127,43 @@ final class ViewerViewModel: ObservableObject {
         cameraNode.look(at: origin)
         scene.rootNode.addChildNode(cameraNode)
 
+        // Key light - strong directional from top-right
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 1200
+        keyLight.intensity = 1500
         let keyNode = SCNNode()
         keyNode.light = keyLight
-        keyNode.position = SCNVector3(camDist, camDist, camDist)
+        keyNode.position = SCNVector3(camDist * 0.6, camDist, camDist * 0.6)
         keyNode.look(at: origin)
         scene.rootNode.addChildNode(keyNode)
 
+        // Fill light from left
         let fillLight = SCNLight()
-        fillLight.type = .omni
-        fillLight.intensity = 600
+        fillLight.type = .directional
+        fillLight.intensity = 500
+        fillLight.color = UIColor(white: 0.85, alpha: 1.0)
         let fillNode = SCNNode()
         fillNode.light = fillLight
-        fillNode.position = SCNVector3(-camDist * 0.8, camDist * 0.5, camDist * 0.5)
+        fillNode.position = SCNVector3(-camDist * 0.7, camDist * 0.3, camDist * 0.5)
+        fillNode.look(at: origin)
         scene.rootNode.addChildNode(fillNode)
 
-        let rimLight = SCNLight()
-        rimLight.type = .directional
-        rimLight.intensity = 800
-        rimLight.color = UIColor(white: 0.9, alpha: 1.0)
-        let rimNode = SCNNode()
-        rimNode.light = rimLight
-        rimNode.position = SCNVector3(-camDist * 0.3, camDist * 0.6, -camDist)
-        rimNode.look(at: origin)
-        scene.rootNode.addChildNode(rimNode)
+        // Back light for rim
+        let backLight = SCNLight()
+        backLight.type = .directional
+        backLight.intensity = 700
+        backLight.color = UIColor(white: 0.9, alpha: 1.0)
+        let backNode = SCNNode()
+        backNode.light = backLight
+        backNode.position = SCNVector3(0, camDist * 0.5, -camDist)
+        backNode.look(at: origin)
+        scene.rootNode.addChildNode(backNode)
 
+        // Low ambient
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 400
+        ambient.intensity = 200
+        ambient.color = UIColor(white: 0.7, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.light = ambient
         scene.rootNode.addChildNode(ambientNode)
@@ -182,8 +201,8 @@ final class ViewerViewModel: ObservableObject {
         for point in pickedPoints {
             let sphere = SCNSphere(radius: 1.5)
             let mat = SCNMaterial()
-            mat.diffuse.contents = UIColor.systemBlue
-            mat.emission.contents = UIColor.systemBlue
+            mat.diffuse.contents = UIColor.systemRed
+            mat.emission.contents = UIColor.systemRed
             mat.lightingModel = .constant
             sphere.materials = [mat]
             let marker = SCNNode(geometry: sphere)
