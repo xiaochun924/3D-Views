@@ -41,7 +41,7 @@ final class ViewerViewModel: ObservableObject {
         mat.lightingModel = .blinn
         box.materials = [mat]
 
-        scene = Self.buildScene(geometry: box, modelName: "Test Cube")
+        scene = Self.buildScene(geometry: box)
         fileName = "Test Cube"
         debugInfo = "cube loaded"
     }
@@ -109,7 +109,7 @@ final class ViewerViewModel: ObservableObject {
                 geometry.materials = [mat]
             }
 
-            scene = Self.buildScene(geometry: geometry, modelName: url.lastPathComponent)
+            scene = Self.buildScene(geometry: geometry)
             fileName = url.lastPathComponent
             debugInfo = "loaded \(url.lastPathComponent)"
         } catch {
@@ -119,7 +119,7 @@ final class ViewerViewModel: ObservableObject {
 
     // MARK: - Scene builder
 
-    static func buildScene(geometry: SCNGeometry, modelName: String) -> SCNScene {
+    static func buildScene(geometry: SCNGeometry) -> SCNScene {
         let scene = SCNScene()
 
         let modelNode = SCNNode(geometry: geometry)
@@ -140,6 +140,7 @@ final class ViewerViewModel: ObservableObject {
         let maxDim = max(max(sizeX, sizeY), sizeZ)
         let safeDim = max(maxDim, 1)
         let camDist = safeDim * 2.0
+        let origin = SCNVector3(0, 0, 0)
 
         // Camera
         let camera = SCNCamera()
@@ -147,7 +148,7 @@ final class ViewerViewModel: ObservableObject {
         let cameraNode = SCNNode()
         cameraNode.camera = camera
         cameraNode.position = SCNVector3(0, camDist * 0.3, camDist)
-        cameraNode.look(at: SCNVector3Zero)
+        cameraNode.look(at: origin)
         scene.rootNode.addChildNode(cameraNode)
 
         // Key light
@@ -157,7 +158,7 @@ final class ViewerViewModel: ObservableObject {
         let keyNode = SCNNode()
         keyNode.light = keyLight
         keyNode.position = SCNVector3(camDist, camDist, camDist)
-        keyNode.look(at: SCNVector3Zero)
+        keyNode.look(at: origin)
         scene.rootNode.addChildNode(keyNode)
 
         // Fill light
