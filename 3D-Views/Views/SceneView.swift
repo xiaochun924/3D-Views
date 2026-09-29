@@ -18,7 +18,6 @@ struct SceneView: UIViewRepresentable {
         scnView.antialiasingMode = .multisampling8X
         scnView.backgroundColor = UIColor.systemBackground
         scnView.scene = scene
-        scnView.rendersContinuously = true
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
