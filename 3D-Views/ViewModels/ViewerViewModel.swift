@@ -25,6 +25,7 @@ final class ViewerViewModel: ObservableObject {
     @Published var entityCount: Int = 0
     @Published var triangleCount: Int = 0
     @Published var lengthUnit: String = "millimeter"
+    @Published var debugInfo: String = ""
 
     /// The root node holding the loaded CAD geometry.
     @Published var sceneRoot: SCNNode?
@@ -49,18 +50,24 @@ final class ViewerViewModel: ObservableObject {
         let root = SCNNode()
         root.name = "CADRoot"
 
-        let box = SCNBox(width: 40, height: 40, length: 40, chamferRadius: 2)
+        // Big bright cube with simple diffuse material (not PBR).
+        let box = SCNBox(width: 80, height: 80, length: 80, chamferRadius: 4)
         let material = SCNMaterial()
-        material.diffuse.contents = UIColor.systemBlue
-        material.lightingModel = .physicallyBased
+        material.diffuse.contents = UIColor.systemRed
+        material.lightingModel = .blinn
+        material.specular.contents = UIColor.white
         box.materials = [material]
 
         let node = SCNNode(geometry: box)
         node.name = "test-cube"
         root.addChildNode(node)
 
-        let (min, max) = root.boundingBox
-        let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
+        let boxBounds = root.boundingBox
+        let center = SCNVector3(
+            (boxBounds.min.x + boxBounds.max.x) / 2,
+            (boxBounds.min.y + boxBounds.max.y) / 2,
+            (boxBounds.min.z + boxBounds.max.z) / 2
+        )
         root.position = SCNVector3(-center.x, -center.y, -center.z)
 
         self.sceneRoot = root
@@ -69,6 +76,7 @@ final class ViewerViewModel: ObservableObject {
         self.entityCount = 1
         self.pickedPoints = []
         self.lastDistance = nil
+        self.debugInfo = "cube added, root children: \(root.childNodes.count)"
     }
 
     // MARK: - Loading
@@ -85,10 +93,6 @@ final class ViewerViewModel: ObservableObject {
             return
         }
 
-        // Incoming URLs (fileImporter, "Open in" from Files, share sheet) are
-        // security-scoped and may point to file providers (iCloud, etc.) whose
-        // contents are not yet on disk. Copy to a plain local temp file so the
-        // C++ OCCT loader gets a readable, absolute path.
         let needsAccess = url.startAccessingSecurityScopedResource()
         let localURL: URL
         do {
@@ -114,7 +118,6 @@ final class ViewerViewModel: ObservableObject {
             root.name = "CADRoot"
 
             if ext == "step" || ext == "stp" {
-                // Use OpenCASCADE via OCCTSwift for full B-rep STEP parsing.
                 let shape = try Shape.loadSTEP(from: localURL)
                 self.lengthUnit = "millimeter"
 
@@ -126,10 +129,7 @@ final class ViewerViewModel: ObservableObject {
                 let geometry = mesh.sceneKitGeometry()
                 let material = SCNMaterial()
                 material.diffuse.contents = UIColor(red: 0.75, green: 0.82, blue: 0.92, alpha: 1.0)
-                material.lightingModel = .physicallyBased
-                material.metalness.contents = 0.2
-                material.roughness.contents = 0.6
-                material.isDoubleSided = true
+                material.lightingModel = .blinn
                 geometry.materials = [material]
 
                 let partNode = SCNNode(geometry: geometry)
@@ -139,7 +139,6 @@ final class ViewerViewModel: ObservableObject {
                 self.triangleCount = mesh.triangleCount
                 self.entityCount = 1
             } else {
-                // STL: use OCCT's STL reader as well.
                 guard let shape = Shape.readSTL(from: localURL.path) else {
                     loadError = "Failed to read STL file."
                     return
@@ -152,9 +151,7 @@ final class ViewerViewModel: ObservableObject {
                 let geometry = mesh.sceneKitGeometry()
                 let material = SCNMaterial()
                 material.diffuse.contents = UIColor(red: 0.70, green: 0.78, blue: 0.88, alpha: 1.0)
-                material.lightingModel = .physicallyBased
-                material.metalness.contents = 0.1
-                material.roughness.contents = 0.7
+                material.lightingModel = .blinn
                 geometry.materials = [material]
 
                 let stlNode = SCNNode(geometry: geometry)
@@ -165,14 +162,19 @@ final class ViewerViewModel: ObservableObject {
                 self.entityCount = 1
             }
 
-            let (min, max) = root.boundingBox
-            let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
+            let boxBounds = root.boundingBox
+            let center = SCNVector3(
+                (boxBounds.min.x + boxBounds.max.x) / 2,
+                (boxBounds.min.y + boxBounds.max.y) / 2,
+                (boxBounds.min.z + boxBounds.max.z) / 2
+            )
             root.position = SCNVector3(-center.x, -center.y, -center.z)
 
             self.sceneRoot = root
             self.fileName = url.lastPathComponent
             self.pickedPoints = []
             self.lastDistance = nil
+            self.debugInfo = "loaded \(root.childNodes.count) nodes"
         } catch {
             loadError = "Failed to load file: \(error.localizedDescription)"
         }
