@@ -37,22 +37,24 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleDisplayName: 3D Views
         CFBundleDevelopmentRegion: zh_CN
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         CFBundleDocumentTypes:
           - CFBundleTypeName: STEP CAD File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: Default
             CFBundleTypeExtensions:
               - step
               - stp
             LSItemContentTypes:
-              - public.data
+              - com.xiaochun.step
           - CFBundleTypeName: STL Mesh
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: Default
             CFBundleTypeExtensions:
               - stl
             LSItemContentTypes:
-              - public.data
+              - com.xiaochun.stl
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.xiaochun.step
             UTTypeDescription: STEP CAD File
@@ -69,7 +71,6 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - stl
-        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews
