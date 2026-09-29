@@ -6,11 +6,25 @@
 import Foundation
 import SceneKit
 import SwiftUI
+import simd
 import OCCTSwift
 
 enum InteractionMode: Equatable {
     case orbit
     case measure
+}
+
+enum SnapKind: String {
+    case endpoint = "端点"
+    case midpoint = "中点"
+    case center = "圆心"
+    case quadrant = "象限点"
+    case none = ""
+}
+
+struct SnapPoint {
+    let position: SCNVector3
+    let kind: SnapKind
 }
 
 enum MeasureType: String, CaseIterable, Identifiable {
@@ -55,6 +69,7 @@ final class ViewerViewModel: ObservableObject {
     @Published var measureType: MeasureType = .distance
     @Published var displayUnit: DisplayUnit = .millimeter
     @Published var pickedPoints: [SCNVector3] = []
+    @Published var pickedKinds: [SnapKind] = []
 
     @Published var distanceResult: Float?
     @Published var angleResult: Float?
@@ -63,7 +78,7 @@ final class ViewerViewModel: ObservableObject {
 
     private var measureGroup: SCNNode?
     private var modelNode: SCNNode?
-    private var worldVertices: [SCNVector3] = []
+    private var snapPoints: [SnapPoint] = []
     private var snapThreshold: Float = 1
 
     var isComplete: Bool {
@@ -88,19 +103,23 @@ final class ViewerViewModel: ObservableObject {
 
         do {
             let geometry: SCNGeometry
+            var shape: Shape?
+
             if ext == "step" || ext == "stp" {
-                let shape = try Shape.loadSTEP(from: url)
-                guard let mesh = shape.mesh(linearDeflection: 0.1, angularDeflection: 0.2) else {
+                let loaded = try Shape.loadSTEP(from: url)
+                shape = loaded
+                guard let mesh = loaded.mesh(linearDeflection: 0.1, angularDeflection: 0.2) else {
                     loadError = "STEP 文件网格化失败。"
                     return
                 }
                 geometry = mesh.sceneKitGeometry()
             } else {
-                guard let shape = Shape.readSTL(from: url.path) else {
+                guard let loaded = Shape.readSTL(from: url.path) else {
                     loadError = "STL 文件读取失败。"
                     return
                 }
-                guard let mesh = shape.mesh(linearDeflection: 0.1) else {
+                shape = loaded
+                guard let mesh = loaded.mesh(linearDeflection: 0.1) else {
                     loadError = "STL 文件网格化失败。"
                     return
                 }
@@ -113,18 +132,118 @@ final class ViewerViewModel: ObservableObject {
 
             let mNode = built.rootNode.childNode(withName: "model", recursively: true)
             modelNode = mNode
-            if let mNode, let geo = mNode.geometry {
-                let localVerts = Self.extractVertices(from: geo)
-                worldVertices = localVerts.map { mNode.convertPosition($0, to: nil) }
+
+            if let mNode, let shape, let geo = mNode.geometry {
                 let (bbMin, bbMax) = geo.boundingBox
                 let maxDim = max(max(bbMax.x - bbMin.x, bbMax.y - bbMin.y), bbMax.z - bbMin.z)
-                snapThreshold = max(maxDim, 10) * 0.03
+                let safeMax = max(maxDim, 10)
+                snapThreshold = safeMax * 0.04
+
+                if ext == "step" || ext == "stp" {
+                    snapPoints = buildSnapDatabase(shape: shape, modelNode: mNode)
+                } else {
+                    snapPoints = Self.extractVertices(from: geo).map {
+                        SnapPoint(position: mNode.convertPosition($0, to: nil),
+                                  kind: .endpoint)
+                    }
+                }
             }
 
             clearMeasure()
         } catch {
             loadError = "加载失败：\(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Snap Database
+
+    private func buildSnapDatabase(shape: Shape, modelNode: SCNNode) -> [SnapPoint] {
+        var result: [SnapPoint] = []
+        let toWorld: (SIMD3<Double>) -> SCNVector3 = { local in
+            modelNode.convertPosition(
+                SCNVector3(Float(local.x), Float(local.y), Float(local.z)), to: nil)
+        }
+
+        let vertices = shape.vertices()
+        var seen = Set<SIMD3<Int64>>()
+        for v in vertices {
+            let key = quantize(v)
+            if seen.insert(key).inserted {
+                result.append(SnapPoint(position: toWorld(v), kind: .endpoint))
+            }
+        }
+
+        let edgePolys = shape.allEdgePolylinesIndexed(deflection: 0.1, maxPointsPerEdge: 500)
+        for (_, pts) in edgePolys {
+            guard pts.count >= 2 else { continue }
+
+            if let circle = detectCircle(pts) {
+                result.append(SnapPoint(position: toWorld(circle.center), kind: .center))
+
+                let refDir = simd_normalize(pts[0] - circle.center)
+                let perpDir = simd_cross(circle.normal, refDir)
+                let directions = [refDir, perpDir, -refDir, -perpDir]
+                for d in directions {
+                    result.append(SnapPoint(position: toWorld(circle.center + circle.radius * d),
+                                            kind: .quadrant))
+                }
+            } else {
+                let mid = pts[pts.count / 2]
+                result.append(SnapPoint(position: toWorld(mid), kind: .midpoint))
+            }
+        }
+
+        return result
+    }
+
+    private struct CircleInfo {
+        let center: SIMD3<Double>
+        let radius: Double
+        let normal: SIMD3<Double>
+    }
+
+    private func detectCircle(_ pts: [SIMD3<Double>]) -> CircleInfo? {
+        let n = pts.count
+        guard n >= 3 else { return nil }
+
+        let p1 = pts[0]
+        let p2 = pts[min(n / 3, n - 1)]
+        let p3 = pts[min(2 * n / 3, n - 1)]
+
+        let u = p2 - p1
+        let v = p3 - p1
+        let normalRaw = simd_cross(u, v)
+        let normalLen = simd_length(normalRaw)
+        guard normalLen > 1e-8 else { return nil }
+        let normal = normalRaw / normalLen
+
+        let uu = simd_dot(u, u)
+        let vv = simd_dot(v, v)
+        let uv = simd_dot(u, v)
+        let det = uu * vv - uv * uv
+        guard abs(det) > 1e-8 else { return nil }
+
+        let a = (uu / 2 * vv - vv / 2 * uv) / det
+        let b = (uu * vv / 2 - uv * uu / 2) / det
+        let center = p1 + a * u + b * v
+        let radius = simd_length(p1 - center)
+        guard radius > 1e-6 else { return nil }
+
+        let tol = radius * 0.03
+        for p in pts {
+            let r = simd_length(p - center)
+            if abs(r - radius) > tol { return nil }
+            let dist = simd_dot(p - center, normal)
+            if abs(dist) > radius * 0.02 { return nil }
+        }
+        return CircleInfo(center: center, radius: radius, normal: normal)
+    }
+
+    private func quantize(_ p: SIMD3<Double>) -> SIMD3<Int64> {
+        let scale = 1000.0
+        return SIMD3(Int64((p.x * scale).rounded()),
+                     Int64((p.y * scale).rounded()),
+                     Int64((p.z * scale).rounded()))
     }
 
     static func extractVertices(from geometry: SCNGeometry) -> [SCNVector3] {
@@ -247,16 +366,31 @@ final class ViewerViewModel: ObservableObject {
 
     func handleTap(_ rawWorldPos: SCNVector3) {
         guard mode == .measure else { return }
-        let snapped = snapToVertex(rawWorldPos)
+        let (snapped, kind) = snap(rawWorldPos)
 
         if pickedPoints.count >= measureType.requiredPoints {
             pickedPoints = [snapped]
+            pickedKinds = [kind]
         } else {
             pickedPoints.append(snapped)
+            pickedKinds.append(kind)
         }
 
         computeResults()
         updateMeasureVisuals()
+    }
+
+    private func snap(_ raw: SCNVector3) -> (SCNVector3, SnapKind) {
+        guard !snapPoints.isEmpty else { return (raw, .none) }
+        var best: SnapPoint?
+        var bestDist: Float = snapThreshold
+        for sp in snapPoints {
+            let dx = sp.position.x - raw.x, dy = sp.position.y - raw.y, dz = sp.position.z - raw.z
+            let d = (dx*dx + dy*dy + dz*dz).squareRoot()
+            if d < bestDist { bestDist = d; best = sp }
+        }
+        if let best { return (best.position, best.kind) }
+        return (raw, .none)
     }
 
     private func computeResults() {
@@ -328,6 +462,7 @@ final class ViewerViewModel: ObservableObject {
 
     func clearMeasure() {
         pickedPoints = []
+        pickedKinds = []
         distanceResult = nil
         angleResult = nil
         radiusResult = nil
@@ -339,18 +474,6 @@ final class ViewerViewModel: ObservableObject {
     func toggleMeasureMode() {
         mode = mode == .measure ? .orbit : .measure
         if mode == .orbit { clearMeasure() }
-    }
-
-    private func snapToVertex(_ raw: SCNVector3) -> SCNVector3 {
-        guard !worldVertices.isEmpty else { return raw }
-        var best: SCNVector3?
-        var bestDist: Float = snapThreshold
-        for v in worldVertices {
-            let dx = v.x - raw.x, dy = v.y - raw.y, dz = v.z - raw.z
-            let d = (dx*dx + dy*dy + dz*dz).squareRoot()
-            if d < bestDist { bestDist = d; best = v }
-        }
-        return best ?? raw
     }
 
     // MARK: - Visuals
@@ -368,27 +491,8 @@ final class ViewerViewModel: ObservableObject {
         group.name = "measure_group"
 
         for (i, point) in pickedPoints.enumerated() {
-            let sphere = SCNSphere(radius: CGFloat(markerR))
-            let mat = SCNMaterial()
-            mat.diffuse.contents = UIColor.systemRed
-            mat.emission.contents = UIColor.systemRed
-            mat.lightingModel = .constant
-            sphere.materials = [mat]
-            let marker = SCNNode(geometry: sphere)
-            marker.position = point
-            marker.name = "measure_dot"
-            group.addChildNode(marker)
-
-            let text = SCNText(string: "\(i + 1)", extrusionDepth: 0.2)
-            text.font = UIFont.boldSystemFont(ofSize: 10)
-            text.firstMaterial?.diffuse.contents = UIColor.white
-            text.firstMaterial?.lightingModel = .constant
-            let textNode = SCNNode(geometry: text)
-            textNode.position = SCNVector3(point.x, point.y + markerR * 2.2, point.z)
-            let s = markerR * 0.04
-            textNode.scale = SCNVector3(s, s, s)
-            textNode.name = "measure_num"
-            group.addChildNode(textNode)
+            let kind = i < pickedKinds.count ? pickedKinds[i] : .none
+            addMarker(at: point, kind: kind, index: i, radius: markerR, to: group)
         }
 
         if pickedPoints.count >= 2 {
@@ -422,7 +526,7 @@ final class ViewerViewModel: ObservableObject {
             let labelNode = SCNNode(geometry: labelText)
             let labelScale = max(maxDim, 10) * 0.003
             labelNode.scale = SCNVector3(labelScale, labelScale, labelScale)
-            labelNode.position = SCNVector3(anchor.x, anchor.y + markerR * 2, anchor.z)
+            labelNode.position = SCNVector3(anchor.x, anchor.y + markerR * 2.5, anchor.z)
             labelNode.name = "measure_label"
             let billboard = SCNBillboardConstraint()
             billboard.freeAxes = .all
@@ -434,9 +538,48 @@ final class ViewerViewModel: ObservableObject {
         measureGroup = group
     }
 
+    private func addMarker(at point: SCNVector3, kind: SnapKind, index: Int,
+                           radius markerR: Float, to group: SCNNode) {
+        let color: UIColor
+        switch kind {
+        case .endpoint: color = UIColor.systemRed
+        case .center: color = UIColor.systemBlue
+        case .midpoint: color = UIColor.systemOrange
+        case .quadrant: color = UIColor.systemPurple
+        case .none: color = UIColor.systemRed
+        }
+
+        let sphere = SCNSphere(radius: CGFloat(markerR))
+        let mat = SCNMaterial()
+        mat.diffuse.contents = color
+        mat.emission.contents = color
+        mat.lightingModel = .constant
+        sphere.materials = [mat]
+        let marker = SCNNode(geometry: sphere)
+        marker.position = point
+        marker.name = "measure_dot"
+        group.addChildNode(marker)
+
+        let tag = kind == .none ? "\(index + 1)" : kind.rawValue
+        let text = SCNText(string: tag, extrusionDepth: 0.2)
+        text.font = UIFont.boldSystemFont(ofSize: 10)
+        text.firstMaterial?.diffuse.contents = UIColor.white
+        text.firstMaterial?.emission.contents = UIColor.black
+        text.firstMaterial?.lightingModel = .constant
+        let textNode = SCNNode(geometry: text)
+        textNode.position = SCNVector3(point.x, point.y + markerR * 2.2, point.z)
+        let s = markerR * 0.04
+        textNode.scale = SCNVector3(s, s, s)
+        textNode.name = "measure_num"
+        let billboard = SCNBillboardConstraint()
+        billboard.freeAxes = .all
+        textNode.constraints = [billboard]
+        group.addChildNode(textNode)
+    }
+
     private func addCylinderLine(from a: SCNVector3, to b: SCNVector3,
                                  maxDim: Float, to group: SCNNode,
-                                 color: UIColor = .systemRed) {
+                                 color: UIColor = UIColor.systemRed) {
         let dx = b.x-a.x, dy = b.y-a.y, dz = b.z-a.z
         let dist = (dx*dx + dy*dy + dz*dz).squareRoot()
         guard dist > 1e-6 else { return }
