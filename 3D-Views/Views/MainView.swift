@@ -8,10 +8,25 @@ import SceneKit
 import UniformTypeIdentifiers
 import UIKit
 
+class PickerDelegate: NSObject, UIDocumentPickerDelegate {
+    var onPick: ((URL) -> Void)?
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        controller.dismiss(animated: true)
+        guard let url = urls.first else { return }
+        onPick?(url)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        controller.dismiss(animated: true)
+    }
+}
+
 struct MainView: View {
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showHelp = false
     @State private var debugMsg: String = ""
+    @State private var pickerDelegate: PickerDelegate?
 
     private var errorBinding: Binding<Bool> {
         Binding(
@@ -166,31 +181,26 @@ struct MainView: View {
     }
 
     private func presentPicker() {
-        debugMsg = "presenting picker"
-        DispatchQueue.main.async {
-            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                  let rootVC = windowScene.windows.first?.rootViewController else {
-                self.debugMsg = "no root VC"
-                return
-            }
-
-            var types: [UTType] = [.data]
-            if let step = UTType("public.item") { types.append(step) }
-
-            let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
-            picker.allowsMultipleSelection = false
-            picker.modalPresentationStyle = .formSheet
-
-            let delegate = PickerDelegate { url in
-                self.debugMsg = "picked: \(url.lastPathComponent)"
-                Task { await self.viewModel.loadFile(url: url) }
-            }
-            picker.delegate = delegate
-            objc_setAssociatedObject(picker, &AssociatedKeys.delegate, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-
-            rootVC.present(picker, animated: true)
-            self.debugMsg = "picker presented"
+        let delegate = PickerDelegate()
+        delegate.onPick = { url in
+            self.debugMsg = "picked: \(url.lastPathComponent)"
+            Task { await self.viewModel.loadFile(url: url) }
         }
+        self.pickerDelegate = delegate
+
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data])
+        picker.allowsMultipleSelection = false
+        picker.delegate = delegate
+        picker.modalPresentationStyle = .formSheet
+
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let rootVC = windowScene.windows.first?.rootViewController else {
+            debugMsg = "no root VC"
+            return
+        }
+
+        rootVC.present(picker, animated: true)
+        debugMsg = "picker shown"
     }
 
     private func dockButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
@@ -216,30 +226,6 @@ struct MainView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.ultraThinMaterial)
             }
         }
-    }
-}
-
-// MARK: - Picker Delegate
-
-private enum AssociatedKeys {
-    static var delegate: UInt8 = 0
-}
-
-private class PickerDelegate: NSObject, UIDocumentPickerDelegate {
-    let onPick: (URL) -> Void
-
-    init(onPick: @escaping (URL) -> Void) {
-        self.onPick = onPick
-    }
-
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        controller.dismiss(animated: true)
-        guard let url = urls.first else { return }
-        onPick(url)
-    }
-
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        controller.dismiss(animated: true)
     }
 }
 
