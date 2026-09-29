@@ -35,10 +35,19 @@ struct MainView: View {
             .padding(.bottom, 24)
         }
         .background(Color(.systemBackground))
-        .sheet(isPresented: $showImporter, onDismiss: nil) {
-            DocumentPicker { url in
-                showImporter = false
+        // Use SwiftUI native fileImporter — most reliable on iOS 17+.
+        // .data matches ALL files so the user can tap anything.
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
                 Task { await viewModel.loadFile(url: url) }
+            case .failure(let error):
+                viewModel.loadError = "Picker error: \(error.localizedDescription)"
             }
         }
         .onOpenURL { url in
@@ -96,15 +105,16 @@ struct MainView: View {
 
     private var bottomDock: some View {
         VStack(spacing: 12) {
+            // Debug / status pill — always visible when loading or error
             if viewModel.isLoading {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Loading… \(viewModel.loadedFileName)")
-                        .font(.system(size: 14, weight: .medium))
+                    Text("Loading: \(viewModel.loadedFileName)")
+                        .font(.system(size: 13, weight: .medium))
                 }
                 .padding(.horizontal, 16)
-                .frame(height: 40)
+                .frame(height: 38)
                 .background(.ultraThinMaterial, in: Capsule())
             }
 
