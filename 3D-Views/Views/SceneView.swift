@@ -141,14 +141,13 @@ struct SceneView: UIViewRepresentable {
                 (box.min.z + box.max.z) / 2
             )
             let extent = box.max.x - box.min.x
-            let distVal = CGFloat(extent) * 1.5 + 30
-            let dist = Swift.max(distVal, 60)
+            let dist = max(extent * 1.5 + 30, 60)
 
             guard let camera = scnView.pointOfView else { return }
             let worldCenter = node.convertPosition(center, to: nil)
-            camera.position = SCNVector3(Float(worldCenter.x + dist),
-                                         Float(worldCenter.y + dist * 0.7),
-                                         Float(worldCenter.z + dist))
+            camera.position = SCNVector3(worldCenter.x + dist,
+                                         worldCenter.y + dist * 0.7,
+                                         worldCenter.z + dist)
             camera.look(at: worldCenter,
                         up: SCNVector3(0, 1, 0),
                         localFront: SCNVector3(0, 0, -1))
