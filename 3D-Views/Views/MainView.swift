@@ -35,13 +35,13 @@ struct MainView: View {
             .padding(.bottom, 24)
         }
         .background(Color(.systemBackground))
-        .sheet(isPresented: $showImporter) {
+        .sheet(isPresented: $showImporter, onDismiss: nil) {
             DocumentPicker { url in
+                showImporter = false
                 Task { await viewModel.loadFile(url: url) }
             }
         }
         .onOpenURL { url in
-            // File opened via "Open with" / share sheet from Files.app
             Task { await viewModel.loadFile(url: url) }
         }
         .sheet(isPresented: $showHelp) {
@@ -100,7 +100,7 @@ struct MainView: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Loading model…")
+                    Text("Loading… \(viewModel.loadedFileName)")
                         .font(.system(size: 14, weight: .medium))
                 }
                 .padding(.horizontal, 16)
