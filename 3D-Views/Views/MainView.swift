@@ -4,28 +4,13 @@
 //
 
 import SwiftUI
-import SceneKit
 import UniformTypeIdentifiers
-import UIKit
-
-class PickerDelegate: NSObject, UIDocumentPickerDelegate {
-    var onPick: ((URL) -> Void)?
-
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        controller.dismiss(animated: true)
-        guard let url = urls.first else { return }
-        onPick?(url)
-    }
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        controller.dismiss(animated: true)
-    }
-}
 
 struct MainView: View {
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showHelp = false
     @State private var debugMsg: String = ""
-    @State private var pickerDelegate: PickerDelegate?
+    @State private var showImporter = false
 
     private var errorBinding: Binding<Bool> {
         Binding(
@@ -36,7 +21,6 @@ struct MainView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // 3D scene fills entire screen
             SceneView(
                 scene: viewModel.scene,
                 onMeasureTap: { pos in viewModel.handleTap(pos) },
@@ -57,6 +41,23 @@ struct MainView: View {
         .onOpenURL { url in
             debugMsg = "opening: \(url.lastPathComponent)"
             Task { await viewModel.loadFile(url: url) }
+        }
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else {
+                    debugMsg = "no url"
+                    return
+                }
+                debugMsg = "picked: \(url.lastPathComponent)"
+                Task { await viewModel.loadFile(url: url) }
+            case .failure(let error):
+                debugMsg = "import error: \(error.localizedDescription)"
+            }
         }
         .sheet(isPresented: $showHelp) { HelpView() }
         .alert(isPresented: errorBinding) {
@@ -117,8 +118,8 @@ struct MainView: View {
 
             HStack(spacing: 12) {
                 dockButton(icon: "folder", label: "Open") {
-                    debugMsg = "opening picker..."
-                    presentPicker()
+                    debugMsg = "opening files..."
+                    showImporter = true
                 }
                 dockButton(icon: "cube.box", label: "Test") {
                     debugMsg = "loading test cube..."
@@ -140,28 +141,6 @@ struct MainView: View {
                 }
             }
         }
-    }
-
-    private func presentPicker() {
-        let delegate = PickerDelegate()
-        delegate.onPick = { url in
-            debugMsg = "got: \(url.lastPathComponent)"
-            Task { await viewModel.loadFile(url: url) }
-        }
-        self.pickerDelegate = delegate
-
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data])
-        picker.allowsMultipleSelection = false
-        picker.delegate = delegate
-        picker.modalPresentationStyle = .formSheet
-
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let rootVC = windowScene.windows.first?.rootViewController else {
-            debugMsg = "no root VC"
-            return
-        }
-        rootVC.present(picker, animated: true)
-        debugMsg = "picker shown"
     }
 
     private func dockButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
