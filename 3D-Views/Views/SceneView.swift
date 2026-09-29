@@ -38,6 +38,7 @@ struct SceneView: UIViewRepresentable {
         Coordinator()
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         weak var scnView: SCNView?
         var measureMode = false
