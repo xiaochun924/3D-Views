@@ -10,29 +10,43 @@ import OCCTSwift
 
 enum InteractionMode: Equatable {
     case orbit
-    case measurePoint
+    case measure
+}
+
+struct MeasureResult {
+    let pointA: SCNVector3
+    let pointB: SCNVector3
+    var distance: Float {
+        let dx = pointB.x - pointA.x
+        let dy = pointB.y - pointA.y
+        let dz = pointB.z - pointA.z
+        return (dx*dx + dy*dy + dz*dz).squareRoot()
+    }
+    var deltaX: Float { pointB.x - pointA.x }
+    var deltaY: Float { pointB.y - pointA.y }
+    var deltaZ: Float { pointB.z - pointA.z }
 }
 
 @MainActor
 final class ViewerViewModel: ObservableObject {
 
     @Published var fileName: String = ""
-    @Published var loadedFileName: String = ""
     @Published var isLoading: Bool = false
     @Published var loadError: String?
-    @Published var debugInfo: String = ""
     @Published var scene: SCNScene?
     @Published var mode: InteractionMode = .orbit
     @Published var displayUnit: DisplayUnit = .millimeter
     @Published var pickedPoints: [SCNVector3] = []
-    @Published var lastDistance: Float?
+    @Published var measureResult: MeasureResult?
 
     private var measureGroup: SCNNode?
+    private var modelScale: Float = 1
+
+    // MARK: - Load
 
     func loadFile(url: URL) async {
         isLoading = true
         loadError = nil
-        loadedFileName = url.lastPathComponent
         defer { isLoading = false }
 
         let ext = url.pathExtension.lowercased()
@@ -67,23 +81,22 @@ final class ViewerViewModel: ObservableObject {
 
             scene = Self.buildScene(geometry: geometry)
             fileName = url.lastPathComponent
-            debugInfo = "已加载"
-            pickedPoints = []
-            lastDistance = nil
-            measureGroup = nil
+            clearMeasure()
         } catch {
             loadError = "加载失败：\(error.localizedDescription)"
         }
     }
 
+    // MARK: - Scene
+
     static func buildScene(geometry: SCNGeometry) -> SCNScene {
         let scene = SCNScene()
 
-        // Material: steel blue with specular highlight
+        // Green material like reference CAD app
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.35, green: 0.55, blue: 0.75, alpha: 1.0)
-        mat.specular.contents = UIColor(white: 0.6, alpha: 1.0)
-        mat.shininess = 0.6
+        mat.diffuse.contents = UIColor(red: 0.30, green: 0.62, blue: 0.38, alpha: 1.0)
+        mat.specular.contents = UIColor(white: 0.5, alpha: 1.0)
+        mat.shininess = 0.3
         mat.lightingModel = .phong
         mat.isDoubleSided = true
         geometry.materials = [mat]
@@ -91,17 +104,14 @@ final class ViewerViewModel: ObservableObject {
         let modelNode = SCNNode(geometry: geometry)
         modelNode.name = "model"
 
-        // Edge overlay: same geometry as lines, dark color
-        let edgeMat = SCNMaterial()
-        edgeMat.diffuse.contents = UIColor(red: 0.1, green: 0.2, blue: 0.35, alpha: 0.8)
-        edgeMat.fillMode = .lines
-        edgeMat.lightingModel = .constant
-        let edgeNode = SCNNode(geometry: geometry.copy() as? SCNGeometry ?? geometry)
-        edgeNode.geometry?.materials = [edgeMat]
-        edgeNode.name = "edges"
-        modelNode.addChildNode(edgeNode)
-
         let (bbMin, bbMax) = geometry.boundingBox
+        let sizeX = bbMax.x - bbMin.x
+        let sizeY = bbMax.y - bbMin.y
+        let sizeZ = bbMax.z - bbMin.z
+        let maxDim = max(max(sizeX, sizeY), sizeZ)
+        let safeDim = max(maxDim, 1)
+
+        // Center model
         let center = SCNVector3(
             (bbMin.x + bbMax.x) / 2,
             (bbMin.y + bbMax.y) / 2,
@@ -110,11 +120,20 @@ final class ViewerViewModel: ObservableObject {
         modelNode.pivot = SCNMatrix4MakeTranslation(center.x, center.y, center.z)
         scene.rootNode.addChildNode(modelNode)
 
-        let sizeX = bbMax.x - bbMin.x
-        let sizeY = bbMax.y - bbMin.y
-        let sizeZ = bbMax.z - bbMin.z
-        let maxDim = max(max(sizeX, sizeY), sizeZ)
-        let safeDim = max(maxDim, 1)
+        // Edge overlay: wireframe copy, slightly larger to avoid z-fighting
+        let edgeGeo = geometry.copy() as! SCNGeometry
+        let edgeMat = SCNMaterial()
+        edgeMat.diffuse.contents = UIColor(red: 0.12, green: 0.28, blue: 0.16, alpha: 0.9)
+        edgeMat.fillMode = .lines
+        edgeMat.lightingModel = .constant
+        edgeMat.polygonOffset = SCNVector3(-1, -1, -1)
+        edgeMat.polygonOffsetFactor = -1
+        edgeGeo.materials = [edgeMat]
+        let edgeNode = SCNNode(geometry: edgeGeo)
+        edgeNode.name = "edges"
+        edgeNode.scale = SCNVector3(1.002, 1.002, 1.002)
+        modelNode.addChildNode(edgeNode)
+
         let camDist = safeDim * 2.0
         let origin = SCNVector3(0, 0, 0)
 
@@ -127,17 +146,17 @@ final class ViewerViewModel: ObservableObject {
         cameraNode.look(at: origin)
         scene.rootNode.addChildNode(cameraNode)
 
-        // Key light - strong directional from top-right
+        // Key light
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 1500
+        keyLight.intensity = 1200
         let keyNode = SCNNode()
         keyNode.light = keyLight
         keyNode.position = SCNVector3(camDist * 0.6, camDist, camDist * 0.6)
         keyNode.look(at: origin)
         scene.rootNode.addChildNode(keyNode)
 
-        // Fill light from left
+        // Fill light
         let fillLight = SCNLight()
         fillLight.type = .directional
         fillLight.intensity = 500
@@ -148,10 +167,10 @@ final class ViewerViewModel: ObservableObject {
         fillNode.look(at: origin)
         scene.rootNode.addChildNode(fillNode)
 
-        // Back light for rim
+        // Back light
         let backLight = SCNLight()
         backLight.type = .directional
-        backLight.intensity = 700
+        backLight.intensity = 600
         backLight.color = UIColor(white: 0.9, alpha: 1.0)
         let backNode = SCNNode()
         backNode.light = backLight
@@ -159,11 +178,11 @@ final class ViewerViewModel: ObservableObject {
         backNode.look(at: origin)
         scene.rootNode.addChildNode(backNode)
 
-        // Low ambient
+        // Ambient
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 200
-        ambient.color = UIColor(white: 0.7, alpha: 1.0)
+        ambient.intensity = 250
+        ambient.color = UIColor(white: 0.75, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.light = ambient
         scene.rootNode.addChildNode(ambientNode)
@@ -171,35 +190,59 @@ final class ViewerViewModel: ObservableObject {
         return scene
     }
 
+    // MARK: - Measure (SolidWorks style)
+
     func handleTap(_ worldPos: SCNVector3) {
-        guard mode == .measurePoint else { return }
-        pickedPoints.append(worldPos)
-        if pickedPoints.count > 2 { pickedPoints = [worldPos] }
-        if pickedPoints.count == 2 {
-            let a = pickedPoints[0], b = pickedPoints[1]
-            let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
-            lastDistance = (dx*dx + dy*dy + dz*dz).squareRoot()
+        guard mode == .measure else { return }
+
+        if pickedPoints.count >= 2 {
+            // Start new measurement
+            pickedPoints = [worldPos]
+            measureResult = nil
         } else {
-            lastDistance = nil
+            pickedPoints.append(worldPos)
         }
-        updateMeasureMarkers()
+
+        if pickedPoints.count == 2 {
+            measureResult = MeasureResult(
+                pointA: pickedPoints[0],
+                pointB: pickedPoints[1]
+            )
+        }
+
+        updateMeasureVisuals()
     }
 
-    func resetMeasurement() {
+    func clearMeasure() {
         pickedPoints = []
-        lastDistance = nil
+        measureResult = nil
         measureGroup?.removeFromParentNode()
         measureGroup = nil
     }
 
-    private func updateMeasureMarkers() {
+    func toggleMeasureMode() {
+        mode = mode == .measure ? .orbit : .measure
+        if mode == .orbit {
+            clearMeasure()
+        }
+    }
+
+    private func updateMeasureVisuals() {
         guard let scene else { return }
         measureGroup?.removeFromParentNode()
+
+        // Marker size based on model size
+        let modelNode = scene.rootNode.childNode(withName: "model", recursively: true)
+        let (bbMin, bbMax) = modelNode?.boundingBox ?? (SCNVector3(-10,-10,-10), SCNVector3(10,10,10))
+        let maxDim = max(max(bbMax.x - bbMin.x, bbMax.y - bbMin.y), bbMax.z - bbMin.z)
+        let markerR = max(maxDim, 10) * 0.015
+
         let group = SCNNode()
         group.name = "measure_group"
 
-        for point in pickedPoints {
-            let sphere = SCNSphere(radius: 1.5)
+        for (i, point) in pickedPoints.enumerated() {
+            // Sphere
+            let sphere = SCNSphere(radius: CGFloat(markerR))
             let mat = SCNMaterial()
             mat.diffuse.contents = UIColor.systemRed
             mat.emission.contents = UIColor.systemRed
@@ -207,7 +250,37 @@ final class ViewerViewModel: ObservableObject {
             sphere.materials = [mat]
             let marker = SCNNode(geometry: sphere)
             marker.position = point
+            marker.name = "measure_dot"
             group.addChildNode(marker)
+
+            // Number label
+            let text = SCNText(string: "\(i + 1)", extrusionDepth: 0.2)
+            text.font = UIFont.boldSystemFont(ofSize: 10)
+            text.firstMaterial?.diffuse.contents = UIColor.white
+            text.firstMaterial?.lightingModel = .constant
+            let textNode = SCNNode(geometry: text)
+            textNode.position = SCNVector3(point.x, point.y + markerR * 2, point.z)
+            let s = markerR * 0.04
+            textNode.scale = SCNVector3(s, s, s)
+            textNode.name = "measure_num"
+            group.addChildNode(textNode)
+        }
+
+        // Line between two points
+        if let result = measureResult {
+            let a = result.pointA
+            let b = result.pointB
+            let source = SCNGeometrySource(vertices: [a, b])
+            let indices: [Int32] = [0, 1]
+            let element = SCNGeometryElement(indices: indices, primitiveType: .line)
+            let lineGeo = SCNGeometry(sources: [source], elements: [element])
+            let lineMat = SCNMaterial()
+            lineMat.diffuse.contents = UIColor.systemRed
+            lineMat.lightingModel = .constant
+            lineGeo.materials = [lineMat]
+            let lineNode = SCNNode(geometry: lineGeo)
+            lineNode.name = "measure_line"
+            group.addChildNode(lineNode)
         }
 
         scene.rootNode.addChildNode(group)
