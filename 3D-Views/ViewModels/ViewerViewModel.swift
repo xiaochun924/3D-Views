@@ -60,29 +60,15 @@ final class ViewerViewModel: ObservableObject {
             return
         }
 
+        // asCopy:true already gives us a local file; onOpenURL may need scoped access.
         let needsAccess = url.startAccessingSecurityScopedResource()
-        let localURL: URL
-        do {
-            let fm = FileManager.default
-            let destDir = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("Incoming", isDirectory: true)
-            try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
-            let dest = destDir.appendingPathComponent(url.lastPathComponent)
-            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-            try fm.copyItem(at: url, to: dest)
-            localURL = dest
-        } catch {
-            if needsAccess { url.stopAccessingSecurityScopedResource() }
-            loadError = "Cannot read file: \(error.localizedDescription)"
-            return
-        }
-        if needsAccess { url.stopAccessingSecurityScopedResource() }
+        defer { if needsAccess { url.stopAccessingSecurityScopedResource() } }
 
         do {
             let geometry: SCNGeometry
 
             if ext == "step" || ext == "stp" {
-                let shape = try Shape.loadSTEP(from: localURL)
+                let shape = try Shape.loadSTEP(from: url)
                 guard let mesh = shape.mesh(linearDeflection: 0.5, angularDeflection: 0.5) else {
                     loadError = "Failed to tessellate STEP."
                     return
@@ -94,7 +80,7 @@ final class ViewerViewModel: ObservableObject {
                 mat.isDoubleSided = true
                 geometry.materials = [mat]
             } else {
-                guard let shape = Shape.readSTL(from: localURL.path) else {
+                guard let shape = Shape.readSTL(from: url.path) else {
                     loadError = "Failed to read STL."
                     return
                 }
@@ -142,7 +128,6 @@ final class ViewerViewModel: ObservableObject {
         let camDist = safeDim * 2.0
         let origin = SCNVector3(0, 0, 0)
 
-        // Camera
         let camera = SCNCamera()
         camera.automaticallyAdjustsZRange = true
         let cameraNode = SCNNode()
@@ -151,7 +136,6 @@ final class ViewerViewModel: ObservableObject {
         cameraNode.look(at: origin)
         scene.rootNode.addChildNode(cameraNode)
 
-        // Key light
         let keyLight = SCNLight()
         keyLight.type = .directional
         keyLight.intensity = 800
@@ -161,7 +145,6 @@ final class ViewerViewModel: ObservableObject {
         keyNode.look(at: origin)
         scene.rootNode.addChildNode(keyNode)
 
-        // Fill light
         let fillLight = SCNLight()
         fillLight.type = .omni
         fillLight.intensity = 400
@@ -170,7 +153,6 @@ final class ViewerViewModel: ObservableObject {
         fillNode.position = SCNVector3(-camDist * 0.8, camDist * 0.5, camDist * 0.5)
         scene.rootNode.addChildNode(fillNode)
 
-        // Ambient
         let ambient = SCNLight()
         ambient.type = .ambient
         ambient.intensity = 300
