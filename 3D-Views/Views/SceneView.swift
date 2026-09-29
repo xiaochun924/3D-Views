@@ -30,19 +30,29 @@ struct SceneView: UIViewRepresentable {
         scene.rootNode.addChildNode(cameraNode)
         scnView.pointOfView = cameraNode
 
-        // Ambient light so the scene isn't pitch black.
+        // Ambient + directional lights.
         let ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light?.type = .ambient
-        ambient.light?.intensity = 800
+        ambient.light?.intensity = 1000
         scene.rootNode.addChildNode(ambient)
 
+        let dirLight = SCNNode()
+        dirLight.light = SCNLight()
+        dirLight.light?.type = .directional
+        dirLight.light?.intensity = 1500
+        dirLight.position = SCNVector3(50, 100, 50)
+        dirLight.look(at: SCNVector3(0, 0, 0),
+                      up: SCNVector3(0, 1, 0),
+                      localFront: SCNVector3(0, 0, -1))
+        scene.rootNode.addChildNode(dirLight)
+
         // Simple floor plane for spatial reference.
-        let floor = SCNPlane(width: 200, height: 200)
-        floor.firstMaterial?.diffuse.contents = UIColor.systemGray6
+        let floor = SCNPlane(width: 300, height: 300)
+        floor.firstMaterial?.diffuse.contents = UIColor.systemGray5
         floor.firstMaterial?.isDoubleSided = true
         let floorNode = SCNNode(geometry: floor)
-        floorNode.position = SCNVector3(0, -25, 0)
+        floorNode.position = SCNVector3(0, -40, 0)
         floorNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
         scene.rootNode.addChildNode(floorNode)
 
@@ -115,7 +125,7 @@ struct SceneView: UIViewRepresentable {
         }
 
         private func addMarker(at local: SCNVector3, in root: SCNNode) {
-            let geo = SCNSphere(radius: 1.5)
+            let geo = SCNSphere(radius: 2)
             geo.firstMaterial?.diffuse.contents = UIColor.systemBlue
             let node = SCNNode(geometry: geo)
             node.position = local
@@ -141,7 +151,7 @@ struct SceneView: UIViewRepresentable {
                 (box.min.z + box.max.z) / 2
             )
             let extent = box.max.x - box.min.x
-            let dist = max(extent * 1.5 + 30, 60)
+            let dist = max(extent * 1.5 + 30, 80)
 
             guard let camera = scnView.pointOfView else { return }
             let worldCenter = node.convertPosition(center, to: nil)
