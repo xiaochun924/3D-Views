@@ -18,27 +18,57 @@ struct ViewerView: View {
             SceneView(
                 scene: viewModel.scene,
                 onMeasureTap: { pos in viewModel.handleTap(pos) },
-                measureMode: viewModel.mode == .measurePoint
+                measureMode: viewModel.mode == .measure
             )
             .ignoresSafeArea()
 
-            VStack {
-                HStack {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                        Text("加载中...")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white)
-                    }
+            // Loading overlay
+            if viewModel.isLoading {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.2)
+                    Text("加载中...")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
                 }
-                .padding(.top, 8)
-                Spacer()
+                .padding(24)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
 
+            // Measure instruction
+            if viewModel.mode == .measure && viewModel.pickedPoints.isEmpty {
+                VStack {
+                    Spacer().frame(height: 60)
+                    HStack {
+                        Spacer()
+                        Text("点选模型上的两个点进行测量")
+                            .font(.system(size: 13, weight: .medium))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial, in: Capsule())
+                        Spacer()
+                    }
+                    Spacer()
+                }
+            }
+
+            // Measure result panel
+            if let result = viewModel.measureResult {
+                VStack {
+                    Spacer().frame(height: 56)
+                    HStack {
+                        Spacer()
+                        measurePanel(result)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+            }
+
+            // Bottom toolbar
             VStack {
                 Spacer()
-                bottomBar
+                bottomToolbar
             }
         }
         .navigationTitle(file.fileName)
@@ -62,48 +92,101 @@ struct ViewerView: View {
         )
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 10) {
-            if let dist = viewModel.lastDistance {
-                HStack(spacing: 8) {
-                    Image(systemName: "ruler")
-                    Text(viewModel.displayUnit.format(dist))
-                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    Button { viewModel.resetMeasurement() } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                }
-                .padding(.horizontal, 16).frame(height: 40)
-                .background(.ultraThinMaterial, in: Capsule())
-            }
+    // MARK: - Measure panel (SolidWorks style)
 
-            HStack(spacing: 0) {
-                toolbarButton(icon: "ruler", label: "测量", highlighted: viewModel.mode == .measurePoint) {
-                    viewModel.mode = viewModel.mode == .measurePoint ? .orbit : .measurePoint
-                }
-                toolbarButton(icon: "arrow.2.squarepath", label: "复位") {
-                    // TODO: reset camera
-                }
-                toolbarButton(icon: "cube", label: "视图") {
-                    // TODO: view presets
-                }
-                Menu {
-                    ForEach(DisplayUnit.allCases, id: \.self) { unit in
-                        Button(unit.rawValue) { viewModel.displayUnit = unit }
-                    }
+    private func measurePanel(_ result: MeasureResult) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "ruler")
+                    .foregroundColor(.blue)
+                Text("测量结果")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button {
+                    viewModel.clearMeasure()
                 } label: {
-                    toolbarButtonContent(icon: "units", label: viewModel.displayUnit.rawValue)
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(height: 64)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .padding(.horizontal, 16)
+            .padding(.top, 12)
             .padding(.bottom, 8)
+
+            Divider()
+
+            // Main distance
+            VStack(spacing: 4) {
+                Text("距离")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                Text(viewModel.displayUnit.format(result.distance))
+                    .font(.system(size: 22, weight: .bold, design: .monospaced))
+                    .foregroundColor(.primary)
+            }
+            .padding(.vertical, 10)
+
+            Divider()
+
+            // X/Y/Z deltas
+            HStack(spacing: 0) {
+                deltaColumn(label: "X", value: result.deltaX, color: .red)
+                Divider().frame(height: 36)
+                deltaColumn(label: "Y", value: result.deltaY, color: .green)
+                Divider().frame(height: 36)
+                deltaColumn(label: "Z", value: result.deltaZ, color: .blue)
+            }
+            .padding(.vertical, 8)
         }
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 24)
     }
 
-    private func toolbarButton(icon: String, label: String, highlighted: Bool = false, action: @escaping () -> Void) -> some View {
+    private func deltaColumn(label: String, value: Float, color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(color)
+            Text(viewModel.displayUnit.format(value))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(.primary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Bottom toolbar
+
+    private var bottomToolbar: some View {
+        HStack(spacing: 0) {
+            toolbarButton(icon: "ruler", label: "测量",
+                          highlighted: viewModel.mode == .measure) {
+                viewModel.toggleMeasureMode()
+            }
+            toolbarButton(icon: "arrow.2.squarepath", label: "复位") {
+                // TODO: reset camera
+            }
+            toolbarButton(icon: "cube", label: "视图") {
+                // TODO: view presets
+            }
+            Menu {
+                ForEach(DisplayUnit.allCases, id: \.self) { unit in
+                    Button(unit.rawValue) { viewModel.displayUnit = unit }
+                }
+            } label: {
+                toolbarButtonContent(icon: "number", label: viewModel.displayUnit.rawValue)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 64)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    private func toolbarButton(icon: String, label: String,
+                               highlighted: Bool = false,
+                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 4) {
                 Image(systemName: icon)
