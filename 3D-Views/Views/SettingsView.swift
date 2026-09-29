@@ -13,35 +13,35 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Viewer") {
-                Picker("Default Unit", selection: $defaultUnit) {
-                    Text("Millimeters").tag("mm")
-                    Text("Centimeters").tag("cm")
-                    Text("Inches").tag("in")
+            Section("查看器") {
+                Picker("默认单位", selection: $defaultUnit) {
+                    Text("毫米").tag("mm")
+                    Text("厘米").tag("cm")
+                    Text("英寸").tag("in")
                 }
-                Toggle("Show Grid", isOn: $showGrid)
-                Toggle("Auto Rotate", isOn: $autoRotate)
+                Toggle("显示网格", isOn: $showGrid)
+                Toggle("自动旋转", isOn: $autoRotate)
             }
 
-            Section("About") {
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
-                LabeledContent("Build", value: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
-                LabeledContent("Engine", value: "OCCT + SceneKit")
+            Section("关于") {
+                LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
+                LabeledContent("构建号", value: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
+                LabeledContent("渲染引擎", value: "OCCT + SceneKit")
             }
 
             Section {
-                Text("3D Views supports STEP (.step, .stp) and STL files. Use Open to import, or share files from the Files app.")
+                Text("支持 STEP（.step、.stp）和 STL 文件。点击右上角按钮导入文件，或在「文件」App 中选择分享到本应用。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
-                Text("Supported Formats")
+                Text("支持格式")
             }
         }
-        .navigationTitle("Settings")
+        .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Done") { dismiss() }
+                Button("完成") { dismiss() }
             }
         }
     }
