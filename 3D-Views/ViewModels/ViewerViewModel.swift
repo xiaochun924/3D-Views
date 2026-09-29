@@ -103,10 +103,10 @@ final class ViewerViewModel: ObservableObject {
 
         do {
             let geometry: SCNGeometry
-            var shape: Shape?
+            var shape: OCCTSwift.Shape?
 
             if ext == "step" || ext == "stp" {
-                let loaded = try Shape.loadSTEP(from: url)
+                let loaded = try OCCTSwift.Shape.loadSTEP(from: url)
                 shape = loaded
                 guard let mesh = loaded.mesh(linearDeflection: 0.1, angularDeflection: 0.2) else {
                     loadError = "STEP 文件网格化失败。"
@@ -114,7 +114,7 @@ final class ViewerViewModel: ObservableObject {
                 }
                 geometry = mesh.sceneKitGeometry()
             } else {
-                guard let loaded = Shape.readSTL(from: url.path) else {
+                guard let loaded = OCCTSwift.Shape.readSTL(from: url.path) else {
                     loadError = "STL 文件读取失败。"
                     return
                 }
@@ -157,7 +157,7 @@ final class ViewerViewModel: ObservableObject {
 
     // MARK: - Snap Database
 
-    private func buildSnapDatabase(shape: Shape, modelNode: SCNNode) -> [SnapPoint] {
+    private func buildSnapDatabase(shape: OCCTSwift.Shape, modelNode: SCNNode) -> [SnapPoint] {
         var result: [SnapPoint] = []
         let toWorld: (SIMD3<Double>) -> SCNVector3 = { local in
             modelNode.convertPosition(
