@@ -18,7 +18,6 @@ struct SceneView: UIViewRepresentable {
         scnView.antialiasingMode = .multisampling8X
         scnView.backgroundColor = UIColor.systemBackground
         scnView.scene = scene
-        scnView.preferredFramesPerSecond = 60
         scnView.rendersContinuously = true
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
@@ -54,7 +53,6 @@ struct SceneView: UIViewRepresentable {
                 .searchMode: SCNHitTestSearchMode.closest.rawValue,
                 .ignoreHiddenNodes: true
             ])
-            // Skip measurement nodes
             guard let hit = hits.first(where: { $0.node.name?.hasPrefix("measure_") != true }) else { return }
             onMeasureTap?(hit.worldCoordinates)
         }
