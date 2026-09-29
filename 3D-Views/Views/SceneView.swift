@@ -47,6 +47,7 @@ struct SceneView: UIViewRepresentable {
         Coordinator(viewModel: viewModel)
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         weak var scnView: SCNView?
         var loadedRoot: SCNNode?
@@ -69,19 +70,17 @@ struct SceneView: UIViewRepresentable {
             guard let root = loadedRoot else { return }
             let local = root.convertPosition(worldPos, from: nil)
 
-            Task { @MainActor in
-                guard self.viewModel.mode == .measurePoint else { return }
-                let countBefore = self.viewModel.pickedPoints.count
-                self.viewModel.addPickedPoint(local)
-                if countBefore == 2 || self.viewModel.pickedPoints.isEmpty {
-                    self.clearMarkers(in: root)
-                }
-                self.addMarker(at: local, in: root)
-                if self.viewModel.pickedPoints.count == 2 {
-                    self.drawMeasurementLine(from: self.viewModel.pickedPoints[0],
-                                              to: self.viewModel.pickedPoints[1],
-                                              in: root)
-                }
+            guard viewModel.mode == .measurePoint else { return }
+            let countBefore = viewModel.pickedPoints.count
+            viewModel.addPickedPoint(local)
+            if countBefore == 2 || viewModel.pickedPoints.isEmpty {
+                clearMarkers(in: root)
+            }
+            addMarker(at: local, in: root)
+            if viewModel.pickedPoints.count == 2 {
+                drawMeasurementLine(from: viewModel.pickedPoints[0],
+                                     to: viewModel.pickedPoints[1],
+                                     in: root)
             }
         }
 
