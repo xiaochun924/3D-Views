@@ -203,6 +203,23 @@ final class ViewerViewModel: ObservableObject {
     private var measureGroup: SCNNode?
     private var previewGroup: SCNNode?
 
+    /// Translucent whole-face overlays for the committed picks and the preselect.
+    /// Children of the model node, because the overlay geometry is re-emitted from the
+    /// model's own vertex buffer and therefore lives in the model's local space.
+    private var measureFaceGroup: SCNNode?
+    private var previewFaceNode: SCNNode?
+
+    /// Per-face overlay geometry keyed by style and face index. Built once per face and
+    /// reused while the finger slides across it, so a drag over a densely tessellated
+    /// face does not re-emit its triangles on every update.
+    private var faceOverlayCache: [String: SCNGeometry] = [:]
+
+    /// The model's own vertex and index buffers, kept so a picked face's triangles can
+    /// be re-emitted as a patch over the shaded surface. `triangleToFace` says which
+    /// triangles belong to the face a tap resolved to.
+    private var modelVertices: [SCNVector3] = []
+    private var modelTriangleIndices: [UInt32] = []
+
     /// Snap kind of the preselect, kept private because it only colours the highlight.
     private var previewKind: SnapKind?
     private var modelNode: SCNNode?
@@ -348,6 +365,16 @@ final class ViewerViewModel: ObservableObject {
             shape = brep ? loadedShape : nil
             isBrep = brep
             triangleToFace = brep ? meshTrianglesWithFaces.map(\.faceIndex) : []
+
+            // Retain the mesh buffers and drop any highlight built for the previous
+            // model, including its cached overlay geometry.
+            modelVertices = Self.extractVertices(from: geometry)
+            modelTriangleIndices = Self.extractTriangleIndices(from: geometry)
+            faceOverlayCache.removeAll()
+            measureFaceGroup?.removeFromParentNode()
+            measureFaceGroup = nil
+            previewFaceNode?.removeFromParentNode()
+            previewFaceNode = nil
 
             let mNode = built.rootNode.childNode(withName: "model", recursively: true)
             modelNode = mNode
@@ -513,6 +540,37 @@ final class ViewerViewModel: ObservableObject {
         return SIMD3(Int64((p.x * scale).rounded()),
                      Int64((p.y * scale).rounded()),
                      Int64((p.z * scale).rounded()))
+    }
+
+    /// Flattens the model's triangle index buffer.
+    ///
+    /// Concatenating every triangle element in order reproduces the same triangle
+    /// ordinal `SCNHitTestResult.faceIndex` reports, which is what `triangleToFace` is
+    /// keyed by. Widths of 1, 2 and 4 bytes are all accepted because `sceneKitGeometry()`
+    /// narrows the indices to the smallest type that fits the vertex count.
+    static func extractTriangleIndices(from geometry: SCNGeometry) -> [UInt32] {
+        var indices: [UInt32] = []
+        for element in geometry.elements where element.primitiveType == .triangles {
+            let bytesPerIndex = element.bytesPerIndex
+            guard bytesPerIndex > 0 else { continue }
+            // Derived from the buffer rather than `indexCount`, which is documented but
+            // which older SceneKit builds have been known to report inconsistently.
+            let count = element.data.count / bytesPerIndex
+            guard count > 0 else { continue }
+            indices.reserveCapacity(indices.count + count)
+            element.data.withUnsafeBytes { raw in
+                for i in 0..<count {
+                    let offset = i * bytesPerIndex
+                    switch bytesPerIndex {
+                    case 1: indices.append(UInt32(raw.load(fromByteOffset: offset, as: UInt8.self)))
+                    case 2: indices.append(UInt32(raw.load(fromByteOffset: offset, as: UInt16.self)))
+                    case 4: indices.append(raw.load(fromByteOffset: offset, as: UInt32.self))
+                    default: break
+                    }
+                }
+            }
+        }
+        return indices
     }
 
     static func extractVertices(from geometry: SCNGeometry) -> [SCNVector3] {
@@ -789,6 +847,8 @@ final class ViewerViewModel: ObservableObject {
         previewEntity = nil
         previewGroup?.removeFromParentNode()
         previewGroup = nil
+        previewFaceNode?.removeFromParentNode()
+        previewFaceNode = nil
     }
 
     /// Shared commit for both interaction paths — a quick tap and the release of a
@@ -1227,6 +1287,8 @@ final class ViewerViewModel: ObservableObject {
         measureMessage = nil
         measureGroup?.removeFromParentNode()
         measureGroup = nil
+        measureFaceGroup?.removeFromParentNode()
+        measureFaceGroup = nil
     }
 
     /// Changes the display unit and remembers it, so `SettingsView` and the viewer
@@ -1242,6 +1304,156 @@ final class ViewerViewModel: ObservableObject {
     }
 
     // MARK: - Visuals
+
+    /// How a picked face is tinted. Preselect and committed picks are deliberately
+    /// different colours: yellow still means "lift now to take this one", teal means
+    /// "this one is already part of the measurement".
+    @MainActor
+    private enum FaceHighlightStyle: String {
+        case preview
+        case measure
+
+        var color: UIColor {
+            switch self {
+            case .preview: return .systemYellow
+            case .measure: return .systemTeal
+            }
+        }
+
+        var transparency: CGFloat {
+            switch self {
+            case .preview: return 0.45
+            case .measure: return 0.35
+            }
+        }
+    }
+
+    /// Rebuilds the translucent whole-face highlights for the committed picks and the
+    /// preselect.
+    ///
+    /// A dot marks *where* on a face the finger landed, which is enough for a vertex or
+    /// an edge but tells the user almost nothing about which of a part's faces was
+    /// actually taken — the failure mode the preselect exists to prevent. Tinting the
+    /// whole face is what makes the pick unambiguous.
+    private func updateFaceHighlights() {
+        measureFaceGroup?.removeFromParentNode()
+        measureFaceGroup = nil
+        previewFaceNode?.removeFromParentNode()
+        previewFaceNode = nil
+
+        guard isBrep, let modelNode else { return }
+        let inflate = max(modelDim, 1) * 0.0015
+
+        var pickedFaces: [Int] = []
+        for entity in pickedEntities.prefix(pickedPoints.count) {
+            if case .face(let i) = entity, !pickedFaces.contains(i) {
+                pickedFaces.append(i)
+            }
+        }
+
+        if !pickedFaces.isEmpty {
+            let group = SCNNode()
+            group.name = "measure_face_group"
+            for i in pickedFaces {
+                guard let geo = faceOverlayGeometry(faceIndex: i, style: .measure,
+                                                    inflate: inflate) else { continue }
+                let node = SCNNode(geometry: geo)
+                node.name = "measure_face"
+                // Drawn after the model and the wireframe so the tint reads as a
+                // coverage of the face rather than being buried by the shaded surface.
+                node.renderingOrder = 10
+                group.addChildNode(node)
+            }
+            if !group.childNodes.isEmpty {
+                modelNode.addChildNode(group)
+                measureFaceGroup = group
+            }
+        }
+
+        // The preselect is skipped when it is already a committed pick, which would
+        // otherwise stack two translucent layers on the same face and darken it.
+        if case .face(let i) = previewEntity, !pickedFaces.contains(i),
+           let geo = faceOverlayGeometry(faceIndex: i, style: .preview, inflate: inflate) {
+            let node = SCNNode(geometry: geo)
+            node.name = "preview_face"
+            node.renderingOrder = 11
+            modelNode.addChildNode(node)
+            previewFaceNode = node
+        }
+    }
+
+    private func faceOverlayGeometry(faceIndex: Int, style: FaceHighlightStyle,
+                                     inflate: Float) -> SCNGeometry? {
+        let key = "\(style.rawValue)-\(faceIndex)"
+        if let cached = faceOverlayCache[key] { return cached }
+        guard let geo = buildFaceOverlayGeometry(faceIndex: faceIndex, inflate: inflate,
+                                                 style: style) else { return nil }
+        faceOverlayCache[key] = geo
+        return geo
+    }
+
+    /// Re-emits one B-rep face's triangles as a translucent patch, lifted a hair off the
+    /// shaded surface so it does not fight the model for the same depth.
+    ///
+    /// Each triangle is offset along its own normal rather than scaled about the model
+    /// centre: a pocket floor faces inwards, where a radial push would bury the tint
+    /// inside the part instead of lifting it clear of the surface.
+    private func buildFaceOverlayGeometry(faceIndex: Int, inflate: Float,
+                                          style: FaceHighlightStyle) -> SCNGeometry? {
+        let triangleCount = modelTriangleIndices.count / 3
+        let vertexCount = modelVertices.count
+        guard triangleCount > 0, vertexCount > 0 else { return nil }
+
+        var positions: [SCNVector3] = []
+        positions.reserveCapacity(96)
+
+        for t in 0..<triangleCount {
+            guard t < triangleToFace.count,
+                  Int(triangleToFace[t]) == faceIndex else { continue }
+            let i0 = Int(modelTriangleIndices[t * 3])
+            let i1 = Int(modelTriangleIndices[t * 3 + 1])
+            let i2 = Int(modelTriangleIndices[t * 3 + 2])
+            guard i0 < vertexCount, i1 < vertexCount, i2 < vertexCount else { continue }
+
+            let a = modelVertices[i0], b = modelVertices[i1], c = modelVertices[i2]
+            let n = Self.triangleNormal(a, b, c)
+            let ox = n.x * inflate, oy = n.y * inflate, oz = n.z * inflate
+            positions.append(SCNVector3(a.x + ox, a.y + oy, a.z + oz))
+            positions.append(SCNVector3(b.x + ox, b.y + oy, b.z + oz))
+            positions.append(SCNVector3(c.x + ox, c.y + oy, c.z + oz))
+        }
+
+        guard positions.count >= 3 else { return nil }
+
+        let source = SCNGeometrySource(vertices: positions)
+        let indices = positions.indices.map { UInt32($0) }
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+        let geo = SCNGeometry(sources: [source], elements: [element])
+
+        let material = SCNMaterial()
+        material.diffuse.contents = style.color
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        material.transparency = style.transparency
+        // Over the surface beneath it, but never occluding anything else: the patch is
+        // coplanar with the face it covers, so it must not write depth.
+        material.readsFromDepthBuffer = true
+        material.writesToDepthBuffer = false
+        geo.materials = [material]
+        return geo
+    }
+
+    private static func triangleNormal(_ a: SCNVector3, _ b: SCNVector3,
+                                       _ c: SCNVector3) -> SCNVector3 {
+        let ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z
+        let vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z
+        let nx = uy * vz - uz * vy
+        let ny = uz * vx - ux * vz
+        let nz = ux * vy - uy * vx
+        let len = (nx * nx + ny * ny + nz * nz).squareRoot()
+        guard len > 1e-9 else { return SCNVector3(0, 0, 0) }
+        return SCNVector3(nx / len, ny / len, nz / len)
+    }
 
     /// Highlights the entity the finger is over during a press-and-hold.
     ///
@@ -1307,6 +1519,10 @@ final class ViewerViewModel: ObservableObject {
 
         scene.rootNode.addChildNode(group)
         previewGroup = group
+
+        // The dot and label say *where* the finger is; this tints the whole face it
+        // resolved to, which is the part that is easy to get wrong by eye.
+        updateFaceHighlights()
     }
 
     /// Rebuilds the measurement annotations.
@@ -1399,6 +1615,10 @@ final class ViewerViewModel: ObservableObject {
 
         scene.rootNode.addChildNode(group)
         measureGroup = group
+
+        // Last, and outside `group`: the whole-face tint lives in the model's local
+        // space, whereas every annotation above is in world space.
+        updateFaceHighlights()
     }
 
     private func addMarker(at point: SCNVector3, kind: SnapKind, entity: PickEntity,
