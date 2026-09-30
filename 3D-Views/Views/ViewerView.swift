@@ -107,6 +107,11 @@ struct ViewerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbarBackground(.hidden)
+        // The viewer owns the whole screen and its one-finger drag is orbit. A
+        // right-swipe from the left edge would otherwise pop the navigation stack
+        // mid-drag, which fights the camera gesture the user is actually trying to
+        // make. Disabling the interactive pop keeps the swipe for orbit only.
+        .disableInteractivePopGesture()
         .alert(isPresented: errorBinding) {
             Alert(title: Text("错误"),
                   message: Text(viewModel.loadError ?? ""),
@@ -512,5 +517,48 @@ struct ViewerView: View {
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity)
         }
+    }
+}
+
+// MARK: - Disable swipe-back
+
+extension View {
+    /// Disables the navigation controller's interactive pop (swipe from the left
+    /// edge to go back) on the screen this modifier is applied to.
+    ///
+    /// SwiftUI offers no first-party API for this, so a one-pixel helper view
+    /// controller is embedded in the background. Once it is added to the view
+    /// hierarchy it walks up the responder chain to the owning `UINavigationController`
+    /// and turns its `interactivePopGestureRecognizer` off.
+    func disableInteractivePopGesture() -> some View {
+        background(InteractivePopDisabler())
+    }
+}
+
+private struct InteractivePopDisabler: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        PopDisablerVC()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+}
+
+/// Disables the navigation controller's interactive pop gesture once it is itself
+/// embedded in that controller's hierarchy. `viewDidAppear` is the first point at
+/// which `navigationController` is guaranteed to be non-nil.
+private final class PopDisablerVC: UIViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.isUserInteractionEnabled = false
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
     }
 }
