@@ -14,6 +14,11 @@ struct SceneView: UIViewRepresentable {
     /// Hands the renderer to the view model so it can size annotations in screen
     /// space and command the camera the view is actually rendering through.
     var onViewReady: ((SCNView) -> Void)?
+    /// Fired right after a new scene is handed to the renderer. That assignment is the
+    /// moment SceneKit inserts a camera controller of its own, so it is also the only
+    /// moment at which the scene's intended camera can be reclaimed. See
+    /// `ViewerViewModel.claimPointOfView`.
+    var onSceneAssigned: ((SCNView, SCNScene) -> Void)?
     /// Preselect: a press-and-hold reports where the finger is *before* committing,
     /// so the entity about to be measured can be highlighted first.
     var onPreview: ((CGPoint, SCNView) -> Void)?
@@ -80,6 +85,7 @@ struct SceneView: UIViewRepresentable {
     func updateUIView(_ scnView: SCNView, context: Context) {
         if scnView.scene !== scene {
             scnView.scene = scene
+            if let scene { onSceneAssigned?(scnView, scene) }
         }
         context.coordinator.measureMode = measureMode
         context.coordinator.onMeasureTap = onMeasureTap

@@ -327,6 +327,29 @@ final class ViewerViewModel: ObservableObject {
         renderView = view
     }
 
+    /// Takes the rendering camera back from SceneKit's camera controller.
+    ///
+    /// Enabling `allowsCameraControl` makes SceneKit insert a camera of its own as an
+    /// immediate child of the scene root and assign it to the view's `pointOfView`. That
+    /// is the camera which actually renders — not the one `buildScene` configured — and
+    /// it carries SceneKit's defaults, `zNear = 1` and `zFar = 100`. With the camera
+    /// placed at `2.4 × modelDim`, any part larger than roughly 40 units therefore falls
+    /// behind the far plane and is clipped away, which reads as a model whose outline
+    /// cannot be made out at all.
+    ///
+    /// Assigning `pointOfView` is the whole fix; the camera controller then drives
+    /// whichever node is the point of view, so gestures, `resetView` and this all end up
+    /// acting on the same camera. It has to happen after the scene is handed to the
+    /// view, because that assignment is what makes SceneKit install its camera — doing
+    /// it any earlier is silently undone.
+    func claimPointOfView(in view: SCNView, scene: SCNScene) {
+        renderView = view
+        guard let cam = scene.rootNode.childNode(withName: "camera", recursively: true) else {
+            return
+        }
+        view.pointOfView = cam
+    }
+
     /// Screen-space snap radius, in points. 14 pt is a comfortable touch target on
     /// iPhone and iPad alike, and it is the same tolerance for edges and vertices.
     private let snapScreenRadius: CGFloat = 14
@@ -689,16 +712,26 @@ final class ViewerViewModel: ObservableObject {
 
         let camera = SCNCamera()
         camera.fieldOfView = 45
-        // `automaticallyAdjustsZRange` defaults to `false`, which leaves SceneKit's own
-        // `zNear = 1` / `zFar = 100` in force. The camera is placed at
-        // `2.4 × modelDim`, so anything past a few dozen units is behind the far plane
-        // and simply does not render; dollying in then pushes the feature under
-        // inspection through the near plane. Both failures read as "the detail is
-        // missing" — small fillets and holes gone, a face cut open — rather than as a
-        // camera problem. Letting SceneKit fit the range to the scene each frame is what
-        // keeps every feature in front of the camera at any zoom. It has to be set
-        // explicitly: it is not the default.
-        camera.automaticallyAdjustsZRange = true
+        // An explicit depth range sized to the part, not SceneKit's default
+        // `zNear = 1` / `zFar = 100`. The camera is placed at `2.4 × modelDim`, so with
+        // the defaults every part larger than roughly 40 units sits entirely behind the
+        // far plane: nothing draws but the odd near sliver, which is what "看不清轮廓"
+        // looks like from the outside — a rendering failure mistaken for a bad model.
+        //
+        // `automaticallyAdjustsZRange` is deliberately NOT relied on, even though it is
+        // the obvious tool for this. It does not survive interaction: SceneKit documents
+        // that writing either `zNear` or `zFar` resets `automaticallyAdjustsZRange` to
+        // false, and `allowsCameraControl`'s own controller writes both as the user
+        // pinches and dollies. The safety net therefore turns itself off the moment the
+        // user starts working, dropping the range back to the defaults mid-inspection.
+        // Values derived from the part stay correct for the whole session.
+        camera.automaticallyAdjustsZRange = false
+        // A ratio of 400 between the planes keeps enough depth precision that the edge
+        // overlay — inflated by only 0.15% — is never swamped by quantisation and left
+        // z-fighting with the surface it sits on. The near plane is 40× closer than the
+        // nearest surface, so dollying in to inspect a feature cannot clip it away.
+        camera.zNear = Double(max(cameraDistance * 0.02, 0.001))
+        camera.zFar = Double(cameraDistance * 8)
         camera.wantsHDR = false
         camera.bloomIntensity = 0
 
@@ -711,9 +744,16 @@ final class ViewerViewModel: ObservableObject {
 
         // Three lights instead of four: a key, a fill and low ambient. The removed
         // back light contributed little and cost a full extra shading pass.
+        //
+        // Intensities are deliberately well under the previous 1100/450/320. Those sums
+        // drove a fully-lit face to roughly 0.97 — brighter than the 0.91 backdrop — so
+        // the model's lit side dissolved into the background and the silhouette vanished
+        // exactly where the light hit it. Kept near 0.6 the lit side stays clearly darker
+        // than the backdrop while the unlit side still falls off to near-black, which is
+        // the contrast that makes form and small features readable.
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 1100
+        keyLight.intensity = 700
         let keyNode = SCNNode()
         keyNode.light = keyLight
         keyNode.position = SCNVector3(cameraDistance * 0.6, cameraDistance, cameraDistance * 0.6)
@@ -722,7 +762,7 @@ final class ViewerViewModel: ObservableObject {
 
         let fillLight = SCNLight()
         fillLight.type = .directional
-        fillLight.intensity = 450
+        fillLight.intensity = 280
         fillLight.color = UIColor(white: 0.85, alpha: 1.0)
         let fillNode = SCNNode()
         fillNode.light = fillLight
@@ -732,7 +772,7 @@ final class ViewerViewModel: ObservableObject {
 
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 320
+        ambient.intensity = 190
         ambient.color = UIColor(white: 0.78, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.light = ambient

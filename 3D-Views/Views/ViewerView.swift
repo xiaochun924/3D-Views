@@ -21,6 +21,9 @@ struct ViewerView: View {
                     viewModel.handleTap(screenPoint: point, in: view)
                 },
                 onViewReady: { view in viewModel.attach(view: view) },
+                onSceneAssigned: { view, scene in
+                    viewModel.claimPointOfView(in: view, scene: scene)
+                },
                 onPreview: { point, view in
                     viewModel.handlePreview(screenPoint: point, in: view)
                 },
