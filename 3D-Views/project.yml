@@ -75,7 +75,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews
         PRODUCT_NAME: 3D-Views
-        SWIFT_VERSION: "6.0"
+        SWIFT_VERSION: "6.2"
         SWIFT_STRICT_CONCURRENCY: complete
         SWIFT_APPROACHABLE_CONCURRENCY: YES
         MARKETING_VERSION: 1.0
