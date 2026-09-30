@@ -862,7 +862,7 @@ private final class SwipeBackSuppressor {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(navDidShow(_:)),
-            name: UINavigationController.didShowViewControllerNotification,
+            name: NSNotification.Name("UINavigationControllerDidShowViewController"),
             object: nil
         )
     }

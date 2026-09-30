@@ -1512,7 +1512,11 @@ final class ViewerViewModel: ObservableObject {
         cameraTarget = SCNVector3(0, 0, 0)
         reassertPointOfView()
         applyCamera()
-        Self.cameraLog.info("view \(direction.rawValue, privacy: .public): az \(String(format: "%.2f", cameraAzimuth), privacy: .public) el \(String(format: "%.2f", cameraElevation), privacy: .public)")
+        // Interpolation arguments are autoclosures; formatting into locals keeps
+        // the property reads out of them (explicit-self capture rules).
+        let azText = String(format: "%.2f", cameraAzimuth)
+        let elText = String(format: "%.2f", cameraElevation)
+        Self.cameraLog.info("view \(direction.rawValue, privacy: .public): az \(azText, privacy: .public) el \(elText, privacy: .public)")
     }
 
     // MARK: - Measure
