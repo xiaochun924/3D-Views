@@ -493,7 +493,7 @@ final class ViewerViewModel: ObservableObject {
             let meshEdges = Self.makeSharpEdgeGeometry(
                 vertices: modelVertices,
                 triangles: meshTrianglesWithFaces,
-                edgeWidth: Float(max(maxDim * 0.005, 0.01))
+                edgeWidth: Float(max(maxDim * 0.0025, 0.005))
             )
 
             let outlineGeometry = Self.makeOutlineGeometry(
