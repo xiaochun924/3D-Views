@@ -672,16 +672,38 @@ final class ViewerViewModel: ObservableObject {
                            cameraDistance: Float) -> SCNScene {
         let scene = SCNScene()
 
-        // A neutral machined-steel grey reads far better against the light backdrop
-        // than a mid-green, which sat at almost the same luminance as the background
-        // and flattened facet-to-facet shading differences. Kept a touch darker than the
-        // backdrop with a real specular highlight, so curvature and small features read
-        // as shaded surfaces rather than as one flat silhouette.
+        // A sky-over-ground environment image, used as the scene's light source.
+        //
+        // This is the piece the web viewers that look sharper all have and this scene did
+        // not. Lighting a machined part with point lights alone leaves every surface facing
+        // away from them uniformly flat — which is exactly what "看不清轮廓" describes:
+        // the silhouette is there, the form inside it is not. An environment gives every
+        // direction its own amount of light, so a face reads its own orientation, and
+        // curved or angled features separate from one another without needing an edge.
+        //
+        // Built here rather than loaded so the app carries no asset: a bright zenith, a
+        // mid horizon and a dark nadir, which is the same job a three.js hemisphere light
+        // does in the reference viewer.
+        scene.lightingEnvironment.contents = Self.environmentCube()
+        // Deliberately under full strength. The environment lights every surface from
+        // every direction, so it adds a large amount of light on top of the key — run at
+        // 1.0 it alone pushes an up-facing surface past the 0.91 backdrop and the model
+        // dissolves into the background, which is the failure this whole exercise started
+        // from. What is wanted from it is the *shape* of the falloff, not its amount.
+        scene.lightingEnvironment.intensity = 0.55
+
+        // Physically based rather than phong, so the environment above is actually
+        // integrated instead of being ignored. Roughness stays high (matte) because a
+        // mirror finish on a flat plate returns one highlight and nothing else, whereas a
+        // diffuse response shades every facet by its angle to the sky. The albedo is mid
+        // grey rather than near-white for the same reason as the intensity above: under
+        // PBR everything the lights and the environment contribute is multiplied by it,
+        // so it is the one knob that scales the whole result against the backdrop.
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.56, green: 0.60, blue: 0.66, alpha: 1.0)
-        mat.specular.contents = UIColor(white: 0.55, alpha: 1.0)
-        mat.shininess = 0.28
-        mat.lightingModel = .phong
+        mat.diffuse.contents = UIColor(red: 0.55, green: 0.58, blue: 0.63, alpha: 1.0)
+        mat.metalness.contents = 0.1
+        mat.roughness.contents = 0.7
+        mat.lightingModel = .physicallyBased
         mat.isDoubleSided = true
         geometry.materials = [mat]
 
@@ -746,43 +768,90 @@ final class ViewerViewModel: ObservableObject {
         cameraNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(cameraNode)
 
-        // Three lights instead of four: a key, a fill and low ambient. The removed
-        // back light contributed little and cost a full extra shading pass.
+        // A key, a fill and a little ambient on top of the environment above.
         //
-        // Intensities are deliberately well under the previous 1100/450/320. Those sums
-        // drove a fully-lit face to roughly 0.97 — brighter than the 0.91 backdrop — so
-        // the model's lit side dissolved into the background and the silhouette vanished
-        // exactly where the light hit it. Kept near 0.6 the lit side stays clearly darker
-        // than the backdrop while the unlit side still falls off to near-black, which is
-        // the contrast that makes form and small features readable.
+        // The positions set here are only the opening frame's; `applyCamera` re-aims both
+        // directional lights relative to the camera on every move, which is the same thing
+        // the reference viewer's `_followCamera` lights do. A world-fixed rig is the other
+        // half of why an orbit used to lose the model: swing round to the unlit side and
+        // the only light left was ambient, so the part went flat exactly when the user was
+        // looking hardest. Camera-relative lights mean every view arrives lit from the
+        // upper left of the screen, whatever direction that is in the model's frame.
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 700
+        keyLight.intensity = 650
         let keyNode = SCNNode()
+        keyNode.name = "keyLight"
         keyNode.light = keyLight
-        keyNode.position = SCNVector3(cameraDistance * 0.6, cameraDistance, cameraDistance * 0.6)
+        keyNode.position = SCNVector3(-cameraDistance * 0.45, cameraDistance * 0.62, cameraDistance * 0.64)
         keyNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(keyNode)
 
         let fillLight = SCNLight()
         fillLight.type = .directional
-        fillLight.intensity = 280
-        fillLight.color = UIColor(white: 0.85, alpha: 1.0)
+        fillLight.intensity = 240
+        fillLight.color = UIColor(white: 0.86, alpha: 1.0)
         let fillNode = SCNNode()
+        fillNode.name = "fillLight"
         fillNode.light = fillLight
-        fillNode.position = SCNVector3(-cameraDistance * 0.7, cameraDistance * 0.25, cameraDistance * 0.5)
+        fillNode.position = SCNVector3(cameraDistance * 0.60, cameraDistance * 0.10, cameraDistance * 0.55)
         fillNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(fillNode)
 
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 190
-        ambient.color = UIColor(white: 0.78, alpha: 1.0)
+        ambient.intensity = 130
+        ambient.color = UIColor(white: 0.80, alpha: 1.0)
         let ambientNode = SCNNode()
+        ambientNode.name = "ambientLight"
         ambientNode.light = ambient
         scene.rootNode.addChildNode(ambientNode)
 
         return scene
+    }
+
+    /// Six cube faces forming a sky-over-ground light environment.
+    ///
+    /// A cube map rather than a single equirectangular image because the face order and
+    /// orientation are unambiguous, whereas how SceneKit projects a lone image depends on
+    /// settings that are easy to get subtly wrong and hard to notice: the model would
+    /// simply come out dimmer, which is exactly the symptom being fixed.
+    ///
+    /// SceneKit's face order is +X, -X, +Y, -Y, +Z, -Z, and for the four side faces the
+    /// top of the image is +Y — so a plain top-to-bottom gradient is a gradient from sky
+    /// to ground, which is what makes upward-facing surfaces brighter than downward ones.
+    static func environmentCube() -> [UIImage] {
+        let size = CGSize(width: 32, height: 32)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let sky = UIColor(white: 0.98, alpha: 1.0)
+        let ground = UIColor(white: 0.34, alpha: 1.0)
+
+        func uniform(_ color: UIColor) -> UIImage {
+            renderer.image { context in
+                color.setFill()
+                context.fill(CGRect(origin: .zero, size: size))
+            }
+        }
+
+        func gradient(from top: UIColor, to bottom: UIColor) -> UIImage {
+            renderer.image { context in
+                let colors = [top.cgColor, bottom.cgColor] as CFArray
+                guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                      let ramp = CGGradient(colorsSpace: space, colors: colors, locations: [0, 1])
+                else { return }
+                context.cgContext.drawLinearGradient(
+                    ramp,
+                    start: CGPoint(x: 0, y: 0),
+                    end: CGPoint(x: 0, y: size.height),
+                    options: []
+                )
+            }
+        }
+
+        let side = gradient(from: sky, to: ground)
+        return [side, side,
+                uniform(sky), uniform(ground),
+                side, side]
     }
 
     // MARK: - Camera control
@@ -842,6 +911,35 @@ final class ViewerViewModel: ObservableObject {
             camera.zNear = Double(max(d * 0.01, 0.0001))
             camera.zFar = Double(d + max(modelDim, 1) * 8)
         }
+
+        updateLights(relativeTo: camNode)
+    }
+
+    /// Re-aims the directional lights so they stay fixed relative to the screen.
+    ///
+    /// Offsets are given in the camera's own frame — left/right, up/down, behind — and so
+    /// are rotated into the model's frame by the camera's current orientation. The lights
+    /// therefore come from the upper left of the screen no matter how the part is turned,
+    /// which is what keeps one side lit and the other in shadow from every angle; that
+    /// gradient across the surface is what makes an untextured part readable.
+    private func updateLights(relativeTo camNode: SCNNode) {
+        guard let scene else { return }
+
+        let distance = cameraOrbitDistance
+        let orientation = camNode.simdWorldTransform
+        let origin = camNode.simdWorldPosition
+
+        func place(_ name: String, local offset: SIMD3<Float>) {
+            guard let node = scene.rootNode.childNode(withName: name, recursively: true) else { return }
+            // w = 0 rotates the offset by the camera's orientation without translating it.
+            let rotated = orientation * SIMD4<Float>(offset.x, offset.y, offset.z, 0)
+            let direction = SIMD3<Float>(rotated.x, rotated.y, rotated.z)
+            node.simdPosition = origin + direction * distance
+            node.look(at: cameraTarget)
+        }
+
+        place("keyLight", local: SIMD3<Float>(-0.45, 0.62, 0.64))
+        place("fillLight", local: SIMD3<Float>(0.60, 0.10, 0.55))
     }
 
     /// Distance at which the whole part fits the viewport, with a margin.
