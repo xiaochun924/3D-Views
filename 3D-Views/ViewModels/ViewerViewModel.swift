@@ -484,9 +484,20 @@ final class ViewerViewModel: ObservableObject {
                 : []
             let edgeGeometry = Self.makeEdgeGeometry(from: edgePolylines)
 
+            // Retained before the scene is built, because the outline hull below is cut
+            // from this very vertex buffer and the triangle list above it.
+            modelVertices = Self.extractVertices(from: geometry)
+            modelTriangleIndices = Self.extractTriangleIndices(from: geometry)
+            let outlineGeometry = Self.makeOutlineGeometry(
+                vertexSource: geometry.sources(for: .vertex).first,
+                vertices: modelVertices,
+                triangles: meshTrianglesWithFaces
+            )
+
             let built = Self.buildScene(
                 geometry: geometry,
                 edgeGeometry: brep ? edgeGeometry : nil,
+                outlineGeometry: outlineGeometry,
                 center: center,
                 cameraDistance: cameraDistance
             )
@@ -498,10 +509,8 @@ final class ViewerViewModel: ObservableObject {
             isBrep = brep
             triangleToFace = brep ? meshTrianglesWithFaces.map(\.faceIndex) : []
 
-            // Retain the mesh buffers and drop any highlight built for the previous
-            // model, including its cached overlay geometry.
-            modelVertices = Self.extractVertices(from: geometry)
-            modelTriangleIndices = Self.extractTriangleIndices(from: geometry)
+            // Drop any highlight built for the previous model, including its cached
+            // overlay geometry.
             faceOverlayCache.removeAll()
             clearHighlightNodes()
 
@@ -569,6 +578,67 @@ final class ViewerViewModel: ObservableObject {
         let source = SCNGeometrySource(vertices: positions)
         let element = SCNGeometryElement(indices: indices, primitiveType: .line)
         return SCNGeometry(sources: [source], elements: [element])
+    }
+
+    /// A copy of the shaded mesh, black, used to draw the part's outline.
+    ///
+    /// This is the reverse-hull outline the sharper viewers all end up with: draw the
+    /// same solid again, very slightly larger, with front faces culled and no lighting, so
+    /// only the far shell survives the depth test and it peeks out as a dark rim exactly
+    /// along the silhouette. A thin dark line is the one thing a shaded surface cannot
+    /// supply on its own — where a lit face happens to match the backdrop there is no
+    /// gradient to mark the boundary — and it is what "看不清轮廓" is really asking for.
+    ///
+    /// The vertices are shared with the shaded geometry rather than duplicated; only a
+    /// new index buffer is built, for the reason in the winding note below.
+    ///
+    /// `cullMode = .front` keeps the far side *only if* the triangles are wound
+    /// outward-CCW. The kernel's per-triangle normal is the reference for that, so each
+    /// triangle whose geometric normal disagrees with it is emitted with its last two
+    /// vertices swapped. Without this the culling would keep the near shell instead, and
+    /// the whole part would render as a solid black silhouette rather than an outline.
+    static func makeOutlineGeometry(
+        vertexSource: SCNGeometrySource?,
+        vertices: [SCNVector3],
+        triangles: [OCCTSwift.Triangle]
+    ) -> SCNGeometry? {
+        guard let vertexSource, !vertices.isEmpty, !triangles.isEmpty else { return nil }
+
+        var indices: [UInt32] = []
+        indices.reserveCapacity(triangles.count * 3)
+
+        for triangle in triangles {
+            let i0 = Int(triangle.v1)
+            let i1 = Int(triangle.v2)
+            let i2 = Int(triangle.v3)
+            guard i0 < vertices.count, i1 < vertices.count, i2 < vertices.count else { continue }
+
+            let a = vertices[i0]
+            let b = vertices[i1]
+            let c = vertices[i2]
+            let ab = SIMD3<Float>(b.x - a.x, b.y - a.y, b.z - a.z)
+            let ac = SIMD3<Float>(c.x - a.x, c.y - a.y, c.z - a.z)
+            let geometric = simd_cross(ab, ac)
+
+            // A degenerate triangle or a missing normal leaves the winding as it came;
+            // there is no reliable reference to correct it against.
+            if simd_length_squared(geometric) > 0,
+               simd_length_squared(triangle.normal) > 0,
+               simd_dot(geometric, triangle.normal) < 0 {
+                indices.append(triangle.v1)
+                indices.append(triangle.v3)
+                indices.append(triangle.v2)
+            } else {
+                indices.append(triangle.v1)
+                indices.append(triangle.v2)
+                indices.append(triangle.v3)
+            }
+        }
+
+        guard indices.count >= 3 else { return nil }
+
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+        return SCNGeometry(sources: [vertexSource], elements: [element])
     }
 
     /// Edge index → world-space polyline, for screen-space edge picking and for the
@@ -668,6 +738,7 @@ final class ViewerViewModel: ObservableObject {
 
     static func buildScene(geometry: SCNGeometry,
                            edgeGeometry: SCNGeometry?,
+                           outlineGeometry: SCNGeometry?,
                            center: SCNVector3,
                            cameraDistance: Float) -> SCNScene {
         let scene = SCNScene()
@@ -685,12 +756,14 @@ final class ViewerViewModel: ObservableObject {
         // mid horizon and a dark nadir, which is the same job a three.js hemisphere light
         // does in the reference viewer.
         scene.lightingEnvironment.contents = Self.environmentCube()
-        // Deliberately under full strength. The environment lights every surface from
-        // every direction, so it adds a large amount of light on top of the key — run at
-        // 1.0 it alone pushes an up-facing surface past the 0.91 backdrop and the model
-        // dissolves into the background, which is the failure this whole exercise started
-        // from. What is wanted from it is the *shape* of the falloff, not its amount.
-        scene.lightingEnvironment.intensity = 0.55
+        // Deliberately well under full strength. The environment lights every surface from
+        // every direction, so it adds a large amount of light on top of the key *and* it
+        // flattens the form — it is the one term that gives a face no reason to be darker
+        // than its neighbour. What is wanted from it is the shape of the falloff at a
+        // glance, not its amount: enough to keep the shadow side off pure black, little
+        // enough that the key still draws a terminator across each curved feature. Run any
+        // brighter and an up-facing surface passes the backdrop and the model dissolves.
+        scene.lightingEnvironment.intensity = 0.25
 
         // Physically based rather than phong, so the environment above is actually
         // integrated instead of being ignored. Roughness stays high (matte) because a
@@ -700,7 +773,7 @@ final class ViewerViewModel: ObservableObject {
         // PBR everything the lights and the environment contribute is multiplied by it,
         // so it is the one knob that scales the whole result against the backdrop.
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.55, green: 0.58, blue: 0.63, alpha: 1.0)
+        mat.diffuse.contents = UIColor(red: 0.50, green: 0.53, blue: 0.58, alpha: 1.0)
         mat.metalness.contents = 0.1
         mat.roughness.contents = 0.7
         mat.lightingModel = .physicallyBased
@@ -748,6 +821,34 @@ final class ViewerViewModel: ObservableObject {
             modelNode.addChildNode(edgeAnchor)
         }
 
+        if let outlineGeometry {
+            let outlineMat = SCNMaterial()
+            outlineMat.diffuse.contents = UIColor(red: 0.15, green: 0.18, blue: 0.23, alpha: 1.0)
+            outlineMat.lightingModel = .constant
+            // Not double-sided: the whole point of the hull is to keep one side and drop
+            // the other. Leaving both on would paint the near shell over the part.
+            outlineMat.isDoubleSided = false
+            outlineMat.cullMode = .front
+            outlineMat.readsFromDepthBuffer = true
+            outlineMat.writesToDepthBuffer = true
+            outlineGeometry.materials = [outlineMat]
+
+            // Inflated by a fixed fraction of the part, not a fixed distance, so the rim
+            // is the same relative width on a 20 mm bracket and a metre-long beam, and it
+            // stays the same on screen at the framing distance. Applied through the same
+            // explicit anchor pair as the edge overlay — v -> center + 1.006 * (v - center).
+            let outlineAnchor = SCNNode()
+            outlineAnchor.name = "outlineAnchor"
+            outlineAnchor.position = center
+            outlineAnchor.scale = SCNVector3(1.006, 1.006, 1.006)
+
+            let outlineNode = SCNNode(geometry: outlineGeometry)
+            outlineNode.name = "outline"
+            outlineNode.position = SCNVector3(-center.x, -center.y, -center.z)
+            outlineAnchor.addChildNode(outlineNode)
+            modelNode.addChildNode(outlineAnchor)
+        }
+
         let camera = SCNCamera()
         camera.fieldOfView = 45
         // Placeholder depth range; `applyCamera` re-derives it from the current orbit
@@ -779,7 +880,7 @@ final class ViewerViewModel: ObservableObject {
         // upper left of the screen, whatever direction that is in the model's frame.
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 650
+        keyLight.intensity = 510
         let keyNode = SCNNode()
         keyNode.name = "keyLight"
         keyNode.light = keyLight
@@ -789,7 +890,7 @@ final class ViewerViewModel: ObservableObject {
 
         let fillLight = SCNLight()
         fillLight.type = .directional
-        fillLight.intensity = 240
+        fillLight.intensity = 130
         fillLight.color = UIColor(white: 0.86, alpha: 1.0)
         let fillNode = SCNNode()
         fillNode.name = "fillLight"
@@ -800,7 +901,7 @@ final class ViewerViewModel: ObservableObject {
 
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 130
+        ambient.intensity = 55
         ambient.color = UIColor(white: 0.80, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.name = "ambientLight"
@@ -1763,11 +1864,18 @@ final class ViewerViewModel: ObservableObject {
     private func applyDisplayMode() {
         guard let material = modelNode?.geometry?.firstMaterial else { return }
         let edges = scene?.rootNode.childNode(withName: "edges", recursively: true)
+        let outline = scene?.rootNode.childNode(withName: "outline", recursively: true)
 
         // Filled is the norm; only the STL wireframe fallback below wants `.lines`, and
         // starting from `.fill` means switching away from it can never leave the surface
         // drawn as a mesh of hairlines.
         material.fillMode = .fill
+
+        // The outline is a solid black shell sitting just outside the surface, so it only
+        // reads as an outline while that surface is actually writing depth. In the two
+        // modes where it does not — translucent and wireframe — the shell would be drawn
+        // through as a black body around the part instead, so it is switched off.
+        outline?.isHidden = false
 
         switch displayMode {
         case .shaded:
@@ -1791,6 +1899,7 @@ final class ViewerViewModel: ObservableObject {
             material.transparency = 0.3
             material.writesToDepthBuffer = false
             edges?.isHidden = false
+            outline?.isHidden = true
 
         case .wireframe:
             if edges != nil {
@@ -1808,6 +1917,7 @@ final class ViewerViewModel: ObservableObject {
                 material.writesToDepthBuffer = true
                 material.fillMode = .lines
             }
+            outline?.isHidden = true
         }
     }
 
