@@ -14,9 +14,9 @@ struct SceneView: UIViewRepresentable {
     /// Hands the renderer to the view model so it can size annotations in screen
     /// space and command the camera the view is actually rendering through.
     var onViewReady: ((SCNView) -> Void)?
-    /// Fired right after a new scene is handed to the renderer. That assignment is the
-    /// moment SceneKit inserts a camera controller of its own, so it is also the only
-    /// moment at which the scene's intended camera can be reclaimed. See
+    /// Fired right after a new scene is handed to the renderer, so the view model can point
+    /// the renderer at the scene's own camera and frame the part — the viewport it needs
+    /// to solve that against only exists once the scene is live. See
     /// `ViewerViewModel.claimPointOfView`.
     var onSceneAssigned: ((SCNView, SCNScene) -> Void)?
     /// Preselect: a press-and-hold reports where the finger is *before* committing,
@@ -28,11 +28,27 @@ struct SceneView: UIViewRepresentable {
     /// Kept separate from the commit above so an interrupted press never measures
     /// whatever happened to be highlighted at the time.
     var onPreviewCancelled: ((SCNView) -> Void)?
+    /// One-finger drag: orbit the camera about the model. Reported as the movement since
+    /// the previous event, so the view model can integrate it however it likes.
+    var onOrbit: ((CGFloat, CGFloat, SCNView) -> Void)?
+    /// Two-finger drag: pan. Two fingers rather than one because on a touch screen one
+    /// finger already means "turn the model", and overloading it would make the two
+    /// impossible to tell apart.
+    var onPan: ((CGFloat, CGFloat, SCNView) -> Void)?
+    /// Pinch: dolly in and out.
+    var onZoom: ((CGFloat, SCNView) -> Void)?
     var measureMode: Bool
 
     func makeUIView(context: Context) -> SCNView {
         let scnView = SCNView()
-        scnView.allowsCameraControl = true
+        // SceneKit's own camera control is deliberately off. Its controller installs a
+        // camera of its own carrying `zNear = 1` / `zFar = 100`, which silently replaces
+        // whatever `buildScene` configured and clips any part larger than a few dozen
+        // units away entirely. It also reinstalls that camera whenever the flag is
+        // toggled, so it cannot be corrected once at setup. Driving the camera ourselves
+        // — see the recognizers below and `ViewerViewModel.applyCamera` — is the only way
+        // the depth range, field of view and framing stay as configured.
+        scnView.allowsCameraControl = false
         scnView.autoenablesDefaultLighting = false
         // iOS defaults this to `.none` (macOS defaults to 4x), so without an explicit
         // setting every edge on every iPhone and iPad is badly aliased.
@@ -40,8 +56,14 @@ struct SceneView: UIViewRepresentable {
         scnView.backgroundColor = UIColor(red: 0.91, green: 0.92, blue: 0.94, alpha: 1.0)
         scnView.scene = scene
 
-        // Simultaneous recognition is what lets SceneKit's own camera-control pans and
-        // pinches keep working alongside this tap.
+        // With camera control off nothing else would pick a camera, and a scene handed over
+        // outside `updateUIView` would never get one — so the first frame would be blank.
+        if let scene, let camera = scene.rootNode.childNode(withName: "camera", recursively: true) {
+            scnView.pointOfView = camera
+        }
+
+        // Simultaneous recognition is what lets the camera gestures run alongside the tap
+        // and the hold, which are otherwise treated as competitors for the same touch.
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
         tap.numberOfTapsRequired = 1
@@ -77,6 +99,31 @@ struct SceneView: UIViewRepresentable {
         // recognizer only reports on touch-up anyway.
         tap.require(toFail: hold)
 
+        // Orbit: one finger drags the camera about the model. The recognizer also drives
+        // two-finger panning, and pan and orbit cancel each other exactly the way the
+        // default camera controller does — a rotation ends, a translation begins.
+        let pan = UIPanGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.handlePan(_:)))
+        pan.minimumNumberOfTouches = 1
+        pan.maximumNumberOfTouches = 2
+        pan.cancelsTouchesInView = false
+        pan.delegate = context.coordinator
+        scnView.addGestureRecognizer(pan)
+
+        // Pinch: dolly. Separate from the pan recognizer so a pinch zoom doesn't also
+        // read as a drag and slew the target.
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator,
+                                             action: #selector(Coordinator.handlePinch(_:)))
+        pinch.cancelsTouchesInView = false
+        pinch.delegate = context.coordinator
+        scnView.addGestureRecognizer(pinch)
+
+        // Held so the hold can switch them off while a preselect is in progress: otherwise
+        // sliding the finger to the wanted face would also orbit the model out from under
+        // it. Saved rather than looked up in `gestureRecognizers`, which would have to
+        // pick the pan and pinch out of a list that also holds the tap and the hold.
+        context.coordinator.cameraGestures = [pan, pinch]
+
         context.coordinator.scnView = scnView
         onViewReady?(scnView)
         return scnView
@@ -92,6 +139,9 @@ struct SceneView: UIViewRepresentable {
         context.coordinator.onPreview = onPreview
         context.coordinator.onPreviewCommitted = onPreviewCommitted
         context.coordinator.onPreviewCancelled = onPreviewCancelled
+        context.coordinator.onOrbit = onOrbit
+        context.coordinator.onPan = onPan
+        context.coordinator.onZoom = onZoom
     }
 
     func makeCoordinator() -> Coordinator {
@@ -106,9 +156,15 @@ struct SceneView: UIViewRepresentable {
         var onPreview: ((CGPoint, SCNView) -> Void)?
         var onPreviewCommitted: ((SCNView) -> Void)?
         var onPreviewCancelled: ((SCNView) -> Void)?
-        /// Whether the camera control was on before the hold switched it off, so it is
-        /// only restored when this gesture was the one that disabled it.
-        private var cameraControlSuspended = false
+        var onOrbit: ((CGFloat, CGFloat, SCNView) -> Void)?
+        var onPan: ((CGFloat, CGFloat, SCNView) -> Void)?
+        var onZoom: ((CGFloat, SCNView) -> Void)?
+        /// The camera recognizers, switched off for the duration of a press-and-hold so a
+        /// slide onto the wanted face preselects instead of orbiting.
+        var cameraGestures: [UIGestureRecognizer] = []
+        /// Set while the two fingers are actually scaling, so the pan that rides along
+        /// with every pinch is ignored. See `handlePinch`.
+        private var isPinching = false
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
@@ -125,10 +181,7 @@ struct SceneView: UIViewRepresentable {
 
             switch gesture.state {
             case .began:
-                if scnView.allowsCameraControl {
-                    scnView.allowsCameraControl = false
-                    cameraControlSuspended = true
-                }
+                setCameraGestures(enabled: false)
                 onPreview?(gesture.location(in: scnView), scnView)
 
             case .changed:
@@ -139,19 +192,56 @@ struct SceneView: UIViewRepresentable {
                 // gesture to fail, a hold that began never also delivers a tap, so this
                 // is the only commit path for it.
                 onPreviewCommitted?(scnView)
-                resumeCameraControl(scnView)
+                setCameraGestures(enabled: true)
 
             default:
                 // Cancelled or failed: drop the highlight without measuring.
                 onPreviewCancelled?(scnView)
-                resumeCameraControl(scnView)
+                setCameraGestures(enabled: true)
             }
         }
 
-        private func resumeCameraControl(_ scnView: SCNView) {
-            guard cameraControlSuspended else { return }
-            cameraControlSuspended = false
-            scnView.allowsCameraControl = true
+        private func setCameraGestures(enabled: Bool) {
+            for gesture in cameraGestures { gesture.isEnabled = enabled }
+        }
+
+        @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard let scnView = gesture.view as? SCNView else { return }
+            guard gesture.state == .began || gesture.state == .changed else { return }
+
+            let movement = gesture.translation(in: scnView)
+            // Consumed either way, so the movement banked while a pinch was in progress
+            // does not land as a jump the moment it ends.
+            gesture.setTranslation(.zero, in: scnView)
+
+            // A real pinch owns both fingers; the slight travel that comes with it must not
+            // also slew the target, or the part drifts while it is being zoomed.
+            guard !isPinching else { return }
+
+            if gesture.numberOfTouches >= 2 {
+                onPan?(movement.x, movement.y, scnView)
+            } else {
+                onOrbit?(movement.x, movement.y, scnView)
+            }
+        }
+
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard let scnView = gesture.view as? SCNView else { return }
+
+            switch gesture.state {
+            case .began, .changed:
+                let scale = gesture.scale
+                // Reset so the next event reports the change since now, not since the pinch
+                // began; otherwise the zoom compounds with every event.
+                gesture.scale = 1
+                // Two fingers that merely travel together keep a scale of 1 and are a pan,
+                // not a zoom — the pinch recognizer still fires for them.
+                guard abs(scale - 1) > 0.001 else { return }
+                isPinching = true
+                onZoom?(scale, scnView)
+            default:
+                isPinching = false
+            }
         }
     }
 }

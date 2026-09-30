@@ -327,27 +327,26 @@ final class ViewerViewModel: ObservableObject {
         renderView = view
     }
 
-    /// Takes the rendering camera back from SceneKit's camera controller.
+    /// Hands the renderer the scene's own camera.
     ///
-    /// Enabling `allowsCameraControl` makes SceneKit insert a camera of its own as an
-    /// immediate child of the scene root and assign it to the view's `pointOfView`. That
-    /// is the camera which actually renders — not the one `buildScene` configured — and
-    /// it carries SceneKit's defaults, `zNear = 1` and `zFar = 100`. With the camera
-    /// placed at `2.4 × modelDim`, any part larger than roughly 40 units therefore falls
-    /// behind the far plane and is clipped away, which reads as a model whose outline
-    /// cannot be made out at all.
+    /// SceneKit is deliberately *not* asked to manage the camera (`allowsCameraControl`
+    /// stays off — see `SceneView`): its camera controller installs a camera of its own
+    /// with `zNear = 1` / `zFar = 100` and discards everything `buildScene` configured.
+    /// At `2.4 × modelDim` any part larger than a few dozen units then sits behind the
+    /// far plane, so nothing but a near sliver draws — a model whose outline cannot be
+    /// made out at all. It also re-installs that camera every time the flag is toggled,
+    /// so even reclaiming the point of view only holds until the next gesture.
     ///
-    /// Assigning `pointOfView` is the whole fix; the camera controller then drives
-    /// whichever node is the point of view, so gestures, `resetView` and this all end up
-    /// acting on the same camera. It has to happen after the scene is handed to the
-    /// view, because that assignment is what makes SceneKit install its camera — doing
-    /// it any earlier is silently undone.
+    /// Keeping the point of view on the scene camera means the depth range, the field of
+    /// view and the orbital state below are the only things that ever decide what is
+    /// drawn. This runs after the scene is handed to the view, which is when the renderer
+    /// has a point of view to hand over.
     func claimPointOfView(in view: SCNView, scene: SCNScene) {
         renderView = view
-        guard let cam = scene.rootNode.childNode(withName: "camera", recursively: true) else {
-            return
-        }
-        view.pointOfView = cam
+        view.pointOfView = scene.rootNode.childNode(withName: "camera", recursively: true)
+        // Framing needs the viewport, which only exists once the scene has been handed
+        // over, so the fit is solved here rather than at load.
+        applyInitialFraming(in: view)
     }
 
     /// Screen-space snap radius, in points. 14 pt is a comfortable touch target on
@@ -361,6 +360,10 @@ final class ViewerViewModel: ObservableObject {
 
     /// Largest model dimension, cached for fallbacks and for camera framing.
     private var modelDim: Float = 10
+
+    /// Radius of a sphere around the part's box, used to frame it. Orientation-independent,
+    /// so "zoom to fit" never crops a corner the current view direction brings into shot.
+    private var modelRadius: Float = 8
 
     /// Distance at which the camera frames the model.
     private var cameraDistance: Float = 24
@@ -441,7 +444,20 @@ final class ViewerViewModel: ObservableObject {
             let sizeZ = bbMax.z - bbMin.z
             let maxDim = max(max(sizeX, sizeY), sizeZ)
             modelDim = max(maxDim, 1)
+            // Half the box diagonal, i.e. a sphere that holds the whole part whichever way
+            // it is turned. Framing against this rather than a single side is what keeps a
+            // long, flat part from being cropped when the camera happens to look down its
+            // length.
+            modelRadius = max(0.5 * sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ), 1)
             cameraDistance = modelDim * 2.4
+
+            // Reset the orbital camera to the part's own frame: the same angles every time,
+            // at a distance that fits it. Without this, a second, differently sized model
+            // would inherit the previous one's zoom and end up cropped or a speck.
+            cameraAzimuth = 0
+            cameraElevation = 0.18
+            cameraOrbitDistance = cameraDistance
+            cameraTarget = SCNVector3(0, 0, 0)
 
             let center = SCNVector3(
                 (bbMin.x + bbMax.x) / 2,
@@ -712,26 +728,14 @@ final class ViewerViewModel: ObservableObject {
 
         let camera = SCNCamera()
         camera.fieldOfView = 45
-        // An explicit depth range sized to the part, not SceneKit's default
-        // `zNear = 1` / `zFar = 100`. The camera is placed at `2.4 × modelDim`, so with
-        // the defaults every part larger than roughly 40 units sits entirely behind the
-        // far plane: nothing draws but the odd near sliver, which is what "看不清轮廓"
-        // looks like from the outside — a rendering failure mistaken for a bad model.
-        //
-        // `automaticallyAdjustsZRange` is deliberately NOT relied on, even though it is
-        // the obvious tool for this. It does not survive interaction: SceneKit documents
-        // that writing either `zNear` or `zFar` resets `automaticallyAdjustsZRange` to
-        // false, and `allowsCameraControl`'s own controller writes both as the user
-        // pinches and dollies. The safety net therefore turns itself off the moment the
-        // user starts working, dropping the range back to the defaults mid-inspection.
-        // Values derived from the part stay correct for the whole session.
+        // Placeholder depth range; `applyCamera` re-derives it from the current orbit
+        // distance on every camera move, which is what keeps it right as the user zooms.
+        // It is set explicitly even here because SceneKit's defaults — `zNear = 1`,
+        // `zFar = 100` — would clip a part of any real size down to a near sliver, and
+        // that is the state the very first frame would otherwise render in.
         camera.automaticallyAdjustsZRange = false
-        // A ratio of 400 between the planes keeps enough depth precision that the edge
-        // overlay — inflated by only 0.15% — is never swamped by quantisation and left
-        // z-fighting with the surface it sits on. The near plane is 40× closer than the
-        // nearest surface, so dollying in to inspect a feature cannot clip it away.
-        camera.zNear = Double(max(cameraDistance * 0.02, 0.001))
-        camera.zFar = Double(cameraDistance * 8)
+        camera.zNear = Double(max(cameraDistance * 0.01, 0.0001))
+        camera.zFar = Double(max(cameraDistance * 10, 1))
         camera.wantsHDR = false
         camera.bloomIntensity = 0
 
@@ -785,51 +789,174 @@ final class ViewerViewModel: ObservableObject {
 
     /// The camera actually being rendered through.
     ///
-    /// Deliberately not `childNode(withName: "camera")`: with
-    /// `allowsCameraControl` enabled SceneKit may install its own camera and assign
-    /// it to the view's `pointOfView`, in which case moving a named node would have
-    /// no visible effect. Commanding the live `pointOfView` works either way.
+    /// Deliberately read from the live `pointOfView` rather than looked up by name: it is
+    /// the node the renderer is actually drawing through, so commanding it is correct
+    /// whether or not SceneKit has swapped in a camera of its own.
     private var cameraNode: SCNNode? {
         renderView?.pointOfView
             ?? scene?.rootNode.childNode(withName: "camera", recursively: true)
     }
 
-    func resetView() {
+    /// Orbital camera state, in the model's own frame.
+    ///
+    /// Every model is recentred on the origin at load, so the orbit target starts there
+    /// and only ever moves when the user pans. Keeping the camera as an angle pair and a
+    /// distance — rather than nudging its transform — is what makes orbiting feel stable
+    /// (the model stays put and turns) and what lets the depth range be recomputed from
+    /// the distance on every move.
+    private var cameraAzimuth: Float = 0
+    private var cameraElevation: Float = 0.18
+    private var cameraOrbitDistance: Float = 24
+    private var cameraTarget = SCNVector3(0, 0, 0)
+
+    /// Just under a right angle, so the default up vector never ends up parallel with the
+    /// view direction at the poles — `look(at:)` is undefined there and the model flips.
+    private let maxElevation: Float = 1.55
+
+    /// Radians of rotation per point dragged. Roughly a third of a turn across a phone
+    /// screen's width, which is the pace every 3D viewer settles on.
+    private let orbitRadiansPerPoint: Float = 0.007
+
+    /// Positions the camera from the orbital state and re-sizes its depth range.
+    ///
+    /// The depth range is recomputed here rather than fixed once when the scene is built
+    /// because the user zooms: a range sized for the opening distance would clip the whole
+    /// part the moment they dolly back, and its near plane would swallow a feature they
+    /// dolly up to. Deriving both from the current distance keeps them correct at any
+    /// zoom, which is what `automaticallyAdjustsZRange` was meant to do and cannot,
+    /// because the controller that would honour it is switched off.
+    private func applyCamera() {
         guard let camNode = cameraNode else { return }
-        camNode.position = SCNVector3(0, cameraDistance * 0.32, cameraDistance)
-        camNode.look(at: SCNVector3(0, 0, 0))
+
+        let d = cameraOrbitDistance
+        let cosElevation = cos(cameraElevation)
+        camNode.position = SCNVector3(
+            cameraTarget.x + d * cosElevation * sin(cameraAzimuth),
+            cameraTarget.y + d * sin(cameraElevation),
+            cameraTarget.z + d * cosElevation * cos(cameraAzimuth)
+        )
+        camNode.look(at: cameraTarget)
+
+        if let camera = camNode.camera {
+            camera.automaticallyAdjustsZRange = false
+            camera.zNear = Double(max(d * 0.01, 0.0001))
+            camera.zFar = Double(d + max(modelDim, 1) * 8)
+        }
+    }
+
+    /// Distance at which the whole part fits the viewport, with a margin.
+    ///
+    /// Solved against both the vertical and the horizontal field of view, because on a
+    /// phone in portrait the horizontal one is much narrower: a distance that fits the
+    /// part vertically still crops it side to side. Framing only vertically is the reason
+    /// a wide part can arrive half off-screen, which reads as a broken model rather than
+    /// as a camera that started too close.
+    private func fitDistance(for view: SCNView) -> Float {
+        let height = Float(max(view.bounds.height, 1))
+        let aspect = Float(max(view.bounds.width, 1)) / height
+        let verticalFOV = Float(45.0 * Double.pi / 180)
+        let horizontalFOV = 2 * atan(tan(verticalFOV / 2) * aspect)
+        let vertical = modelRadius / tan(verticalFOV / 2)
+        let horizontal = modelRadius / tan(max(horizontalFOV / 2, 0.01))
+        return max(vertical, horizontal) * 1.15
+    }
+
+    /// Frames the freshly loaded part and re-applies the camera state.
+    ///
+    /// A viewport that has not been laid out yet would report a zero size and solve for a
+    /// nonsense distance, so in that case the part-sized default from load is kept instead.
+    private func applyInitialFraming(in view: SCNView) {
+        guard view.bounds.width > 1, view.bounds.height > 1 else {
+            applyCamera()
+            return
+        }
+        cameraDistance = fitDistance(for: view)
+        cameraOrbitDistance = cameraDistance
+        applyCamera()
+    }
+
+    /// One-finger drag: orbit about the target.
+    func orbit(dx: CGFloat, dy: CGFloat) {
+        cameraAzimuth -= Float(dx) * orbitRadiansPerPoint
+        // Dragging down tips the model's top toward the viewer, which is the direction
+        // every touch CAD app uses; hence the sign on `dy`.
+        cameraElevation = min(max(cameraElevation + Float(dy) * orbitRadiansPerPoint,
+                                  -maxElevation), maxElevation)
+        applyCamera()
+    }
+
+    /// Pinch: dolly. Clamped so the part can neither be lost to infinity nor flown into.
+    func zoom(by scale: CGFloat) {
+        guard scale > 0 else { return }
+        cameraOrbitDistance = min(max(cameraOrbitDistance / Float(scale),
+                                      modelDim * 0.2), modelDim * 12)
+        applyCamera()
+    }
+
+    /// Two-finger drag: slide the target, and the camera with it, in the view plane.
+    ///
+    /// World units per point are taken at the target's depth, so the model tracks the
+    /// fingers rather than sliding at some other parallax. The target is what moves; the
+    /// camera follows rigidly, which is why the orientation is unchanged.
+    func pan(dx: CGFloat, dy: CGFloat, viewportHeight: CGFloat) {
+        guard let camNode = cameraNode, viewportHeight > 1 else { return }
+
+        let distance = cameraOrbitDistance
+        let halfFieldOfView = Float(45.0 / 2 * Double.pi / 180)
+        let unitsPerPoint = (2 * distance * tan(halfFieldOfView)) / Float(viewportHeight)
+
+        let forward = simd_normalize(SIMD3<Float>(cameraTarget.x - camNode.position.x,
+                                                  cameraTarget.y - camNode.position.y,
+                                                  cameraTarget.z - camNode.position.z))
+        var up = SIMD3<Float>(0, 1, 0)
+        if abs(simd_dot(forward, up)) > 0.99 { up = SIMD3<Float>(0, 0, 1) }
+        let right = simd_normalize(simd_cross(forward, up))
+        let trueUp = simd_normalize(simd_cross(right, forward))
+
+        // Content follows the fingers: dragging right carries the model right, which means
+        // the camera — and so the target — moves left.
+        let move = right * (-Float(dx) * unitsPerPoint) + trueUp * (Float(dy) * unitsPerPoint)
+        cameraTarget = SCNVector3(cameraTarget.x + move.x,
+                                  cameraTarget.y + move.y,
+                                  cameraTarget.z + move.z)
+        applyCamera()
+    }
+
+    func resetView() {
+        cameraAzimuth = 0
+        cameraElevation = 0.18
+        cameraOrbitDistance = cameraDistance
+        cameraTarget = SCNVector3(0, 0, 0)
+        applyCamera()
     }
 
     func setViewDirection(_ direction: ViewDirection) {
-        guard let camNode = cameraNode else { return }
-        let r = cameraDistance
-        let target = SCNVector3(0, 0, 0)
-
         switch direction {
         case .front:
-            camNode.position = SCNVector3(0, 0, r)
-            camNode.look(at: target)
+            cameraAzimuth = 0
+            cameraElevation = 0
         case .back:
-            camNode.position = SCNVector3(0, 0, -r)
-            camNode.look(at: target)
+            cameraAzimuth = .pi
+            cameraElevation = 0
         case .left:
-            camNode.position = SCNVector3(-r, 0, 0)
-            camNode.look(at: target)
+            cameraAzimuth = -.pi / 2
+            cameraElevation = 0
         case .right:
-            camNode.position = SCNVector3(r, 0, 0)
-            camNode.look(at: target)
+            cameraAzimuth = .pi / 2
+            cameraElevation = 0
         case .top:
-            camNode.position = SCNVector3(0, r, 0)
-            // Straight down: the default up vector is parallel to the view direction,
-            // so supply an explicit up in the model's -Z.
-            camNode.look(at: target, up: SCNVector3(0, 0, -1), localFront: SCNVector3(0, 0, -1))
+            cameraAzimuth = 0
+            cameraElevation = maxElevation
         case .bottom:
-            camNode.position = SCNVector3(0, -r, 0)
-            camNode.look(at: target, up: SCNVector3(0, 0, 1), localFront: SCNVector3(0, 0, -1))
+            cameraAzimuth = 0
+            cameraElevation = -maxElevation
         case .iso:
-            camNode.position = SCNVector3(r * 0.58, r * 0.52, r * 0.62)
-            camNode.look(at: target)
+            cameraAzimuth = 0.75
+            cameraElevation = 0.55
         }
+        cameraOrbitDistance = cameraDistance
+        cameraTarget = SCNVector3(0, 0, 0)
+        applyCamera()
     }
 
     // MARK: - Measure

@@ -33,6 +33,15 @@ struct ViewerView: View {
                 onPreviewCancelled: { _ in
                     viewModel.clearPreview()
                 },
+                onOrbit: { dx, dy, _ in
+                    viewModel.orbit(dx: dx, dy: dy)
+                },
+                onPan: { dx, dy, view in
+                    viewModel.pan(dx: dx, dy: dy, viewportHeight: view.bounds.height)
+                },
+                onZoom: { scale, _ in
+                    viewModel.zoom(by: scale)
+                },
                 measureMode: viewModel.mode == .measure
             )
             .ignoresSafeArea()
