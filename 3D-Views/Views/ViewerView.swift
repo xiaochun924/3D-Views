@@ -751,22 +751,16 @@ struct ViewerView: View {
 // MARK: - Disable swipe-back
 
 extension View {
-    /// Disables the navigation controller's interactive pop (swipe from the left
-    /// edge to go back) on the screen this modifier is applied to. The back
-    /// button itself keeps working — it pops programmatically and never consults
-    /// this gesture recognizer.
+    /// Kills swipe-back (left-edge drag to pop) on the screen this modifier is
+    /// applied to. The back button keeps working — it pops programmatically and
+    /// never consults gesture recognizers.
     ///
-    /// SwiftUI offers no first-party API for this, and neither disabling the
-    /// recognizer nor vetoing it through a delegate is final on its own: the
-    /// framework re-arms it whenever navigation state changes (push, pop,
-    /// navigation-item updates — and this screen rewrites its toolbar on every
-    /// measurement tap), and a screen-scoped install cannot see those moments
-    /// because this screen does not re-render during a transition it is leaving.
-    /// The suppression therefore lives in one shared place — see
-    /// `SwipeBackSuppressor` — and is re-asserted from every vantage point UIKit
-    /// gives us: this screen's render passes, its appear callbacks, and the
-    /// navigation controller's did-show notification, which fires exactly when a
-    /// transition finishes re-arming anything.
+    /// The screen lives in a SwiftUI `NavigationStack`, whose back gesture is
+    /// not reliably the UIKit pop recognizer the classic recipes disable —
+    /// SwiftUI can drive it with its own edge pan on a hosting view. See
+    /// `SwipeBackSuppressor` for how the gesture layer is swept instead of the
+    /// controller layer, and why a repeating re-assert is the only thing that
+    /// stays ahead of the framework's lazy re-arms.
     func disableInteractivePopGesture() -> some View {
         background(InteractivePopDisabler())
     }
@@ -802,69 +796,107 @@ private final class PopGestureVetoer: NSObject, UIGestureRecognizerDelegate {
     }
 }
 
-/// Keeps the navigation controller's interactive pop gesture dead.
+/// Keeps swipe-back dead on the viewer screen.
 ///
-/// Two things defeat the per-screen install that came before it. First, an
-/// embedded view controller's `navigationController` accessor walks a
-/// SwiftUI-internal parent chain that on current SwiftUI builds can fail to
-/// reach the real navigation controller at all — the disable then silently
-/// no-ops. Second, SwiftUI re-arms the recognizer when a transition finishes —
-/// re-enabling it and pointing its targets and delegate back at its own
-/// handler — at moments this screen does not re-render on.
+/// The screen is pushed by a SwiftUI `NavigationStack`, whose back gesture is
+/// not necessarily `UINavigationController.interactivePopGestureRecognizer` —
+/// SwiftUI can drive the swipe with its own edge pan on a hosting view, and the
+/// classic recognizer may not even exist in the tree. Whatever the framework
+/// owns, it re-arms at transition boundaries and lazily afterwards, at moments
+/// this screen does not re-render on.
 ///
-/// The fix addresses both. The controller is found by walking the window's
-/// whole view-controller tree (root, children, presented sheets) instead of the
-/// parent chain, the recognizer is disarmed three independent ways (no targets,
-/// disabled, and the vetoing delegate), and all of it is re-applied after every
-/// navigation transition via the did-show notification. A log breadcrumb
-/// records each newly suppressed controller so a device report can be checked
-/// against the console (`log stream --predicate 'subsystem == "com.xiaochun.3DViews"'`).
+/// So the suppression attacks the gesture layer instead of the controller
+/// layer: every `UIScreenEdgePanGestureRecognizer` anywhere in the viewer's
+/// window, plus every navigation controller's pop recognizer found in its
+/// view-controller tree, is disarmed three ways at once (no targets, disabled,
+/// vetoing delegate). A repeating timer re-runs the sweep while the viewer is
+/// on screen, staying ahead of every re-arm no matter when it lands.
+///
+/// Suppression is scoped hard: only the window that contains the viewer is
+/// swept, and the did-show re-assert only touches navigation controllers that
+/// were actually discovered in that tree — system surfaces hosting their own
+/// navigation controllers (the document picker is one) are never touched.
 @MainActor
 private final class SwipeBackSuppressor {
     static let shared = SwipeBackSuppressor()
 
     private static let logger = Logger(subsystem: "com.xiaochun.3DViews", category: "swipe-back")
 
-    private weak var lastNavController: UINavigationController?
+    /// Re-assert cadence: short enough that a lazily re-armed gesture cannot be
+    /// used before the next sweep, cheap enough to be invisible.
+    private static let reassertInterval: TimeInterval = 0.5
+
+    private weak var trackedWindow: UIWindow?
+    private var reassertTimer: Timer?
+    /// Navigation controllers discovered in the viewer's window tree. The
+    /// did-show re-assert is limited to these, so foreign controllers — the
+    /// document picker hosts one — are never suppressed.
+    private var knownNavs = Set<ObjectIdentifier>()
+    private var killedEdgePans = Set<ObjectIdentifier>()
     private var observingDidShow = false
 
     func install(from viewController: UIViewController) {
-        var roots: [UIViewController] = []
-        if let root = viewController.view.window?.rootViewController {
-            roots.append(root)
-            if let presented = root.presentedViewController {
-                roots.append(presented)
-            }
-        }
-        // Fallback for the passes that run before the view joins a window.
-        roots.append(viewController)
+        guard let window = viewController.view.window else { return }
+        trackedWindow = window
+        startReassertTimer()
+        sweep()
+    }
 
-        var navControllers: [UINavigationController] = []
-        for root in roots {
-            collectNavigationControllers(under: root, into: &navControllers)
-        }
-        var seen = Set<ObjectIdentifier>()
-        let unique = navControllers.filter { seen.insert(ObjectIdentifier($0)).inserted }
+    /// Stops the re-assert loop when the viewer leaves the screen, so the rest
+    /// of the app — home list, settings sheet, document picker — keeps its
+    /// gestures untouched.
+    func deactivate() {
+        reassertTimer?.invalidate()
+        reassertTimer = nil
+        trackedWindow = nil
+        knownNavs.removeAll()
+    }
 
-        guard !unique.isEmpty else {
-            Self.logger.warning("swipe-back: no navigation controller in the window tree yet")
-            return
-        }
-        for nav in unique {
-            suppress(on: nav)
-        }
-
-        guard !observingDidShow else { return }
-        observingDidShow = true
-        // Posted exactly when a push/pop finishes — the same window in which
-        // SwiftUI re-arms the recognizer. The observer lives on the process-wide
-        // singleton for the app's lifetime, so it is never removed.
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(navDidShow(_:)),
-            name: NSNotification.Name("UINavigationControllerDidShowViewController"),
-            object: nil
+    private func startReassertTimer() {
+        guard reassertTimer == nil else { return }
+        reassertTimer = Timer.scheduledTimer(
+            timeInterval: Self.reassertInterval,
+            target: self,
+            selector: #selector(reassertTick),
+            userInfo: nil,
+            repeats: true
         )
+    }
+
+    @objc private func reassertTick() {
+        sweep()
+    }
+
+    private func sweep() {
+        guard let window = trackedWindow else { return }
+
+        var navs: [UINavigationController] = []
+        collectNavigationControllers(under: window.rootViewController, into: &navs)
+        var seen = Set<ObjectIdentifier>()
+        let unique = navs.filter { seen.insert(ObjectIdentifier($0)).inserted }
+        knownNavs = Set(unique.map { ObjectIdentifier($0) })
+        for nav in unique {
+            suppressPop(on: nav)
+        }
+
+        // The gesture layer. The window's whole view tree is walked — presented
+        // sheets live inside the same window's presentation containers, so one
+        // recursion reaches everything, including hosting views SwiftUI owns
+        // outright.
+        killEdgePans(under: window)
+
+        if !observingDidShow {
+            observingDidShow = true
+            // Posted exactly when a push/pop finishes — the same window in which
+            // the framework re-arms what it owns. Scoped to known navs so the
+            // document picker's own navigation is never touched.
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(navDidShow(_:)),
+                name: NSNotification.Name("UINavigationControllerDidShowViewController"),
+                object: nil
+            )
+        }
     }
 
     private func collectNavigationControllers(
@@ -884,15 +916,13 @@ private final class SwipeBackSuppressor {
     }
 
     @objc private func navDidShow(_ notification: Notification) {
-        guard let nav = notification.object as? UINavigationController else { return }
-        suppress(on: nav)
+        guard let nav = notification.object as? UINavigationController,
+              knownNavs.contains(ObjectIdentifier(nav)) else { return }
+        suppressPop(on: nav)
     }
 
-    private func suppress(on nav: UINavigationController) {
-        guard let pop = nav.interactivePopGestureRecognizer else {
-            Self.logger.warning("swipe-back: nav controller has no interactive pop recognizer")
-            return
-        }
+    private func suppressPop(on nav: UINavigationController) {
+        guard let pop = nav.interactivePopGestureRecognizer else { return }
         // Three independent kills, because each alone has been re-armed by the
         // framework at one point or another: no targets means nothing left to
         // invoke, disabled means the touch stream never reaches it even if a
@@ -903,18 +933,32 @@ private final class SwipeBackSuppressor {
         if pop.delegate !== PopGestureVetoer.shared {
             pop.delegate = PopGestureVetoer.shared
         }
-        if lastNavController !== nav {
-            Self.logger.info("swipe-back: suppressed pop on \(String(describing: type(of: nav)), privacy: .public)")
-            lastNavController = nav
+    }
+
+    private func killEdgePans(under view: UIView) {
+        for gesture in view.gestureRecognizers ?? [] where gesture is UIScreenEdgePanGestureRecognizer {
+            gesture.removeTarget(nil, action: nil)
+            gesture.isEnabled = false
+            if gesture.delegate !== PopGestureVetoer.shared {
+                gesture.delegate = PopGestureVetoer.shared
+            }
+            let id = ObjectIdentifier(gesture)
+            if killedEdgePans.insert(id).inserted {
+                Self.logger.info("swipe-back: disabled edge pan on \(String(describing: type(of: view)), privacy: .public)")
+            }
+        }
+        for child in view.subviews {
+            killEdgePans(under: child)
         }
     }
 }
 
-/// Embeds the veto installation into the viewer's hierarchy. `viewDidAppear` is
-/// the first point at which the view is in a window — which the window-tree
-/// walk needs — and `updateUIViewController` re-asserts the veto on every
-/// SwiftUI render of the screen so a framework re-enable cannot outlive the
-/// pass that caused it.
+/// Embeds the suppression into the viewer's hierarchy. Appear callbacks arm the
+/// suppressor (and restart its re-assert loop); disappearing stops it, so the
+/// rest of the app — home list, settings sheet, document picker — keeps its
+/// gestures untouched. `updateUIViewController` re-asserts on every SwiftUI
+/// render of the screen, closing the window between a framework re-arm and the
+/// next sweep.
 private final class PopDisablerVC: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -929,6 +973,11 @@ private final class PopDisablerVC: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         SwipeBackSuppressor.shared.install(from: self)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        SwipeBackSuppressor.shared.deactivate()
     }
 }
 
