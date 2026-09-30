@@ -54,7 +54,7 @@ struct ViewerView: View {
                         .foregroundColor(.secondary)
                 }
                 .padding(24)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
 
             // Kept up until the measurement has all the picks it needs, not just until
@@ -69,7 +69,7 @@ struct ViewerView: View {
                             .font(.system(size: 13, weight: .medium))
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
-                            .background(.ultraThinMaterial, in: Capsule())
+                            .liquidGlass(in: Capsule())
                         Spacer()
                     }
                     Spacer()
@@ -240,8 +240,7 @@ struct ViewerView: View {
                 .padding(.vertical, 8)
             }
         }
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, 24)
     }
 
@@ -335,8 +334,12 @@ struct ViewerView: View {
                     .foregroundColor(.secondary)
                 Spacer()
                 Button { viewModel.clearMeasure() } label: {
-                    Text("清空")
-                        .font(.system(size: 12, weight: .medium))
+                    HStack(spacing: 3) {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("清空")
+                            .font(.system(size: 12, weight: .medium))
+                    }
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(.blue)
@@ -357,8 +360,7 @@ struct ViewerView: View {
                 }
             }
         }
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
     }
@@ -407,8 +409,12 @@ struct ViewerView: View {
                     .foregroundColor(.secondary)
                 Spacer()
                 Button { viewModel.clearAllMeasurements() } label: {
-                    Text("清空")
-                        .font(.system(size: 12, weight: .medium))
+                    HStack(spacing: 3) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("清空")
+                            .font(.system(size: 12, weight: .medium))
+                    }
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(.blue)
@@ -432,8 +438,7 @@ struct ViewerView: View {
             }
             .frame(maxHeight: 168)
         }
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
     }
@@ -469,64 +474,159 @@ struct ViewerView: View {
         .padding(.vertical, 6)
     }
 
+    /// The measure-mode toolbar: a categorized two-row glass bar.
+    ///
+    /// Row one holds the measurement types, grouped the way a desktop CAD package
+    /// groups them — 距离 (minimum distance and point-to-point), 形状 (angle, radius
+    /// and the area of a picked face), 模型 (whole-solid volume and bounding box) —
+    /// so seven flat buttons stop reading as one undifferentiated strip. Row two
+    /// holds the tools that apply to any measurement: undo/exit, display mode,
+    /// unit, and the annotation show/hide toggle once a reading exists. The tool
+    /// row stays put while only the type row scrolls.
     private var measureToolbar: some View {
+        VStack(spacing: 0) {
+            measureTypeRow
+            Rectangle()
+                .fill(Color.primary.opacity(0.1))
+                .frame(height: 1)
+            measureToolRow
+        }
+        .padding(.vertical, 5)
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    private var measureTypeRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(Array(measureTypeGroups.enumerated()), id: \.element.title) { index, group in
+                    if index > 0 {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.12))
+                            .frame(width: 1, height: 34)
+                            .padding(.horizontal, 5)
+                    }
+                    VStack(spacing: 1) {
+                        Text(group.title)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        HStack(spacing: 0) {
+                            ForEach(group.types) { type in
+                                measureTypeButton(type)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+    }
+
+    private var measureToolRow: some View {
         HStack(spacing: 0) {
             // Backsteps one point at a time so a mis-tap never forces the whole
             // measurement to be restarted; leaves measure mode once there is nothing
             // left to take back.
-            Button {
+            toolButton(icon: viewModel.picks.isEmpty ? "xmark" : "arrow.uturn.backward.circle",
+                       label: viewModel.picks.isEmpty ? "退出" : "撤销") {
                 if viewModel.picks.isEmpty {
                     viewModel.toggleMeasureMode()
                 } else {
                     viewModel.undoLastPoint()
                 }
-            } label: {
-                Image(systemName: viewModel.picks.isEmpty
-                      ? "arrow.uturn.backward" : "arrow.uturn.backward.circle")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white)
-                    .frame(width: 48, height: 48)
             }
-            Rectangle().fill(Color.white.opacity(0.2)).frame(width: 1, height: 28)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    ForEach(MeasureType.allCases) { type in
-                        measureTypeButton(type)
-                    }
-                    displayModeMenu(compact: true)
-                    Menu {
-                        ForEach(DisplayUnit.allCases, id: \.self) { unit in
-                            Button(unit.rawValue) { viewModel.setUnit(unit) }
-                        }
-                    } label: {
-                        VStack(spacing: 3) {
-                            Image(systemName: "number").font(.system(size: 18, weight: .medium))
-                            Text(viewModel.displayUnit.rawValue).font(.system(size: 10, weight: .medium))
-                        }
-                        .foregroundColor(.white)
-                        .frame(width: 60, height: 48)
-                    }
+            toolRowDivider
+            displayModeMenu(compact: true)
+            toolRowDivider
+
+            unitMenu
+
+            if !viewModel.measurements.isEmpty {
+                toolRowDivider
+                toolButton(icon: viewModel.annotationsVisible ? "eye" : "eye.slash", label: "标注") {
+                    viewModel.toggleAnnotations()
                 }
             }
         }
-        .background(Color.black.opacity(0.85))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 4)
+    }
+
+    private var toolRowDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 1, height: 30)
+    }
+
+    /// A labelled icon+text button that stretches to share the tool row evenly.
+    private func toolButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .medium))
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundColor(.primary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private var unitMenu: some View {
+        Menu {
+            ForEach(DisplayUnit.allCases, id: \.self) { unit in
+                Button(unit.rawValue) { viewModel.setUnit(unit) }
+            }
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: "number")
+                    .font(.system(size: 17, weight: .medium))
+                Text(viewModel.displayUnit.rawValue)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundColor(.primary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("单位")
+    }
+
+    /// The measurement types as displayed groups: distance questions, shape
+    /// questions answered from one or two picked entities, and whole-model
+    /// properties that need no pick at all.
+    private var measureTypeGroups: [MeasureTypeGroup] {
+        [
+            MeasureTypeGroup(title: "距离", types: [.distance, .linear]),
+            MeasureTypeGroup(title: "形状", types: [.angle, .radius, .area]),
+            MeasureTypeGroup(title: "模型", types: [.volume, .boundingBox]),
+        ]
     }
 
     private func measureTypeButton(_ type: MeasureType) -> some View {
+        let accent = Color(red: 0.3, green: 0.8, blue: 0.9)
         let selected = viewModel.measureType == type
         return Button { viewModel.selectMeasureType(type) } label: {
             VStack(spacing: 3) {
-                Image(systemName: type.icon).font(.system(size: 18, weight: .medium))
-                Text(type.label).font(.system(size: 10, weight: .medium))
+                Image(systemName: type.icon)
+                    .font(.system(size: 17, weight: .medium))
+                Text(type.label)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
             }
-            .foregroundColor(selected ? Color(red: 0.3, green: 0.8, blue: 0.9) : .white)
-            .frame(width: 62, height: 48)
-            .background(selected ? Color.white.opacity(0.15) : Color.clear)
+            .foregroundColor(selected ? accent : .primary)
+            .frame(width: 58, height: 44)
+            .background(selected ? accent.opacity(0.18) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(type.label)
     }
 
     /// Display-mode picker, shared by both toolbars.
@@ -535,8 +635,8 @@ struct ViewerView: View {
     /// bore or rib is often the reason to reach for 透明 or 线框 in the first place, and
     /// leaving measure mode to switch would clear the picks already taken.
     ///
-    /// `compact` renders it to the measure toolbar's 48 pt row and in its white-on-dark
-    /// palette; otherwise it renders as a regular toolbar item.
+    /// `compact` renders it to the measure toolbar's 44 pt tool row; otherwise it
+    /// renders as a regular toolbar item.
     private func displayModeMenu(compact: Bool) -> some View {
         Menu {
             ForEach(DisplayMode.allCases) { mode in
@@ -549,11 +649,16 @@ struct ViewerView: View {
         } label: {
             if compact {
                 VStack(spacing: 3) {
-                    Image(systemName: viewModel.displayMode.icon).font(.system(size: 18, weight: .medium))
-                    Text(viewModel.displayMode.label).font(.system(size: 10, weight: .medium))
+                    Image(systemName: viewModel.displayMode.icon)
+                        .font(.system(size: 17, weight: .medium))
+                    Text(viewModel.displayMode.label)
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
                 }
-                .foregroundColor(.white)
-                .frame(width: 66, height: 48)
+                .foregroundColor(.primary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .contentShape(Rectangle())
             } else {
                 VStack(spacing: 4) {
                     Image(systemName: viewModel.displayMode.icon).font(.system(size: 20, weight: .medium))
@@ -625,7 +730,7 @@ struct ViewerView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 64)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
     }
@@ -683,4 +788,28 @@ private final class PopDisablerVC: UIViewController {
         super.viewWillAppear(animated)
         navigationController?.interactivePopGestureRecognizer?.isEnabled = false
     }
+}
+
+extension View {
+    /// Liquid Glass surface on iOS 26+, ultra-thin material on older systems.
+    ///
+    /// Every floating bar and panel in the viewer goes through this one helper so
+    /// the app picks up the iOS 26 glass look without raising the deployment
+    /// target, and keeps a visually close material fallback below it. The shape is
+    /// always given explicitly because panels are rounded rectangles while the
+    /// hint bubble is a capsule.
+    @ViewBuilder
+    func liquidGlass<S: Shape>(in shape: S) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular, in: shape)
+        } else {
+            self.background(.ultraThinMaterial, in: shape)
+        }
+    }
+}
+
+/// One labelled group of measurement types in the toolbar's type row.
+private struct MeasureTypeGroup {
+    let title: String
+    let types: [MeasureType]
 }
