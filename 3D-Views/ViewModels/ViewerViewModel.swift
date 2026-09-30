@@ -51,14 +51,23 @@ enum PickEntity: Equatable {
         }
     }
 
-    /// Marker colour, mirroring the convention the old snap engine used: red holds
-    /// points and vertices, green reads as an edge, teal as a face.
+    /// Marker colour: red holds a plain surface point, orange a snapped vertex (the
+    /// cube's colour as well, so silhouette and hue both say "exact snap"), green an
+    /// edge, teal a face.
     var markerColor: UIColor {
         switch self {
-        case .freePoint, .vertex: return .systemRed
+        case .freePoint: return .systemRed
+        case .vertex: return .systemOrange
         case .edge: return .systemGreen
         case .face: return .systemTeal
         }
+    }
+
+    /// True when the pick snapped to an actual vertex rather than landing on a
+    /// surface — such picks are drawn square (see `markerGeometry`).
+    var isVertex: Bool {
+        if case .vertex = self { return true }
+        return false
     }
 }
 
@@ -383,7 +392,10 @@ final class ViewerViewModel: ObservableObject {
 
     /// Screen-space snap radius, in points. 14 pt is a comfortable touch target on
     /// iPhone and iPad alike, and it is the same tolerance for edges and vertices.
-    private let snapScreenRadius: CGFloat = 14
+    /// How far (in points) a tap may land from a snappable entity and still take it.
+    /// 20 pt sits under an average fingertip: wide enough that a vertex can actually
+    /// be hit on a phone, narrow enough not to steal taps meant for the face.
+    private let snapScreenRadius: CGFloat = 20
 
     /// Throttle for the press-and-hold preselect: a `changed` event that has not moved
     /// the finger meaningfully cannot resolve to a different entity, and re-running the
@@ -2505,18 +2517,29 @@ final class ViewerViewModel: ObservableObject {
         let group = SCNNode()
         group.name = "preview_group"
 
-        let sphere = SCNSphere(radius: CGFloat(radius))
+        // A snap in progress reads differently from a plain surface point: cube and
+        // orange instead of the yellow dot, so the user can see the vertex snap take
+        // hold before committing it.
+        let snappedVertex = previewEntity?.isVertex ?? false
+        let geometry: SCNGeometry
+        if snappedVertex {
+            let side = CGFloat(radius * 1.7)
+            geometry = SCNBox(width: side, height: side, length: side, chamferRadius: 0)
+        } else {
+            geometry = SCNSphere(radius: CGFloat(radius))
+        }
+        let glow = snappedVertex ? UIColor.systemOrange : UIColor.systemYellow
         let material = SCNMaterial()
-        material.diffuse.contents = UIColor.systemYellow.withAlphaComponent(0.85)
-        material.emission.contents = UIColor.systemYellow.withAlphaComponent(0.35)
+        material.diffuse.contents = glow.withAlphaComponent(0.85)
+        material.emission.contents = glow.withAlphaComponent(0.35)
         material.lightingModel = .constant
         // Drawn over the surface it highlights: the point generally sits *on* the model,
         // so depth testing alone would clip away most of the sphere.
         material.readsFromDepthBuffer = true
         material.writesToDepthBuffer = false
-        sphere.materials = [material]
+        geometry.materials = [material]
 
-        let dot = SCNNode(geometry: sphere)
+        let dot = SCNNode(geometry: geometry)
         dot.position = point
         dot.name = "preview_dot"
         group.addChildNode(dot)
@@ -2524,7 +2547,7 @@ final class ViewerViewModel: ObservableObject {
         if let name = previewEntityName {
             let text = SCNText(string: name, extrusionDepth: 0.1)
             text.font = UIFont.boldSystemFont(ofSize: 10)
-            text.firstMaterial?.diffuse.contents = UIColor.systemYellow
+            text.firstMaterial?.diffuse.contents = glow
             text.firstMaterial?.lightingModel = .constant
 
             let labelNode = SCNNode(geometry: text)
@@ -2666,18 +2689,29 @@ final class ViewerViewModel: ObservableObject {
         updateSelectionHighlights()
     }
 
+    /// Marker geometry by snap kind: a sphere for surface points/faces/edges, a cube
+    /// for a snapped vertex — the silhouette alone tells an exact snap from a tap on
+    /// a face, which matters on an STL where the vertex is the only precise target.
+    private func markerGeometry(for entity: PickEntity, radius: Float) -> SCNGeometry {
+        if entity.isVertex {
+            let side = CGFloat(radius * 1.7)
+            return SCNBox(width: side, height: side, length: side, chamferRadius: 0)
+        }
+        return SCNSphere(radius: CGFloat(radius))
+    }
+
     private func addMarker(at point: SCNVector3, entity: PickEntity, index: Int,
                            radius markerRadius: Float, to group: SCNNode,
                            showTag: Bool = true) {
         let color = entity.markerColor
 
-        let sphere = SCNSphere(radius: CGFloat(markerRadius))
+        let geometry = markerGeometry(for: entity, radius: markerRadius)
         let mat = SCNMaterial()
         mat.diffuse.contents = color
         mat.emission.contents = color
         mat.lightingModel = .constant
-        sphere.materials = [mat]
-        let marker = SCNNode(geometry: sphere)
+        geometry.materials = [mat]
+        let marker = SCNNode(geometry: geometry)
         marker.position = point
         marker.name = "measure_dot"
         group.addChildNode(marker)
