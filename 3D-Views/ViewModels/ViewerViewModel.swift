@@ -608,7 +608,7 @@ final class ViewerViewModel: ObservableObject {
             normals.append(simd_length_squared(n) > 0 ? simd_normalize(n) : .zero)
         }
 
-        let cosThreshold = cos(sharpAngleDeg * .pi / 180)
+        let cosThreshold = Float(cos(sharpAngleDeg * .pi / 180))
         var positions: [SCNVector3] = []
         var indices: [UInt32] = []
         let up = SIMD3<Float>(0, 1, 0)
