@@ -526,10 +526,30 @@ final class ViewerViewModel: ObservableObject {
             modelNode = mNode
 
             if let mNode {
-                edgeWorldPolylines = brep
-                    ? Self.buildEdgePolylines(edgePolylines, modelNode: mNode)
-                    : []
-                vertexWorld = brep ? Self.buildVertexWorld(loadedShape, modelNode: mNode) : []
+                // B-rep edges are the ideal snap source, but `allEdgePolylinesIndexed`
+                // returns empty for some STEP files (this one included). When that
+                // happens, fall back to the same mesh sharp-edge extraction used for
+                // rendering so vertex/edge snapping still works for point-based
+                // measurement.
+                let brepEdges = brep ? Self.buildEdgePolylines(edgePolylines, modelNode: mNode) : []
+                edgeWorldPolylines = brepEdges.isEmpty
+                    ? Self.buildMeshEdgePolylines(
+                        vertices: modelVertices,
+                        triangles: meshTrianglesWithFaces,
+                        modelNode: mNode,
+                        sharpAngleDeg: 35)
+                    : brepEdges
+                // Same fallback for vertices: B-rep vertices first, then the mesh
+                // vertices that sit on sharp edges. A tap that cannot snap to a vertex
+                // still snaps to a face, so this only needs the corners.
+                let brepVerts = brep ? Self.buildVertexWorld(loadedShape, modelNode: mNode) : []
+                vertexWorld = brepVerts.isEmpty
+                    ? Self.buildMeshVertexWorld(
+                        vertices: modelVertices,
+                        triangles: meshTrianglesWithFaces,
+                        modelNode: mNode,
+                        sharpAngleDeg: 35)
+                    : brepVerts
             } else {
                 edgeWorldPolylines = []
                 vertexWorld = []
@@ -563,14 +583,11 @@ final class ViewerViewModel: ObservableObject {
     // MARK: - Edge geometry
 
     /// Extracts sharp (feature) edges from the triangle mesh and renders them as
-    /// triangle ribbons.
+    /// thin rectangular tubes (4-sided prisms), not flat ribbons.
     ///
-    /// This is the rendering edge source: unlike `allEdgePolylinesIndexed`, which can
-    /// return empty for some STEP files and produced the edgeless blob in the
-    /// screenshots, the mesh always has triangles to derive edges from. An edge is
-    /// "sharp" when the two triangles sharing it have face normals that differ by more
-    /// than `sharpAngleDeg` — this catches creases, holes and profile changes while
-    /// skipping the internal edges of a smoothly tessellated curve.
+    /// A flat ribbon disappears when viewed edge-on, which is why edges vanished at
+    /// certain angles in the previous build. A tube has thickness in two perpendicular
+    /// directions, so it reads from every viewpoint.
     private static func makeSharpEdgeGeometry(
         vertices: [SCNVector3],
         triangles: [OCCTSwift.Triangle],
@@ -614,18 +631,12 @@ final class ViewerViewModel: ObservableObject {
         let up = SIMD3<Float>(0, 1, 0)
 
         for (key, faceList) in edgeToFaces {
-            // Boundary edges (one face) are always drawn; interior edges need a sharp
-            // dihedral angle. Edges shared by more than two faces (non-manifold) are
-            // skipped.
             guard faceList.count == 1 || faceList.count == 2 else { continue }
             if faceList.count == 2 {
                 let n0 = normals[faceList[0]]
                 let n1 = normals[faceList[1]]
                 if simd_length_squared(n0) == 0 || simd_length_squared(n1) == 0 { continue }
-                let dot = simd_dot(n0, n1)
-                // dot > cosThreshold means the angle is smaller than the threshold →
-                // smooth, skip. dot <= cosThreshold → sharp, draw.
-                if dot > cosThreshold { continue }
+                if simd_dot(n0, n1) > cosThreshold { continue }
             }
 
             let (ai, bi) = unedgeKey(key)
@@ -639,19 +650,44 @@ final class ViewerViewModel: ObservableObject {
             guard len > 1e-9 else { continue }
             dir /= len
 
-            var normal = simd_cross(dir, up)
-            if simd_length_squared(normal) < 1e-6 {
-                normal = simd_cross(dir, SIMD3<Float>(0, 0, 1))
+            // Two perpendicular directions so the tube has width in both axes of the
+            // plane normal to the edge — visible from any angle.
+            var perp1 = simd_cross(dir, up)
+            if simd_length_squared(perp1) < 1e-6 {
+                perp1 = simd_cross(dir, SIMD3<Float>(0, 0, 1))
             }
-            normal = simd_normalize(normal) * (edgeWidth * 0.5)
+            perp1 = simd_normalize(perp1)
+            let perp2 = simd_normalize(simd_cross(dir, perp1))
+            let half = edgeWidth * 0.5
 
+            // 8 corners of the box: a ± perp1*half ± perp2*half, same at b.
+            // Corner layout at each end:
+            //   0: -perp1 -perp2   1: +perp1 -perp2
+            //   2: +perp1 +perp2   3: -perp1 +perp2
             let base = UInt32(positions.count)
-            positions.append(SCNVector3(a - normal))
-            positions.append(SCNVector3(a + normal))
-            positions.append(SCNVector3(b - normal))
-            positions.append(SCNVector3(b + normal))
-            indices.append(contentsOf: [base, base + 1, base + 2,
-                                         base + 2, base + 1, base + 3])
+            for s1 in [Float(-1), Float(1)] {
+                for s2 in [Float(-1), Float(1)] {
+                    positions.append(SCNVector3(a + perp1 * (s1 * half) + perp2 * (s2 * half)))
+                }
+            }
+            for s1 in [Float(-1), Float(1)] {
+                for s2 in [Float(-1), Float(1)] {
+                    positions.append(SCNVector3(b + perp1 * (s1 * half) + perp2 * (s2 * half)))
+                }
+            }
+
+            // Four side faces of the tube (no end caps). Vertex order per corner above:
+            // a-end: 0(-,-), 1(+,-), 2(+,+), 3(-,+) ; b-end: 4(-,-), 5(+,-), 6(+,+), 7(-,+)
+            let faces: [(UInt32, UInt32, UInt32, UInt32)] = [
+                (0, 1, 5, 4),  // -perp2 side
+                (1, 2, 6, 5),  // +perp1 side
+                (2, 3, 7, 6),  // +perp2 side
+                (3, 0, 4, 7),  // -perp1 side
+            ]
+            for (v0, v1, v2, v3) in faces {
+                indices.append(contentsOf: [base + v0, base + v1, base + v2,
+                                             base + v0, base + v2, base + v3])
+            }
         }
 
         guard indices.count >= 3 else { return nil }
@@ -751,6 +787,120 @@ final class ViewerViewModel: ObservableObject {
                     SCNVector3(Float(p.x), Float(p.y), Float(p.z)), to: nil)
             }
             result.append((edgeIndex: entry.edgeIndex, points: world))
+        }
+        return result
+    }
+
+    /// Builds snap polylines from the mesh's sharp edges when B-rep edges are absent.
+    ///
+    /// Uses the same dihedral-angle test as `makeSharpEdgeGeometry` so the snap targets
+    /// line up with the drawn edges. Each sharp segment becomes a two-point polyline;
+    /// the index is a synthetic sequential number (not a B-rep edge index), so it only
+    /// supports point-based measurement, not entity edge measurement.
+    private static func buildMeshEdgePolylines(
+        vertices: [SCNVector3],
+        triangles: [OCCTSwift.Triangle],
+        modelNode: SCNNode,
+        sharpAngleDeg: Double = 35
+    ) -> [(edgeIndex: Int, points: [SCNVector3])] {
+        guard vertices.count >= 3, triangles.count >= 1 else { return [] }
+
+        var edgeToFaces: [UInt64: [Int]] = [:]
+        for (ti, tri) in triangles.enumerated() {
+            let idx = [tri.v1, tri.v2, tri.v3]
+            for i in 0..<3 {
+                let key = edgeKey(min(idx[i], idx[(i + 1) % 3]),
+                                  max(idx[i], idx[(i + 1) % 3]))
+                edgeToFaces[key, default: []].append(ti)
+            }
+        }
+
+        var normals: [SIMD3<Float>] = []
+        for tri in triangles {
+            let i0 = Int(tri.v1), i1 = Int(tri.v2), i2 = Int(tri.v3)
+            guard i0 < vertices.count, i1 < vertices.count, i2 < vertices.count else {
+                normals.append(.zero); continue
+            }
+            let a = SIMD3<Float>(vertices[i0].x, vertices[i0].y, vertices[i0].z)
+            let b = SIMD3<Float>(vertices[i1].x, vertices[i1].y, vertices[i1].z)
+            let c = SIMD3<Float>(vertices[i2].x, vertices[i2].y, vertices[i2].z)
+            let n = simd_cross(b - a, c - a)
+            normals.append(simd_length_squared(n) > 0 ? simd_normalize(n) : .zero)
+        }
+
+        let cosThreshold = Float(cos(sharpAngleDeg * .pi / 180))
+        var result: [(edgeIndex: Int, points: [SCNVector3])] = []
+        var edgeIndex = 0
+
+        for (key, faceList) in edgeToFaces {
+            guard faceList.count == 1 || faceList.count == 2 else { continue }
+            if faceList.count == 2 {
+                let n0 = normals[faceList[0]], n1 = normals[faceList[1]]
+                if simd_length_squared(n0) == 0 || simd_length_squared(n1) == 0 { continue }
+                if simd_dot(n0, n1) > cosThreshold { continue }
+            }
+            let (ai, bi) = unedgeKey(key)
+            let aIdx = Int(ai), bIdx = Int(bi)
+            guard aIdx < vertices.count, bIdx < vertices.count else { continue }
+            let a = vertices[aIdx], b = vertices[bIdx]
+            let wa = modelNode.convertPosition(a, to: nil)
+            let wb = modelNode.convertPosition(b, to: nil)
+            result.append((edgeIndex: edgeIndex, points: [wa, wb]))
+            edgeIndex += 1
+        }
+        return result
+    }
+
+    /// Collects mesh vertices that lie on sharp edges, for vertex snapping when B-rep
+    /// vertices are unavailable.
+    private static func buildMeshVertexWorld(
+        vertices: [SCNVector3],
+        triangles: [OCCTSwift.Triangle],
+        modelNode: SCNNode,
+        sharpAngleDeg: Double = 35
+    ) -> [(index: Int, position: SCNVector3)] {
+        guard vertices.count >= 3, triangles.count >= 1 else { return [] }
+
+        var edgeToFaces: [UInt64: [Int]] = [:]
+        for (ti, tri) in triangles.enumerated() {
+            let idx = [tri.v1, tri.v2, tri.v3]
+            for i in 0..<3 {
+                let key = edgeKey(min(idx[i], idx[(i + 1) % 3]),
+                                  max(idx[i], idx[(i + 1) % 3]))
+                edgeToFaces[key, default: []].append(ti)
+            }
+        }
+
+        var normals: [SIMD3<Float>] = []
+        for tri in triangles {
+            let i0 = Int(tri.v1), i1 = Int(tri.v2), i2 = Int(tri.v3)
+            guard i0 < vertices.count, i1 < vertices.count, i2 < vertices.count else {
+                normals.append(.zero); continue
+            }
+            let a = SIMD3<Float>(vertices[i0].x, vertices[i0].y, vertices[i0].z)
+            let b = SIMD3<Float>(vertices[i1].x, vertices[i1].y, vertices[i1].z)
+            let c = SIMD3<Float>(vertices[i2].x, vertices[i2].y, vertices[i2].z)
+            let n = simd_cross(b - a, c - a)
+            normals.append(simd_length_squared(n) > 0 ? simd_normalize(n) : .zero)
+        }
+
+        let cosThreshold = Float(cos(sharpAngleDeg * .pi / 180))
+        var usedIndices = Set<UInt32>()
+        for (key, faceList) in edgeToFaces {
+            guard faceList.count == 1 || faceList.count == 2 else { continue }
+            if faceList.count == 2 {
+                let n0 = normals[faceList[0]], n1 = normals[faceList[1]]
+                if simd_length_squared(n0) == 0 || simd_length_squared(n1) == 0 { continue }
+                if simd_dot(n0, n1) > cosThreshold { continue }
+            }
+            let (ai, bi) = unedgeKey(key)
+            usedIndices.insert(ai)
+            usedIndices.insert(bi)
+        }
+
+        var result: [(index: Int, position: SCNVector3)] = []
+        for (i, v) in vertices.enumerated() where usedIndices.contains(UInt32(i)) {
+            result.append((index: i, position: modelNode.convertPosition(v, to: nil)))
         }
         return result
     }
