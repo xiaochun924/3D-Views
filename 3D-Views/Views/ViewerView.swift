@@ -751,42 +751,79 @@ struct ViewerView: View {
 
 extension View {
     /// Disables the navigation controller's interactive pop (swipe from the left
-    /// edge to go back) on the screen this modifier is applied to.
+    /// edge to go back) on the screen this modifier is applied to. The back
+    /// button itself keeps working — it pops programmatically and never consults
+    /// this gesture recognizer.
     ///
-    /// SwiftUI offers no first-party API for this, so a one-pixel helper view
-    /// controller is embedded in the background. Once it is added to the view
-    /// hierarchy it walks up the responder chain to the owning `UINavigationController`
-    /// and turns its `interactivePopGestureRecognizer` off.
+    /// SwiftUI offers no first-party API for this, and switching the recognizer
+    /// off with `isEnabled = false` does not stick: the framework re-enables it
+    /// whenever navigation state changes (push, pop, navigation-item updates —
+    /// and this screen rewrites its toolbar on every measurement tap), so the
+    /// swipe came back shortly after every disable. The veto therefore lives at
+    /// the delegate level, where `shouldBegin` decides, and is reinstalled on
+    /// every SwiftUI update of this screen — the same render pass in which any
+    /// re-enable would happen.
     func disableInteractivePopGesture() -> some View {
         background(InteractivePopDisabler())
     }
 }
 
 private struct InteractivePopDisabler: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> UIViewController {
+    func makeUIViewController(context: Context) -> PopDisablerVC {
         PopDisablerVC()
     }
 
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: PopDisablerVC, context: Context) {
+        uiViewController.install()
+    }
 }
 
-/// Disables the navigation controller's interactive pop gesture once it is itself
-/// embedded in that controller's hierarchy. `viewDidAppear` is the first point at
-/// which `navigationController` is guaranteed to be non-nil.
+/// Vetoes every interactive-pop attempt on the hosting navigation controller.
+/// A process-wide singleton because UIKit stores the recognizer's delegate as an
+/// unowned reference — a per-screen instance would dangle once its screen is
+/// popped while the (shared) navigation controller lives on.
+@MainActor
+private final class PopGestureVetoer: NSObject, UIGestureRecognizerDelegate {
+    static let shared = PopGestureVetoer()
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        false
+    }
+}
+
+/// Embeds the veto installation into the viewer's hierarchy. `viewDidAppear` is
+/// the first point at which `navigationController` is guaranteed to be non-nil;
+/// `updateUIViewController` re-asserts the veto on every SwiftUI render of the
+/// screen so a framework re-enable cannot outlive the pass that caused it.
 private final class PopDisablerVC: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.isUserInteractionEnabled = false
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
-    }
-
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
+        install()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        install()
+    }
+
+    func install() {
+        guard let pop = navigationController?.interactivePopGestureRecognizer else { return }
+        pop.isEnabled = false
+        if pop.delegate !== PopGestureVetoer.shared {
+            pop.delegate = PopGestureVetoer.shared
+        }
     }
 }
 
