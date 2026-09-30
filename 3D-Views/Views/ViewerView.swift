@@ -129,6 +129,8 @@ struct ViewerView: View {
         case .distance, .linear: return "点选两点；靠近顶点或圆心会自动吸附"
         case .angle: return "依次点选：点1、角顶点、点3"
         case .radius: return "在圆弧上点选三个点"
+        case .area: return "点选一个面；面积测量仅支持 STEP 模型"
+        case .volume, .boundingBox: return "由模型外形直接计算，无需点选"
         }
     }
 
@@ -185,6 +187,17 @@ struct ViewerView: View {
                 .padding(.vertical, 8)
             }
 
+            if viewModel.measureType == .boundingBox, let e = viewModel.boundingBoxExtents {
+                Divider()
+                VStack(spacing: 6) {
+                    extentRow(label: "长 X", value: e.x)
+                    extentRow(label: "宽 Y", value: e.y)
+                    extentRow(label: "高 Z", value: e.z)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+
             if let message = viewModel.measureMessage {
                 Divider()
                 HStack(spacing: 6) {
@@ -224,6 +237,9 @@ struct ViewerView: View {
         case .distance, .linear: return "距离"
         case .angle: return "角度"
         case .radius: return "半径"
+        case .area: return "面积"
+        case .volume: return "体积"
+        case .boundingBox: return "包围盒尺寸"
         }
     }
 
@@ -235,6 +251,17 @@ struct ViewerView: View {
             if let a = viewModel.angleResult { return String(format: "%.2f°", a) }
         case .radius:
             if let r = viewModel.radiusResult { return viewModel.displayUnit.format(r) }
+        case .area:
+            if let a = viewModel.areaResult { return viewModel.displayUnit.formatArea(a) }
+        case .volume:
+            if let v = viewModel.volumeResult { return viewModel.displayUnit.formatVolume(v) }
+        case .boundingBox:
+            // A box has no single number, so the summary line carries the largest extent
+            // and the per-axis breakdown below carries the rest.
+            if let e = viewModel.boundingBoxExtents {
+                let longest = max(e.x, max(e.y, e.z))
+                return viewModel.displayUnit.format(longest)
+            }
         }
         return "--"
     }
@@ -246,6 +273,18 @@ struct ViewerView: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// One axis of the bounding box: label on the left, extent on the right.
+    private func extentRow(label: String, value: Float) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(viewModel.displayUnit.format(value))
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+        }
     }
 
     /// The selection list: every entity taken for the current measurement, each one
@@ -348,6 +387,7 @@ struct ViewerView: View {
                     ForEach(MeasureType.allCases) { type in
                         measureTypeButton(type)
                     }
+                    displayModeMenu(compact: true)
                     Menu {
                         ForEach(DisplayUnit.allCases, id: \.self) { unit in
                             Button(unit.rawValue) { viewModel.setUnit(unit) }
@@ -382,10 +422,48 @@ struct ViewerView: View {
         }
     }
 
+    /// Display-mode picker, shared by both toolbars.
+    ///
+    /// It is offered while measuring too, not just in the orbit toolbar: seeing an internal
+    /// bore or rib is often the reason to reach for 透明 or 线框 in the first place, and
+    /// leaving measure mode to switch would clear the picks already taken.
+    ///
+    /// `compact` renders it to the measure toolbar's 48 pt row and in its white-on-dark
+    /// palette; otherwise it renders as a regular toolbar item.
+    private func displayModeMenu(compact: Bool) -> some View {
+        Menu {
+            ForEach(DisplayMode.allCases) { mode in
+                Button {
+                    viewModel.displayMode = mode
+                } label: {
+                    Label(mode.label, systemImage: mode.icon)
+                }
+            }
+        } label: {
+            if compact {
+                VStack(spacing: 3) {
+                    Image(systemName: viewModel.displayMode.icon).font(.system(size: 18, weight: .medium))
+                    Text(viewModel.displayMode.label).font(.system(size: 10, weight: .medium))
+                }
+                .foregroundColor(.white)
+                .frame(width: 66, height: 48)
+            } else {
+                VStack(spacing: 4) {
+                    Image(systemName: viewModel.displayMode.icon).font(.system(size: 20, weight: .medium))
+                    Text("显示").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
     private var mainToolbar: some View {
         HStack(spacing: 0) {
             toolbarButton(icon: "ruler", label: "测量") { viewModel.toggleMeasureMode() }
             toolbarButton(icon: "arrow.2.squarepath", label: "复位") { viewModel.resetView() }
+
+            displayModeMenu(compact: false)
 
             Menu {
                 ForEach(ViewDirection.allCases) { direction in

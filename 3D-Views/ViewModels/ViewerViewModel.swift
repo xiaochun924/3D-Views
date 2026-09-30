@@ -95,11 +95,48 @@ enum ViewDirection: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the model is drawn.
+///
+/// The set mirrors what a desktop CAD viewer offers, because the right mode depends on
+/// the question being asked: a shade shows the form, the edges show the feature
+/// boundaries that a shade loses at a silhouette, a wireframe shows the construction
+/// underneath the surfaces, and a translucent shade is the only way to see an internal
+/// feature without cutting the part open.
+enum DisplayMode: String, CaseIterable, Identifiable {
+    case shaded
+    case shadedWithEdges
+    case wireframe
+    case transparent
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .shaded: return "着色"
+        case .shadedWithEdges: return "带边着色"
+        case .wireframe: return "线框"
+        case .transparent: return "透明"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .shaded: return "circle.fill"
+        case .shadedWithEdges: return "cube.fill"
+        case .wireframe: return "grid"
+        case .transparent: return "circle.lefthalf.filled"
+        }
+    }
+}
+
 enum MeasureType: String, CaseIterable, Identifiable {
     case distance
     case angle
     case radius
     case linear
+    case area
+    case volume
+    case boundingBox
 
     var id: String { rawValue }
     var label: String {
@@ -108,6 +145,9 @@ enum MeasureType: String, CaseIterable, Identifiable {
         case .angle: return "角度"
         case .radius: return "半径"
         case .linear: return "线性测量"
+        case .area: return "面积"
+        case .volume: return "体积"
+        case .boundingBox: return "包围盒"
         }
     }
     var icon: String {
@@ -116,12 +156,17 @@ enum MeasureType: String, CaseIterable, Identifiable {
         case .angle: return "angle"
         case .radius: return "clockwise"
         case .linear: return "move.3d"
+        case .area: return "square.dashed"
+        case .volume: return "cube.transparent"
+        case .boundingBox: return "cube"
         }
     }
     var requiredPoints: Int {
         switch self {
         case .distance, .linear: return 2
         case .angle, .radius: return 3
+        case .area: return 1
+        case .volume, .boundingBox: return 0
         }
     }
 
@@ -129,12 +174,15 @@ enum MeasureType: String, CaseIterable, Identifiable {
     ///
     /// Fewer than `requiredPoints`, because the kernel supplies the reference
     /// geometry the user would otherwise have to describe by hand: an angle is two
-    /// faces or two edges (not three points), and a radius is a single circular edge
-    /// or cylindrical face (not three points on a circle).
+    /// faces or two edges (not three points), a radius is a single circular edge
+    /// or cylindrical face (not three points on a circle), and an area is one face.
+    /// Volume and the bounding box are properties of the whole solid, so they take
+    /// no pick at all.
     var requiredEntityPicks: Int {
         switch self {
         case .distance, .linear, .angle: return 2
-        case .radius: return 1
+        case .radius, .area: return 1
+        case .volume, .boundingBox: return 0
         }
     }
 
@@ -149,6 +197,12 @@ enum MeasureType: String, CaseIterable, Identifiable {
             return "点选两个面或两条边，量取夹角"
         case .radius:
             return "点选一条圆边或一个回转面，量取半径"
+        case .area:
+            return "点选一个面，量取该面的表面积"
+        case .volume:
+            return "体积由内核直接计算，无需点选"
+        case .boundingBox:
+            return "包围盒由模型外形直接给出，无需点选"
         }
     }
 }
@@ -164,6 +218,15 @@ final class ViewerViewModel: ObservableObject {
     @Published var measureType: MeasureType = .distance
     @Published var displayUnit: DisplayUnit = .millimeter
 
+    /// How the model is drawn. Applied to the live scene on every change rather than
+    /// baked in at load, so switching modes costs nothing and never re-tessellates.
+    @Published var displayMode: DisplayMode = .shadedWithEdges {
+        didSet {
+            guard oldValue != displayMode else { return }
+            applyDisplayMode()
+        }
+    }
+
     /// Every pick of the current measurement, in the order they were taken.
     @Published var picks: [Pick] = []
 
@@ -174,6 +237,17 @@ final class ViewerViewModel: ObservableObject {
     @Published var angleResult: Float?
     @Published var radiusResult: Float?
     @Published var radiusCenter: SCNVector3?
+
+    /// Area of the picked face, in square display units.
+    @Published var areaResult: Float?
+
+    /// Volume enclosed by the whole shape. `nil` when the shape is not a closed solid
+    /// — an open shell, a bare face, or an unsewn compound — because the kernel refuses
+    /// to report a volume for those rather than reporting a meaningless number.
+    @Published var volumeResult: Float?
+
+    /// Extents of the axis-aligned bounding box, on x / y / z.
+    @Published var boundingBoxExtents: SCNVector3?
 
     /// The kernel's own closest points for the current distance measurement.
     ///
@@ -406,6 +480,11 @@ final class ViewerViewModel: ObservableObject {
             }
 
             clearMeasure()
+
+            // The scene is rebuilt from scratch on every load, so the user's chosen
+            // display mode has to be re-applied to the new materials rather than only
+            // set once at init.
+            applyDisplayMode()
         } catch {
             loadError = "加载失败：\(error.localizedDescription)"
         }
@@ -744,6 +823,10 @@ final class ViewerViewModel: ObservableObject {
 
     func handleTap(screenPoint: CGPoint, in view: SCNView) {
         guard mode == .measure else { return }
+        // Volume and the bounding box are properties of the whole model, so a tap means
+        // nothing for them. Without this the tap would append a pick the measurement
+        // never asked for and drop the result panel back to the "in progress" state.
+        guard requiredPickCount > 0 else { return }
         guard let pick = resolvePick(at: screenPoint, in: view) else { return }
         commitPick(pick, in: view)
     }
@@ -758,6 +841,8 @@ final class ViewerViewModel: ObservableObject {
     /// to get wrong, and without a preview the mistake only surfaces after committing.
     func handlePreview(screenPoint: CGPoint, in view: SCNView) {
         guard mode == .measure else { return }
+        // Nothing to preselect when the measurement takes no pick (volume, bounding box).
+        guard requiredPickCount > 0 else { return }
 
         // A `changed` event that has not moved the finger meaningfully cannot resolve to
         // a different entity, and the pick — a kernel ray cast — is the expensive part.
@@ -1092,6 +1177,9 @@ final class ViewerViewModel: ObservableObject {
         angleResult = nil
         radiusResult = nil
         radiusCenter = nil
+        areaResult = nil
+        volumeResult = nil
+        boundingBoxExtents = nil
         closestPointA = nil
         closestPointB = nil
         measureMessage = nil
@@ -1129,6 +1217,28 @@ final class ViewerViewModel: ObservableObject {
                 radiusCenter = center
                 radiusResult = radius
             }
+
+        case .area:
+            // Reached only without B-rep topology: an STL tap resolves to a bare point,
+            // so there is no trimmed surface for the kernel to integrate.
+            measureMessage = "面积测量需要点选一个面（仅 STEP 模型支持）"
+
+        case .volume:
+            // Answers for a watertight STL too, since the kernel judges closedness
+            // topologically rather than from the file format.
+            guard let volume = shape?.volume else {
+                measureMessage = "该模型不是封闭实体，无法计算体积"
+                return
+            }
+            volumeResult = Float(volume)
+
+        case .boundingBox:
+            guard let box = shape?.bounds else { return }
+            boundingBoxExtents = SCNVector3(
+                Float(abs(box.max.x - box.min.x)),
+                Float(abs(box.max.y - box.min.y)),
+                Float(abs(box.max.z - box.min.z))
+            )
         }
     }
 
@@ -1234,6 +1344,35 @@ final class ViewerViewModel: ObservableObject {
                 measureMessage = "请点选一条圆边或一个回转面来量取半径"
                 return true
             }
+
+        case .area:
+            guard let entity = entities.first, case let .face(i) = entity,
+                  let face = shape?.face(at: i) else {
+                measureMessage = "面积测量需要点选一个面（仅 STEP 模型支持）"
+                return true
+            }
+            // The kernel integrates the trimmed surface, so holes and the outer wire are
+            // both accounted for — a bounding-box area would be wrong on any face with a
+            // cut-out, which is most of them on a machined part.
+            areaResult = Float(face.area())
+            return true
+
+        case .volume:
+            guard let volume = shape?.volume else {
+                measureMessage = "该模型不是封闭实体，无法计算体积"
+                return true
+            }
+            volumeResult = Float(volume)
+            return true
+
+        case .boundingBox:
+            guard let box = shape?.bounds else { return false }
+            boundingBoxExtents = SCNVector3(
+                Float(abs(box.max.x - box.min.x)),
+                Float(abs(box.max.y - box.min.y)),
+                Float(abs(box.max.z - box.min.z))
+            )
+            return true
         }
     }
 
@@ -1308,6 +1447,10 @@ final class ViewerViewModel: ObservableObject {
     func selectMeasureType(_ type: MeasureType) {
         measureType = type
         clearMeasure()
+        // Volume and the bounding box need no pick, so selecting the type is the whole
+        // interaction — but `clearMeasure` has just wiped the results, so they have to
+        // be recomputed here or the panel would show "--" until something else ran.
+        computeResults()
     }
 
     func clearMeasure() {
@@ -1316,6 +1459,9 @@ final class ViewerViewModel: ObservableObject {
         angleResult = nil
         radiusResult = nil
         radiusCenter = nil
+        areaResult = nil
+        volumeResult = nil
+        boundingBoxExtents = nil
         closestPointA = nil
         closestPointB = nil
         measureMessage = nil
@@ -1333,10 +1479,72 @@ final class ViewerViewModel: ObservableObject {
 
     func toggleMeasureMode() {
         mode = mode == .measure ? .orbit : .measure
-        if mode == .orbit { clearMeasure() }
+        if mode == .orbit {
+            clearMeasure()
+        } else {
+            // Entering measure mode with a whole-model type already selected (volume,
+            // bounding box) has to produce its value straight away, since there is no
+            // pick to wait for.
+            computeResults()
+        }
     }
 
     // MARK: - Visuals
+
+    /// Applies the current display mode to the live scene.
+    ///
+    /// Only material and visibility are touched — never the geometry — so switching modes
+    /// is instant and nothing is re-tessellated.
+    private func applyDisplayMode() {
+        guard let material = modelNode?.geometry?.firstMaterial else { return }
+        let edges = scene?.rootNode.childNode(withName: "edges", recursively: true)
+
+        // Filled is the norm; only the STL wireframe fallback below wants `.lines`, and
+        // starting from `.fill` means switching away from it can never leave the surface
+        // drawn as a mesh of hairlines.
+        material.fillMode = .fill
+
+        switch displayMode {
+        case .shaded:
+            material.transparency = 1
+            material.writesToDepthBuffer = true
+            edges?.isHidden = true
+
+        case .shadedWithEdges:
+            material.transparency = 1
+            material.writesToDepthBuffer = true
+            edges?.isHidden = false
+
+        case .transparent:
+            // Translucent rather than cut away, so an internal bore or rib is visible
+            // through the wall without sectioning the part.
+            //
+            // The surface stops writing depth, which is what makes the mode do anything:
+            // with depth writes left on, the front wall the user is looking through would
+            // still reject every interior face and edge behind it, and the part would just
+            // look like frosted glass with nothing visible inside.
+            material.transparency = 0.3
+            material.writesToDepthBuffer = false
+            edges?.isHidden = false
+
+        case .wireframe:
+            if edges != nil {
+                // A real CAD wireframe: the B-rep edges only, not the triangulation. The
+                // surface is made fully transparent *and* stops writing depth rather than
+                // being hidden, because the edge geometry is a child of this node — hiding
+                // the node would take the wireframe with it.
+                material.transparency = 0
+                material.writesToDepthBuffer = false
+                edges?.isHidden = false
+            } else {
+                // An STL carries no B-rep edges, so the triangulation is the only wireframe
+                // there is to draw; leaving the surface opaque keeps it readable.
+                material.transparency = 1
+                material.writesToDepthBuffer = true
+                material.fillMode = .lines
+            }
+        }
+    }
 
     /// How a picked face is tinted. Preselect and committed picks are deliberately
     /// different colours: yellow still means "lift now to take this one", teal means
@@ -1793,6 +2001,13 @@ final class ViewerViewModel: ObservableObject {
         case .radius:
             guard let r = radiusResult else { return nil }
             return displayUnit.format(r)
+        case .area:
+            guard let a = areaResult else { return nil }
+            return displayUnit.formatArea(a)
+        case .volume, .boundingBox:
+            // Both describe the whole model rather than a place on it, and neither has an
+            // anchor point to hang a label from — the reading belongs in the result panel.
+            return nil
         }
     }
 
