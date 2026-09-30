@@ -485,7 +485,11 @@ final class ViewerViewModel: ObservableObject {
                 ? (loadedShape?.allEdgePolylinesIndexed(
                     deflection: min(deflection, 0.05), maxPointsPerEdge: 64) ?? [])
                 : []
-            let edgeGeometry = Self.makeEdgeGeometry(from: edgePolylines)
+            // Edge ribbon width as a fraction of the part, so it reads the same relative
+            // thickness on a 20 mm bracket and a metre beam. 0.3 % of the largest
+            // dimension gives a line that is visible without drowning the surface.
+            let edgeWidth = Float(max(maxDim * 0.003, 0.01))
+            let edgeGeometry = Self.makeEdgeGeometry(from: edgePolylines, edgeWidth: edgeWidth)
 
             // Retained before the scene is built, because the outline hull below is cut
             // from this very vertex buffer and the triangle list above it.
@@ -557,34 +561,59 @@ final class ViewerViewModel: ObservableObject {
 
     // MARK: - Edge geometry
 
-    /// Builds a single line-primitive geometry from the kernel's edge polylines.
+    /// Builds edge geometry as triangle ribbons (quads), not line primitives.
     ///
-    /// Takes the same `(edgeIndex, points)` list the picker consumes, in the kernel's own
-    /// frame, so the wireframe on the model and the set of tappable edges are one and the
-    /// same set of curves.
+    /// SceneKit line primitives render at exactly one pixel on iOS Metal and cannot be
+    /// widened — that is why the edges were invisible in the screenshots. A ribbon of
+    /// triangles has real width, so the feature edges read at any model size.
+    ///
+    /// Each segment of each polyline becomes a quad of width `edgeWidth`, offset
+    /// perpendicular to the segment direction. The offset direction is stabilised with
+    /// the world up vector so a polyline does not twist where two segments meet.
     private static func makeEdgeGeometry(
-        from polys: [(edgeIndex: Int, points: [SIMD3<Double>])]
+        from polys: [(edgeIndex: Int, points: [SIMD3<Double>])],
+        edgeWidth: Float
     ) -> SCNGeometry? {
         var positions: [SCNVector3] = []
         var indices: [UInt32] = []
+        let up = SIMD3<Float>(0, 1, 0)
 
         for entry in polys {
             let pts = entry.points
             guard pts.count >= 2 else { continue }
-            let base = UInt32(positions.count)
-            for p in pts {
-                positions.append(SCNVector3(Float(p.x), Float(p.y), Float(p.z)))
-            }
+
             for i in 0..<(pts.count - 1) {
-                indices.append(base + UInt32(i))
-                indices.append(base + UInt32(i + 1))
+                let a = SIMD3<Float>(Float(pts[i].x), Float(pts[i].y), Float(pts[i].z))
+                let b = SIMD3<Float>(Float(pts[i + 1].x), Float(pts[i + 1].y), Float(pts[i + 1].z))
+                var dir = b - a
+                let len = simd_length(dir)
+                guard len > 1e-9 else { continue }
+                dir /= len
+
+                // Perpendicular to the segment. Cross with up unless the segment is
+                // nearly vertical, in which case cross with +Z instead — avoids a zero
+                // normal on vertical edges.
+                var normal = simd_cross(dir, up)
+                if simd_length_squared(normal) < 1e-6 {
+                    normal = simd_cross(dir, SIMD3<Float>(0, 0, 1))
+                }
+                normal = simd_normalize(normal) * (edgeWidth * 0.5)
+
+                let base = UInt32(positions.count)
+                positions.append(SCNVector3(a - normal))
+                positions.append(SCNVector3(a + normal))
+                positions.append(SCNVector3(b - normal))
+                positions.append(SCNVector3(b + normal))
+
+                indices.append(contentsOf: [base, base + 1, base + 2,
+                                             base + 2, base + 1, base + 3])
             }
         }
 
-        guard indices.count >= 2 else { return nil }
+        guard indices.count >= 3 else { return nil }
 
         let source = SCNGeometrySource(vertices: positions)
-        let element = SCNGeometryElement(indices: indices, primitiveType: .line)
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
         return SCNGeometry(sources: [source], elements: [element])
     }
 
@@ -764,20 +793,21 @@ final class ViewerViewModel: ObservableObject {
         // mid horizon and a dark nadir, which is the same job a three.js hemisphere light
         // does in the reference viewer.
         scene.lightingEnvironment.contents = Self.environmentCube()
-        // The environment provides ambient fill and a sky/ground gradient so curved
-        // surfaces read their orientation. Kept moderate so the directional key still
-        // draws a clear terminator — a fully environment-lit part goes flat.
-        scene.lightingEnvironment.intensity = 0.6
+        // Minimal environment: just enough fill to keep the shadow side from going
+        // pure black. Anything higher washes out the directional key and the part goes
+        // flat — which is exactly what the screenshots show. The form must come from
+        // the key light and its specular highlight, not from all-round fill.
+        scene.lightingEnvironment.intensity = 0.15
 
-        // Light grey albedo, not dark. A CAD viewer reads on a light background: the
-        // lit face lands around 0.75 (clearly darker than the 0.91 backdrop), the shadow
-        // side around 0.35. Dark albedo was the mistake that made the last build look
-        // like a silhouette against black.
+        // Blinn, not PBR. PBR's diffuse response is nearly uniform across a matte
+        // surface, so a curved face reads as one flat grey — the blob in the screenshots.
+        // Blinn adds a tight specular highlight that tracks the surface normal, which is
+        // what makes a rounded or angled face read as 3D without any texture.
         let mat = SCNMaterial()
         mat.diffuse.contents = UIColor(red: 0.78, green: 0.79, blue: 0.82, alpha: 1.0)
-        mat.metalness.contents = 0.1
-        mat.roughness.contents = 0.7
-        mat.lightingModel = .physicallyBased
+        mat.specular.contents = UIColor(white: 0.9, alpha: 1.0)
+        mat.shininess = 35
+        mat.lightingModel = .blinn
         mat.isDoubleSided = true
         geometry.materials = [mat]
 
@@ -796,8 +826,9 @@ final class ViewerViewModel: ObservableObject {
 
         if let edgeGeometry {
             let edgeMat = SCNMaterial()
-            edgeMat.diffuse.contents = UIColor(red: 0.13, green: 0.16, blue: 0.20, alpha: 1.0)
+            edgeMat.diffuse.contents = UIColor(red: 0.06, green: 0.08, blue: 0.12, alpha: 1.0)
             edgeMat.lightingModel = .constant
+            // Ribbons can face either direction, so double-sided.
             edgeMat.isDoubleSided = true
             // Depth-tested against the shaded surface so hidden edges stay hidden,
             // but not depth-writing, which removes the stipple that a coplanar
@@ -809,11 +840,11 @@ final class ViewerViewModel: ObservableObject {
             // A hair of outward inflation keeps the wireframe off the shaded surface
             // in the depth buffer. It is applied through an explicit anchor pair rather
             // than `SCNNode.pivot` so the expansion is provably about the model centre:
-            // v -> center + 1.0015 * (v - center).
+            // v -> center + 1.002 * (v - center).
             let edgeAnchor = SCNNode()
             edgeAnchor.name = "edgeAnchor"
             edgeAnchor.position = center
-            edgeAnchor.scale = SCNVector3(1.0015, 1.0015, 1.0015)
+            edgeAnchor.scale = SCNVector3(1.002, 1.002, 1.002)
 
             let edgeNode = SCNNode(geometry: edgeGeometry)
             edgeNode.name = "edges"
@@ -824,25 +855,28 @@ final class ViewerViewModel: ObservableObject {
 
         if let outlineGeometry {
             let outlineMat = SCNMaterial()
-            outlineMat.diffuse.contents = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1.0)
+            outlineMat.diffuse.contents = UIColor(red: 0.08, green: 0.10, blue: 0.14, alpha: 1.0)
             outlineMat.lightingModel = .constant
             // Not double-sided: the whole point of the hull is to keep one side and drop
             // the other. Leaving both on would paint the near shell over the part.
             outlineMat.isDoubleSided = false
             outlineMat.cullMode = .front
             outlineMat.readsFromDepthBuffer = true
-            outlineMat.writesToDepthBuffer = true
+            // Must NOT write depth: the outline is the inflated back-shell, and if it
+            // writes depth it z-fights with the surface it sits just outside. Reading
+            // depth is what keeps the outline from leaking over the front faces — only
+            // the rim that peeks beyond the silhouette survives the depth test.
+            outlineMat.writesToDepthBuffer = false
             outlineGeometry.materials = [outlineMat]
 
-            // Inflated by a fixed fraction of the part, not a fixed distance, so the rim
-            // is the same relative width on a 20 mm bracket and a metre-long beam. 1.5 %
-            // gives a rim thick enough to read at arm's length on a phone. Applied
-            // through the same explicit anchor pair as the edge overlay —
-            // v -> center + 1.015 * (v - center).
+            // 2.5 % inflation: the previous 1.5 % was still a hair that dissolved
+            // against the anti-aliased edge of the shaded surface. Applied through the
+            // same explicit anchor pair as the edge overlay —
+            // v -> center + 1.025 * (v - center).
             let outlineAnchor = SCNNode()
             outlineAnchor.name = "outlineAnchor"
             outlineAnchor.position = center
-            outlineAnchor.scale = SCNVector3(1.015, 1.015, 1.015)
+            outlineAnchor.scale = SCNVector3(1.025, 1.025, 1.025)
 
             let outlineNode = SCNNode(geometry: outlineGeometry)
             outlineNode.name = "outline"
