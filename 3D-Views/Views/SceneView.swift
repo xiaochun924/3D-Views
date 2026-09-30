@@ -54,6 +54,12 @@ struct SceneView: UIViewRepresentable {
         // setting every edge on every iPhone and iPad is badly aliased.
         scnView.antialiasingMode = .multisampling4X
         scnView.backgroundColor = UIColor(red: 0.91, green: 0.92, blue: 0.94, alpha: 1.0)
+        // Without this the view can render at 1× on a 3× retina screen and be scaled up,
+        // which is the single biggest cause of a "blurry / unclear" model on iOS — every
+        // edge becomes a soft smear regardless of AA or mesh quality. UIView's default
+        // would eventually be right, but for an SCNView created off-window it is not,
+        // and the first frame (and every screenshot) renders at the wrong scale.
+        scnView.contentScaleFactor = UIScreen.main.scale
         scnView.scene = scene
 
         // With camera control off nothing else would pick a camera, and a scene handed over

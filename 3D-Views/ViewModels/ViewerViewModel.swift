@@ -424,8 +424,11 @@ final class ViewerViewModel: ObservableObject {
                 // The angular bound is what actually governs a small fillet or a bore on a
                 // part that is otherwise large: the linear deflection is measured against the
                 // whole part's scale, so without a tight angle those features collapse to a
-                // handful of facets however fine the linear bound is set.
-                params.angle = 0.15
+                // handful of facets however fine the linear bound is set. 0.06 rad (~3.4°)
+                // is the tightness a desktop CAD viewer settles on — enough that a 90° arc
+                // on a small hole gets ~26 facets instead of the ~11 the previous 0.15 rad
+                // produced, which is what removes the visible faceting on curves.
+                params.angle = 0.06
                 params.adjustMinSize = true
                 mesh = loadedShape?.mesh(parameters: params)
             } else {
@@ -544,7 +547,12 @@ final class ViewerViewModel: ObservableObject {
         guard let box = shape?.bounds else { return 0.1 }
         let diagonal = simd_length(box.max - box.min)
         guard diagonal.isFinite, diagonal > 0 else { return 0.1 }
-        return min(max(diagonal * 0.0004, 0.01), 0.5)
+        // 0.02 % of the diagonal rather than 0.04 %, because the previous bound left a
+        // 20 mm part tessellated at a 0.01 mm chord error that reads as faceting on the
+        // screen. The angular bound (0.06 rad) is the real limit on curves, so this only
+        // needs to be fine enough not to be the binding constraint, and the upper clamp
+        // keeps a multi-metre assembly from spending a minute meshing.
+        return min(max(diagonal * 0.0002, 0.005), 0.5)
     }
 
     // MARK: - Edge geometry
@@ -823,7 +831,7 @@ final class ViewerViewModel: ObservableObject {
 
         if let outlineGeometry {
             let outlineMat = SCNMaterial()
-            outlineMat.diffuse.contents = UIColor(red: 0.15, green: 0.18, blue: 0.23, alpha: 1.0)
+            outlineMat.diffuse.contents = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1.0)
             outlineMat.lightingModel = .constant
             // Not double-sided: the whole point of the hull is to keep one side and drop
             // the other. Leaving both on would paint the near shell over the part.
@@ -835,12 +843,15 @@ final class ViewerViewModel: ObservableObject {
 
             // Inflated by a fixed fraction of the part, not a fixed distance, so the rim
             // is the same relative width on a 20 mm bracket and a metre-long beam, and it
-            // stays the same on screen at the framing distance. Applied through the same
-            // explicit anchor pair as the edge overlay — v -> center + 1.006 * (v - center).
+            // stays the same on screen at the framing distance. 1.2 % gives a rim thick
+            // enough to read at arm's length on a phone; the previous 0.6 % was a hair
+            // that dissolved against the anti-aliased edge of the shaded surface. Applied
+            // through the same explicit anchor pair as the edge overlay —
+            // v -> center + 1.012 * (v - center).
             let outlineAnchor = SCNNode()
             outlineAnchor.name = "outlineAnchor"
             outlineAnchor.position = center
-            outlineAnchor.scale = SCNVector3(1.006, 1.006, 1.006)
+            outlineAnchor.scale = SCNVector3(1.012, 1.012, 1.012)
 
             let outlineNode = SCNNode(geometry: outlineGeometry)
             outlineNode.name = "outline"
@@ -859,7 +870,13 @@ final class ViewerViewModel: ObservableObject {
         camera.automaticallyAdjustsZRange = false
         camera.zNear = Double(max(cameraDistance * 0.01, 0.0001))
         camera.zFar = Double(max(cameraDistance * 10, 1))
-        camera.wantsHDR = false
+        // PBR materials expect an HDR pipeline: without it the lighting is clamped to
+        // 0..1 before tone mapping, so the bright side clips to white and the gradient
+        // that reads as form is lost. Enabling HDR lets the key light stay bright while
+        // SceneKit's tone mapper rolls the highlights off, which is what keeps a lit
+        // face from going flat against the backdrop. Bloom is off: a CAD part should not
+        // glow, and bloom softens edges that have just been sharpened.
+        camera.wantsHDR = true
         camera.bloomIntensity = 0
 
         let cameraNode = SCNNode()
@@ -880,7 +897,7 @@ final class ViewerViewModel: ObservableObject {
         // upper left of the screen, whatever direction that is in the model's frame.
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 510
+        keyLight.intensity = 620
         let keyNode = SCNNode()
         keyNode.name = "keyLight"
         keyNode.light = keyLight
@@ -890,7 +907,7 @@ final class ViewerViewModel: ObservableObject {
 
         let fillLight = SCNLight()
         fillLight.type = .directional
-        fillLight.intensity = 130
+        fillLight.intensity = 180
         fillLight.color = UIColor(white: 0.86, alpha: 1.0)
         let fillNode = SCNNode()
         fillNode.name = "fillLight"
@@ -901,7 +918,7 @@ final class ViewerViewModel: ObservableObject {
 
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 55
+        ambient.intensity = 80
         ambient.color = UIColor(white: 0.80, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.name = "ambientLight"
