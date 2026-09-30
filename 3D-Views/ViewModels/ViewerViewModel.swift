@@ -474,27 +474,28 @@ final class ViewerViewModel: ObservableObject {
             //
             // Only drawable for BREP formats: an STL has no genuine edge structure, so
             // its edge set is just every facet boundary — the same noise again.
-            //
-            // One discretisation feeds both the wireframe drawn on the model and the
-            // screen-space edge picking: the same polylines go to the renderer in the
-            // kernel's own frame and to the picker in world space, so an edge that is drawn
-            // and an edge that can be tapped can never drift apart. The edges are taken at
-            // a finer deflection than the shaded mesh, because a faceted silhouette is far
-            // more visible on a hairline than on a shaded surface.
             let edgePolylines = brep
                 ? (loadedShape?.allEdgePolylinesIndexed(
                     deflection: min(deflection, 0.05), maxPointsPerEdge: 64) ?? [])
                 : []
-            // Edge ribbon width as a fraction of the part, so it reads the same relative
-            // thickness on a 20 mm bracket and a metre beam. 0.3 % of the largest
-            // dimension gives a line that is visible without drowning the surface.
-            let edgeWidth = Float(max(maxDim * 0.003, 0.01))
-            let edgeGeometry = Self.makeEdgeGeometry(from: edgePolylines, edgeWidth: edgeWidth)
 
             // Retained before the scene is built, because the outline hull below is cut
             // from this very vertex buffer and the triangle list above it.
             modelVertices = Self.extractVertices(from: geometry)
             modelTriangleIndices = Self.extractTriangleIndices(from: geometry)
+
+            // Sharp edges extracted from the mesh itself. This is the fallback that
+            // guarantees feature lines show up even when the B-rep edge query returns
+            // nothing for a particular STEP file — the previous builds had no visible
+            // edges because `allEdgePolylinesIndexed` came back empty for this model.
+            // A triangle edge whose two adjacent faces differ by more than the threshold
+            // is a sharp (feature) edge; edges shared smoothly are skipped.
+            let meshEdges = Self.makeSharpEdgeGeometry(
+                vertices: modelVertices,
+                triangles: meshTrianglesWithFaces,
+                edgeWidth: Float(max(maxDim * 0.005, 0.01))
+            )
+
             let outlineGeometry = Self.makeOutlineGeometry(
                 vertexSource: geometry.sources(for: .vertex).first,
                 vertices: modelVertices,
@@ -503,7 +504,7 @@ final class ViewerViewModel: ObservableObject {
 
             let built = Self.buildScene(
                 geometry: geometry,
-                edgeGeometry: brep ? edgeGeometry : nil,
+                edgeGeometry: meshEdges,
                 outlineGeometry: outlineGeometry,
                 center: center,
                 cameraDistance: cameraDistance
@@ -561,53 +562,96 @@ final class ViewerViewModel: ObservableObject {
 
     // MARK: - Edge geometry
 
-    /// Builds edge geometry as triangle ribbons (quads), not line primitives.
+    /// Extracts sharp (feature) edges from the triangle mesh and renders them as
+    /// triangle ribbons.
     ///
-    /// SceneKit line primitives render at exactly one pixel on iOS Metal and cannot be
-    /// widened — that is why the edges were invisible in the screenshots. A ribbon of
-    /// triangles has real width, so the feature edges read at any model size.
-    ///
-    /// Each segment of each polyline becomes a quad of width `edgeWidth`, offset
-    /// perpendicular to the segment direction. The offset direction is stabilised with
-    /// the world up vector so a polyline does not twist where two segments meet.
-    private static func makeEdgeGeometry(
-        from polys: [(edgeIndex: Int, points: [SIMD3<Double>])],
-        edgeWidth: Float
+    /// This is the rendering edge source: unlike `allEdgePolylinesIndexed`, which can
+    /// return empty for some STEP files and produced the edgeless blob in the
+    /// screenshots, the mesh always has triangles to derive edges from. An edge is
+    /// "sharp" when the two triangles sharing it have face normals that differ by more
+    /// than `sharpAngleDeg` — this catches creases, holes and profile changes while
+    /// skipping the internal edges of a smoothly tessellated curve.
+    private static func makeSharpEdgeGeometry(
+        vertices: [SCNVector3],
+        triangles: [OCCTSwift.Triangle],
+        edgeWidth: Float,
+        sharpAngleDeg: Double = 35
     ) -> SCNGeometry? {
+        guard vertices.count >= 3, triangles.count >= 1 else { return nil }
+
+        // Build edge -> [triangle indices] adjacency. An edge key is the sorted pair of
+        // vertex indices so (a,b) and (b,a) collapse to the same edge.
+        var edgeToFaces: [UInt64: [Int]] = [:]
+        for (ti, tri) in triangles.enumerated() {
+            let indices = [tri.v1, tri.v2, tri.v3]
+            for i in 0..<3 {
+                let a = indices[i]
+                let b = indices[(i + 1) % 3]
+                let key = edgeKey(min(a, b), max(a, b))
+                edgeToFaces[key, default: []].append(ti)
+            }
+        }
+
+        // Precompute triangle normals.
+        var normals: [SIMD3<Float>] = []
+        normals.reserveCapacity(triangles.count)
+        for tri in triangles {
+            let i0 = Int(tri.v1), i1 = Int(tri.v2), i2 = Int(tri.v3)
+            guard i0 < vertices.count, i1 < vertices.count, i2 < vertices.count else {
+                normals.append(.zero)
+                continue
+            }
+            let a = SIMD3<Float>(vertices[i0].x, vertices[i0].y, vertices[i0].z)
+            let b = SIMD3<Float>(vertices[i1].x, vertices[i1].y, vertices[i1].z)
+            let c = SIMD3<Float>(vertices[i2].x, vertices[i2].y, vertices[i2].z)
+            let n = simd_cross(b - a, c - a)
+            normals.append(simd_length_squared(n) > 0 ? simd_normalize(n) : .zero)
+        }
+
+        let cosThreshold = cos(sharpAngleDeg * .pi / 180)
         var positions: [SCNVector3] = []
         var indices: [UInt32] = []
         let up = SIMD3<Float>(0, 1, 0)
 
-        for entry in polys {
-            let pts = entry.points
-            guard pts.count >= 2 else { continue }
-
-            for i in 0..<(pts.count - 1) {
-                let a = SIMD3<Float>(Float(pts[i].x), Float(pts[i].y), Float(pts[i].z))
-                let b = SIMD3<Float>(Float(pts[i + 1].x), Float(pts[i + 1].y), Float(pts[i + 1].z))
-                var dir = b - a
-                let len = simd_length(dir)
-                guard len > 1e-9 else { continue }
-                dir /= len
-
-                // Perpendicular to the segment. Cross with up unless the segment is
-                // nearly vertical, in which case cross with +Z instead — avoids a zero
-                // normal on vertical edges.
-                var normal = simd_cross(dir, up)
-                if simd_length_squared(normal) < 1e-6 {
-                    normal = simd_cross(dir, SIMD3<Float>(0, 0, 1))
-                }
-                normal = simd_normalize(normal) * (edgeWidth * 0.5)
-
-                let base = UInt32(positions.count)
-                positions.append(SCNVector3(a - normal))
-                positions.append(SCNVector3(a + normal))
-                positions.append(SCNVector3(b - normal))
-                positions.append(SCNVector3(b + normal))
-
-                indices.append(contentsOf: [base, base + 1, base + 2,
-                                             base + 2, base + 1, base + 3])
+        for (key, faceList) in edgeToFaces {
+            // Boundary edges (one face) are always drawn; interior edges need a sharp
+            // dihedral angle. Edges shared by more than two faces (non-manifold) are
+            // skipped.
+            guard faceList.count == 1 || faceList.count == 2 else { continue }
+            if faceList.count == 2 {
+                let n0 = normals[faceList[0]]
+                let n1 = normals[faceList[1]]
+                if simd_length_squared(n0) == 0 || simd_length_squared(n1) == 0 { continue }
+                let dot = simd_dot(n0, n1)
+                // dot > cosThreshold means the angle is smaller than the threshold →
+                // smooth, skip. dot <= cosThreshold → sharp, draw.
+                if dot > cosThreshold { continue }
             }
+
+            let (ai, bi) = unedgeKey(key)
+            let aIdx = Int(ai), bIdx = Int(bi)
+            guard aIdx < vertices.count, bIdx < vertices.count else { continue }
+            let a = SIMD3<Float>(vertices[aIdx].x, vertices[aIdx].y, vertices[aIdx].z)
+            let b = SIMD3<Float>(vertices[bIdx].x, vertices[bIdx].y, vertices[bIdx].z)
+
+            var dir = b - a
+            let len = simd_length(dir)
+            guard len > 1e-9 else { continue }
+            dir /= len
+
+            var normal = simd_cross(dir, up)
+            if simd_length_squared(normal) < 1e-6 {
+                normal = simd_cross(dir, SIMD3<Float>(0, 0, 1))
+            }
+            normal = simd_normalize(normal) * (edgeWidth * 0.5)
+
+            let base = UInt32(positions.count)
+            positions.append(SCNVector3(a - normal))
+            positions.append(SCNVector3(a + normal))
+            positions.append(SCNVector3(b - normal))
+            positions.append(SCNVector3(b + normal))
+            indices.append(contentsOf: [base, base + 1, base + 2,
+                                         base + 2, base + 1, base + 3])
         }
 
         guard indices.count >= 3 else { return nil }
@@ -615,6 +659,16 @@ final class ViewerViewModel: ObservableObject {
         let source = SCNGeometrySource(vertices: positions)
         let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
         return SCNGeometry(sources: [source], elements: [element])
+    }
+
+    /// Packs two vertex indices into one UInt64 edge key.
+    private static func edgeKey(_ a: UInt32, _ b: UInt32) -> UInt64 {
+        (UInt64(a) << 32) | UInt64(b)
+    }
+
+    /// Unpacks an edge key back into (minIndex, maxIndex).
+    private static func unedgeKey(_ key: UInt64) -> (UInt32, UInt32) {
+        (UInt32(key >> 32), UInt32(key & 0xFFFFFFFF))
     }
 
     /// A copy of the shaded mesh, black, used to draw the part's outline.
@@ -804,9 +858,9 @@ final class ViewerViewModel: ObservableObject {
         // Blinn adds a tight specular highlight that tracks the surface normal, which is
         // what makes a rounded or angled face read as 3D without any texture.
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.78, green: 0.79, blue: 0.82, alpha: 1.0)
-        mat.specular.contents = UIColor(white: 0.9, alpha: 1.0)
-        mat.shininess = 35
+        mat.diffuse.contents = UIColor(red: 0.86, green: 0.87, blue: 0.90, alpha: 1.0)
+        mat.specular.contents = UIColor(white: 1.0, alpha: 1.0)
+        mat.shininess = 25
         mat.lightingModel = .blinn
         mat.isDoubleSided = true
         geometry.materials = [mat]
@@ -869,14 +923,12 @@ final class ViewerViewModel: ObservableObject {
             outlineMat.writesToDepthBuffer = false
             outlineGeometry.materials = [outlineMat]
 
-            // 2.5 % inflation: the previous 1.5 % was still a hair that dissolved
-            // against the anti-aliased edge of the shaded surface. Applied through the
-            // same explicit anchor pair as the edge overlay —
-            // v -> center + 1.025 * (v - center).
+            // 3 % inflation. Applied through the same explicit anchor pair as the edge
+            // overlay — v -> center + 1.03 * (v - center).
             let outlineAnchor = SCNNode()
             outlineAnchor.name = "outlineAnchor"
             outlineAnchor.position = center
-            outlineAnchor.scale = SCNVector3(1.025, 1.025, 1.025)
+            outlineAnchor.scale = SCNVector3(1.03, 1.03, 1.03)
 
             let outlineNode = SCNNode(geometry: outlineGeometry)
             outlineNode.name = "outline"
