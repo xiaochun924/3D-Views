@@ -2599,6 +2599,20 @@ final class ViewerViewModel: ObservableObject {
             }
         }
 
+        // Axial components for the two-point distances: the orthogonal staircase
+        // A → (B.x,A.y,A.z) → (B.x,B.y,A.z) → B, colour-coded to match the ΔX/ΔY/ΔZ
+        // rows in the result panel so the drawing and the numbers read as one thing.
+        if (measureType == .distance || measureType == .linear), distanceResult != nil {
+            if let a = closestPointA, let b = closestPointB {
+                addAxialComponents(from: a, to: b, lineRadius: lineRadius,
+                                   unitsPerPoint: unitsPerPoint, to: group)
+            } else if picks.count == 2 {
+                addAxialComponents(from: picks[0].point, to: picks[1].point,
+                                   lineRadius: lineRadius,
+                                   unitsPerPoint: unitsPerPoint, to: group)
+            }
+        }
+
         if measureType == .radius, let center = radiusCenter, radiusResult != nil {
             let centerSphere = SCNSphere(radius: CGFloat(markerRadius * 0.8))
             let cm = SCNMaterial()
@@ -2714,6 +2728,71 @@ final class ViewerViewModel: ObservableObject {
         cylNode.look(at: b)
         cylNode.eulerAngles.x += Float.pi / 2
         group.addChildNode(cylNode)
+    }
+
+    /// Draws the axial components of a two-point distance as an orthogonal staircase
+    /// A → (B.x,A.y,A.z) → (B.x,B.y,A.z) → B, one colour per axis, each leg carrying
+    /// a small signed label — the same ΔX/ΔY/ΔZ information the result panel lists,
+    /// drawn where it is measured (xeokit's axis wires). A leg shorter than ~2 pt on
+    /// screen cannot be seen and is dropped; below ~26 pt it is drawn but unlabelled,
+    /// since a label on a stub only adds clutter.
+    private func addAxialComponents(from a: SCNVector3, to b: SCNVector3,
+                                    lineRadius: Float, unitsPerPoint: CGFloat,
+                                    to group: SCNNode) {
+        let up = Float(unitsPerPoint)
+        // Exactly one of dx/dy/dz is non-zero per leg, so the sum is that leg's
+        // signed delta in scene units.
+        let legs: [(dx: Float, dy: Float, dz: Float, color: UIColor, symbol: String)] = [
+            (b.x - a.x, 0, 0, .systemRed, "X"),
+            (0, b.y - a.y, 0, .systemGreen, "Y"),
+            (0, 0, b.z - a.z, .systemBlue, "Z"),
+        ]
+
+        var cursor = a
+        for leg in legs {
+            let end = SCNVector3(cursor.x + leg.dx, cursor.y + leg.dy, cursor.z + leg.dz)
+            let length = (leg.dx * leg.dx + leg.dy * leg.dy + leg.dz * leg.dz).squareRoot()
+            if length > up * 2, length > modelDim * 1e-4 {
+                addCylinderLine(from: cursor, to: end,
+                                lineRadius: lineRadius * 0.55,
+                                to: group, color: leg.color)
+
+                if length > up * 26 {
+                    addSmallLabel("Δ\(leg.symbol) \(displayUnit.format(leg.dx + leg.dy + leg.dz))",
+                                  at: SCNVector3((cursor.x + end.x) / 2,
+                                                 (cursor.y + end.y) / 2,
+                                                 (cursor.z + end.z) / 2),
+                                  height: CGFloat(up * 9),
+                                  color: leg.color, to: group)
+                }
+            }
+            cursor = end
+        }
+    }
+
+    /// A compact billboard text in a given colour — the axial legs' labels.
+    private func addSmallLabel(_ string: String, at point: SCNVector3,
+                               height: CGFloat, color: UIColor, to group: SCNNode) {
+        let text = SCNText(string: string, extrusionDepth: 0.1)
+        text.font = UIFont.boldSystemFont(ofSize: 10)
+        text.firstMaterial?.diffuse.contents = color
+        text.firstMaterial?.lightingModel = .constant
+        let node = SCNNode(geometry: text)
+        let (tMin, tMax) = text.boundingBox
+        let textHeight = tMax.y - tMin.y
+        if textHeight > 1e-6 {
+            let s = Float(height) / textHeight
+            node.scale = SCNVector3(s, s, s)
+        }
+        // Centre on the anchor so the billboard spins about the label's middle.
+        node.pivot = SCNMatrix4MakeTranslation(
+            (tMin.x + tMax.x) / 2, (tMin.y + tMax.y) / 2, (tMin.z + tMax.z) / 2)
+        node.position = SCNVector3(point.x, point.y + Float(height) * 0.6, point.z)
+        node.name = "measure_label"
+        let billboard = SCNBillboardConstraint()
+        billboard.freeAxes = .all
+        node.constraints = [billboard]
+        group.addChildNode(node)
     }
 
     /// The measurement's primary reading as display text, for every type.
