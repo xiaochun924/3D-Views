@@ -764,24 +764,17 @@ final class ViewerViewModel: ObservableObject {
         // mid horizon and a dark nadir, which is the same job a three.js hemisphere light
         // does in the reference viewer.
         scene.lightingEnvironment.contents = Self.environmentCube()
-        // Deliberately well under full strength. The environment lights every surface from
-        // every direction, so it adds a large amount of light on top of the key *and* it
-        // flattens the form — it is the one term that gives a face no reason to be darker
-        // than its neighbour. What is wanted from it is the shape of the falloff at a
-        // glance, not its amount: enough to keep the shadow side off pure black, little
-        // enough that the key still draws a terminator across each curved feature. Run any
-        // brighter and an up-facing surface passes the backdrop and the model dissolves.
-        scene.lightingEnvironment.intensity = 0.25
+        // The environment provides ambient fill and a sky/ground gradient so curved
+        // surfaces read their orientation. Kept moderate so the directional key still
+        // draws a clear terminator — a fully environment-lit part goes flat.
+        scene.lightingEnvironment.intensity = 0.6
 
-        // Physically based rather than phong, so the environment above is actually
-        // integrated instead of being ignored. Roughness stays high (matte) because a
-        // mirror finish on a flat plate returns one highlight and nothing else, whereas a
-        // diffuse response shades every facet by its angle to the sky. The albedo is mid
-        // grey rather than near-white for the same reason as the intensity above: under
-        // PBR everything the lights and the environment contribute is multiplied by it,
-        // so it is the one knob that scales the whole result against the backdrop.
+        // Light grey albedo, not dark. A CAD viewer reads on a light background: the
+        // lit face lands around 0.75 (clearly darker than the 0.91 backdrop), the shadow
+        // side around 0.35. Dark albedo was the mistake that made the last build look
+        // like a silhouette against black.
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.50, green: 0.53, blue: 0.58, alpha: 1.0)
+        mat.diffuse.contents = UIColor(red: 0.78, green: 0.79, blue: 0.82, alpha: 1.0)
         mat.metalness.contents = 0.1
         mat.roughness.contents = 0.7
         mat.lightingModel = .physicallyBased
@@ -842,16 +835,14 @@ final class ViewerViewModel: ObservableObject {
             outlineGeometry.materials = [outlineMat]
 
             // Inflated by a fixed fraction of the part, not a fixed distance, so the rim
-            // is the same relative width on a 20 mm bracket and a metre-long beam, and it
-            // stays the same on screen at the framing distance. 1.2 % gives a rim thick
-            // enough to read at arm's length on a phone; the previous 0.6 % was a hair
-            // that dissolved against the anti-aliased edge of the shaded surface. Applied
+            // is the same relative width on a 20 mm bracket and a metre-long beam. 1.5 %
+            // gives a rim thick enough to read at arm's length on a phone. Applied
             // through the same explicit anchor pair as the edge overlay —
-            // v -> center + 1.012 * (v - center).
+            // v -> center + 1.015 * (v - center).
             let outlineAnchor = SCNNode()
             outlineAnchor.name = "outlineAnchor"
             outlineAnchor.position = center
-            outlineAnchor.scale = SCNVector3(1.012, 1.012, 1.012)
+            outlineAnchor.scale = SCNVector3(1.015, 1.015, 1.015)
 
             let outlineNode = SCNNode(geometry: outlineGeometry)
             outlineNode.name = "outline"
@@ -870,13 +861,11 @@ final class ViewerViewModel: ObservableObject {
         camera.automaticallyAdjustsZRange = false
         camera.zNear = Double(max(cameraDistance * 0.01, 0.0001))
         camera.zFar = Double(max(cameraDistance * 10, 1))
-        // PBR materials expect an HDR pipeline: without it the lighting is clamped to
-        // 0..1 before tone mapping, so the bright side clips to white and the gradient
-        // that reads as form is lost. Enabling HDR lets the key light stay bright while
-        // SceneKit's tone mapper rolls the highlights off, which is what keeps a lit
-        // face from going flat against the backdrop. Bloom is off: a CAD part should not
-        // glow, and bloom softens edges that have just been sharpened.
-        camera.wantsHDR = true
+        // HDR off: SceneKit's HDR tone mapper darkens the whole scene to make room for
+        // highlights, which made the previous build too dark to read. For an untextured
+        // CAD part with no bright highlights the extra range is wasted and the darkening
+        // is the opposite of what is wanted.
+        camera.wantsHDR = false
         camera.bloomIntensity = 0
 
         let cameraNode = SCNNode()
@@ -897,7 +886,7 @@ final class ViewerViewModel: ObservableObject {
         // upper left of the screen, whatever direction that is in the model's frame.
         let keyLight = SCNLight()
         keyLight.type = .directional
-        keyLight.intensity = 620
+        keyLight.intensity = 950
         let keyNode = SCNNode()
         keyNode.name = "keyLight"
         keyNode.light = keyLight
@@ -907,7 +896,7 @@ final class ViewerViewModel: ObservableObject {
 
         let fillLight = SCNLight()
         fillLight.type = .directional
-        fillLight.intensity = 180
+        fillLight.intensity = 380
         fillLight.color = UIColor(white: 0.86, alpha: 1.0)
         let fillNode = SCNNode()
         fillNode.name = "fillLight"
@@ -918,7 +907,7 @@ final class ViewerViewModel: ObservableObject {
 
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 80
+        ambient.intensity = 220
         ambient.color = UIColor(white: 0.80, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.name = "ambientLight"
