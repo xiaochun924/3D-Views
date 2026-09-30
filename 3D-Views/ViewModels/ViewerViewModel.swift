@@ -73,6 +73,26 @@ struct Pick: Identifiable {
     let entity: PickEntity
 }
 
+/// One finished measurement, kept on screen after the next one begins.
+///
+/// The single-measurement model forced a costly either/or: start a new distance and
+/// the old one — the only record of what was already measured — vanished. A list of
+/// persistent annotations is what every desktop CAD package does instead, and it is
+/// what makes the feature worth anything on a real part, where the answer is never
+/// one number but a handful of them ("bore ⌀, depth, boss-to-boss") read off one view.
+///
+/// The annotation node is owned by the item: it stays in the scene for as long as the
+/// item does, and `removeMeasurement` is the only thing that takes it down.
+struct MeasurementItem: Identifiable {
+    let id = UUID()
+    let type: MeasureType
+    let picks: [Pick]
+    /// The formatted primary reading, ready to show as-is (unit included).
+    let valueText: String
+    /// The world-space annotation group this item owns, if it drew one.
+    let node: SCNNode?
+}
+
 /// Standard orthographic viewing directions offered by the 「视图」 control.
 enum ViewDirection: String, CaseIterable, Identifiable {
     case front = "前视图"
@@ -229,6 +249,18 @@ final class ViewerViewModel: ObservableObject {
 
     /// Every pick of the current measurement, in the order they were taken.
     @Published var picks: [Pick] = []
+
+    /// Measurements that have all their picks and now live on the model.
+    ///
+    /// Each entry keeps its own annotation node, so the list is also the authority on
+    /// what is drawn: dropping an entry takes its node with it, and the nodes survive
+    /// leaving measure mode — which is the point, since the readings are usually
+    /// checked while orbiting the part afterwards.
+    @Published var measurements: [MeasurementItem] = []
+
+    /// Whether the finished measurements' annotations are drawn. Toggled from the
+    /// orbit-mode toolbar, where hiding them all is the quick way back to a clean view.
+    @Published var annotationsVisible = true
 
     /// Non-fatal explanation shown under the result, e.g. why an angle can't be formed.
     @Published var measureMessage: String?
@@ -556,6 +588,10 @@ final class ViewerViewModel: ObservableObject {
             }
 
             clearMeasure()
+            // The old scene is gone, so annotations from the previous model have
+            // nothing to belong to anymore — drop the history with it.
+            clearAllMeasurements()
+            annotationsVisible = true
 
             // The scene is rebuilt from scratch on every load, so the user's chosen
             // display mode has to be re-applied to the new materials rather than only
@@ -1508,7 +1544,11 @@ final class ViewerViewModel: ObservableObject {
     /// Shared commit for both interaction paths — a quick tap and the release of a
     /// press-and-hold — so the two can never diverge in how they fill the list.
     private func commitPick(_ pick: Pick, in view: SCNView) {
-        if picks.count >= requiredPickCount {
+        // A tap arriving while a finished measurement is still on the panel supersedes
+        // it: the finished one is frozen into the history first (it stays drawn on the
+        // model), then this tap becomes the first pick of the next measurement.
+        if picks.count >= requiredPickCount, requiredPickCount > 0 {
+            finalizeMeasurement()
             picks = [pick]
         } else {
             picks.append(pick)
@@ -2053,6 +2093,11 @@ final class ViewerViewModel: ObservableObject {
     }
 
     func selectMeasureType(_ type: MeasureType) {
+        // A finished measurement still on the panel is kept when the user moves on to
+        // a different kind of question — it was measured, it stays measured.
+        if isComplete, requiredPickCount > 0 {
+            finalizeMeasurement()
+        }
         measureType = type
         clearMeasure()
         // Volume and the bounding box need no pick, so selecting the type is the whole
@@ -2062,6 +2107,14 @@ final class ViewerViewModel: ObservableObject {
     }
 
     func clearMeasure() {
+        resetMeasureState()
+        measureGroup?.removeFromParentNode()
+        measureGroup = nil
+    }
+
+    /// Clears everything the *in-progress* measurement owns, leaving the finished ones
+    /// (`measurements`) untouched.
+    private func resetMeasureState() {
         picks = []
         distanceResult = nil
         angleResult = nil
@@ -2073,9 +2126,59 @@ final class ViewerViewModel: ObservableObject {
         closestPointA = nil
         closestPointB = nil
         measureMessage = nil
-        measureGroup?.removeFromParentNode()
-        measureGroup = nil
         clearHighlightNodes()
+    }
+
+    /// Freezes the finished measurement into the history and clears the slate.
+    ///
+    /// The annotation group is handed over, not copied: it stays in the scene attached
+    /// to its `MeasurementItem`, so `updateMeasureVisuals` rebuilding the *current*
+    /// group can never disturb a reading the user has already taken. Only a measurement
+    /// that actually produced a number is kept — a rejected combination (say, the angle
+    /// of a face to an edge) leaves nothing behind to delete.
+    private func finalizeMeasurement() {
+        guard let valueText = currentValueText(), measureMessage == nil,
+              let node = measureGroup else { return }
+
+        measurements.append(MeasurementItem(type: measureType,
+                                            picks: picks,
+                                            valueText: valueText,
+                                            node: node))
+        // Ownership has moved to the item; dropping the reference is what stops the
+        // next rebuild from wiping the finished annotation.
+        measureGroup = nil
+
+        resetMeasureState()
+    }
+
+    /// Saves the finished measurement into the history without waiting for the next tap
+    /// to supersede it. The 「测量记录」 list is the visible outcome.
+    func saveCurrentMeasurement() {
+        guard isComplete, requiredPickCount > 0 else { return }
+        finalizeMeasurement()
+    }
+
+    /// Removes one finished measurement — its annotation with it.
+    func removeMeasurement(_ id: UUID) {
+        guard let index = measurements.firstIndex(where: { $0.id == id }) else { return }
+        measurements[index].node?.removeFromParentNode()
+        measurements.remove(at: index)
+    }
+
+    /// Removes every finished measurement at once.
+    func clearAllMeasurements() {
+        for item in measurements {
+            item.node?.removeFromParentNode()
+        }
+        measurements.removeAll()
+    }
+
+    /// Shows or hides every finished measurement's annotation.
+    func toggleAnnotations() {
+        annotationsVisible.toggle()
+        for item in measurements {
+            item.node?.isHidden = !annotationsVisible
+        }
     }
 
     /// Changes the display unit and remembers it, so `SettingsView` and the viewer
@@ -2088,6 +2191,12 @@ final class ViewerViewModel: ObservableObject {
     func toggleMeasureMode() {
         mode = mode == .measure ? .orbit : .measure
         if mode == .orbit {
+            // A finished measurement still showing is kept — the readings are usually
+            // checked while orbiting the part afterwards. Only the in-progress slate
+            // (and its half-built annotation) is dropped here.
+            if isComplete, requiredPickCount > 0 {
+                finalizeMeasurement()
+            }
             clearMeasure()
         } else {
             // Entering measure mode with a whole-model type already selected (volume,
@@ -2605,6 +2714,28 @@ final class ViewerViewModel: ObservableObject {
         cylNode.look(at: b)
         cylNode.eulerAngles.x += Float.pi / 2
         group.addChildNode(cylNode)
+    }
+
+    /// The measurement's primary reading as display text, for every type.
+    ///
+    /// `currentLabelString` only covers the types that have an anchor to hang a 3D
+    /// label from; this is the superset the history list needs, because a volume or a
+    /// bounding box still reads as a number even though nothing is drawn for it.
+    private func currentValueText() -> String? {
+        switch measureType {
+        case .distance, .linear:
+            return distanceResult.map { displayUnit.format($0) }
+        case .angle:
+            return angleResult.map { String(format: "%.1f°", $0) }
+        case .radius:
+            return radiusResult.map { displayUnit.format($0) }
+        case .area:
+            return areaResult.map { displayUnit.formatArea($0) }
+        case .volume:
+            return volumeResult.map { displayUnit.formatVolume($0) }
+        case .boundingBox:
+            return boundingBoxExtents.map { displayUnit.format(max($0.x, max($0.y, $0.z))) }
+        }
     }
 
     private func currentLabelString() -> String? {

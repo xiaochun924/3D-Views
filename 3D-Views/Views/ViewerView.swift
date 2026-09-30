@@ -91,9 +91,11 @@ struct ViewerView: View {
             VStack {
                 Spacer()
                 if viewModel.mode == .measure {
-                    // The selection list sits directly above the toolbars so a
-                    // mis-picked entity can be dropped without leaving measurement mode
-                    // or restarting from scratch.
+                    // The history sits above the current selection: finished readings
+                    // first, the slate being built right now directly above the toolbar.
+                    if !viewModel.measurements.isEmpty {
+                        measurementsPanel
+                    }
                     if !viewModel.picks.isEmpty {
                         selectionPanel
                     }
@@ -159,6 +161,15 @@ struct ViewerView: View {
                 Text(viewModel.measureType.label)
                     .font(.system(size: 15, weight: .semibold))
                 Spacer()
+                // Saves the finished reading into 「测量记录」 without waiting for the
+                // next tap to supersede it. Distinct from the ×, which discards.
+                if viewModel.isComplete {
+                    Button { viewModel.saveCurrentMeasurement() } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                    }
+                    .accessibilityLabel("存入测量记录")
+                }
                 Button { viewModel.clearMeasure() } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(.secondary)
@@ -379,6 +390,85 @@ struct ViewerView: View {
         .padding(.vertical, 8)
     }
 
+    /// The finished-measurement list: one row per reading, each removable on its own.
+    ///
+    /// The newest first — the reading just taken is the one still being checked, so it
+    /// is the one that must be visible without scrolling.
+    private var measurementsPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.blue)
+                Text("测量记录")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\(viewModel.measurements.count)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button { viewModel.clearAllMeasurements() } label: {
+                    Text("清空")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.blue)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            // Bounded so a long measuring session cannot push the toolbars off screen.
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(viewModel.measurements.enumerated().reversed()),
+                            id: \.element.id) { entry in
+                        measurementRow(entry.element)
+                        if entry.offset != 0 {
+                            Divider().padding(.leading, 40)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 168)
+        }
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+    }
+
+    /// One row of the history: the measurement's type, its formatted reading, and the
+    /// control that removes it — annotation and all.
+    private func measurementRow(_ item: MeasurementItem) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: item.type.icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.blue)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.type.label)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Text(item.valueText)
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+            }
+
+            Spacer()
+
+            Button { viewModel.removeMeasurement(item.id) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("删除该\(item.type.label)记录")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
     private var measureToolbar: some View {
         HStack(spacing: 0) {
             // Backsteps one point at a time so a mis-tap never forces the whole
@@ -475,10 +565,42 @@ struct ViewerView: View {
         }
     }
 
+    /// Orbit-side control over the finished measurements: hide them all for a clean
+    /// look at the part, or wipe the history without entering measure mode.
+    private var annotationsMenu: some View {
+        Menu {
+            Button {
+                viewModel.toggleAnnotations()
+            } label: {
+                Label(viewModel.annotationsVisible ? "隐藏测量标注" : "显示测量标注",
+                      systemImage: viewModel.annotationsVisible ? "eye.slash" : "eye")
+            }
+            Button(role: .destructive) {
+                viewModel.clearAllMeasurements()
+            } label: {
+                Label("清除全部测量", systemImage: "trash")
+            }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: viewModel.annotationsVisible ? "ruler.fill" : "ruler")
+                    .font(.system(size: 20, weight: .medium))
+                Text("标注").font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
     private var mainToolbar: some View {
         HStack(spacing: 0) {
             toolbarButton(icon: "ruler", label: "测量") { viewModel.toggleMeasureMode() }
             toolbarButton(icon: "arrow.2.squarepath", label: "复位") { viewModel.resetView() }
+
+            // Finished measurements survive leaving measure mode on purpose — the
+            // readings get checked while orbiting. This is their orbit-side control.
+            if !viewModel.measurements.isEmpty {
+                annotationsMenu
+            }
 
             displayModeMenu(compact: false)
 
