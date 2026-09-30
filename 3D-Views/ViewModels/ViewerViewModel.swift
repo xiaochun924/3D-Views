@@ -8,6 +8,7 @@ import SceneKit
 import SwiftUI
 import simd
 import OCCTSwift
+import os
 
 enum InteractionMode: Equatable {
     case orbit
@@ -497,6 +498,8 @@ final class ViewerViewModel: ObservableObject {
             // length.
             modelRadius = max(0.5 * sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ), 1)
             cameraDistance = modelDim * 2.4
+            // A new model invalidates the fit solved for the previous one.
+            framedOnce = false
 
             // Reset the orbital camera to the part's own frame: the same angles every time,
             // at a distance that fits it. Without this, a second, differently sized model
@@ -1257,6 +1260,22 @@ final class ViewerViewModel: ObservableObject {
             ?? scene?.rootNode.childNode(withName: "camera", recursively: true)
     }
 
+    /// Log for the camera state changes worth tracing from a device report.
+    private static let cameraLog = Logger(subsystem: "com.xiaochun.3DViews", category: "camera")
+
+    /// Points the renderer back at the scene's own camera if anything has moved
+    /// `pointOfView` off it. Every orbital write assumes the node it commands is
+    /// the node being rendered through; this makes that assumption self-healing
+    /// rather than trusted, so a preset view can never end up applied to a camera
+    /// the renderer is no longer looking through.
+    private func reassertPointOfView() {
+        guard let view = renderView,
+              let scene,
+              let camera = scene.rootNode.childNode(withName: "camera", recursively: true),
+              view.pointOfView !== camera else { return }
+        view.pointOfView = camera
+    }
+
     /// Orbital camera state, in the model's own frame.
     ///
     /// Every model is recentred on the origin at load, so the orbit target starts there
@@ -1269,9 +1288,17 @@ final class ViewerViewModel: ObservableObject {
     private var cameraOrbitDistance: Float = 24
     private var cameraTarget = SCNVector3(0, 0, 0)
 
-    /// Just under a right angle, so the default up vector never ends up parallel with the
-    /// view direction at the poles — `look(at:)` is undefined there and the model flips.
-    private let maxElevation: Float = 1.55
+    /// Set once the initial framing has been solved for the current model.
+    private var framedOnce = false
+
+    /// Just under a right angle. At exactly 90° the camera sits on the orbit pole,
+    /// where a horizontal drag has no lever arm and every azimuth lands on the same
+    /// spot, so the last sliver of a degree stays out of reach — visually it is
+    /// straight down either way, and the price of an orbit that never sticks.
+    /// The clamp also keeps the cross product in `applyCamera` non-degenerate: its
+    /// length is cos(elevation), which never drops below ~0.002, comfortably above
+    /// float precision.
+    private let maxElevation: Float = .pi / 2 - 0.002
 
     /// Radians of rotation per point dragged. Roughly a third of a turn across a phone
     /// screen's width, which is the pace every 3D viewer settles on.
@@ -1290,12 +1317,44 @@ final class ViewerViewModel: ObservableObject {
 
         let d = cameraOrbitDistance
         let cosElevation = cos(cameraElevation)
-        camNode.position = SCNVector3(
+        let position = SCNVector3(
             cameraTarget.x + d * cosElevation * sin(cameraAzimuth),
             cameraTarget.y + d * sin(cameraElevation),
             cameraTarget.z + d * cosElevation * cos(cameraAzimuth)
         )
-        camNode.look(at: cameraTarget)
+        camNode.position = position
+
+        // The orientation is built outright from the orbital state instead of via
+        // `look(at:)`: the state alone decides both the position and the basis, so
+        // the same state always yields the same frame — no roll inherited from
+        // whatever orientation the node happened to be carrying, and no
+        // undefined-up edge case near the poles, which is where `look(at:)` gets
+        // flaky and a preset view can come back tilted by a different amount
+        // every time.
+        let forward = simd_normalize(SIMD3<Float>(
+            cameraTarget.x - position.x,
+            cameraTarget.y - position.y,
+            cameraTarget.z - position.z
+        ))
+        // |cross| equals cos(elevation); the elevation clamp keeps it well away
+        // from zero, so one world-up reference serves the whole orbit and the
+        // roll stays continuous everywhere.
+        var right = simd_cross(forward, SIMD3<Float>(0, 1, 0))
+        let rightLength = simd_length(right)
+        if rightLength > 1e-5 {
+            right /= rightLength
+        } else {
+            right = SIMD3<Float>(1, 0, 0)
+        }
+        let up = simd_normalize(simd_cross(right, forward))
+        // SceneKit cameras look down their local -Z, so the basis columns are
+        // screen-right, screen-up, and backward.
+        camNode.simdTransform = simd_float4x4(
+            SIMD4<Float>(right, 0),
+            SIMD4<Float>(up, 0),
+            SIMD4<Float>(-forward, 0),
+            SIMD4<Float>(SIMD3<Float>(position.x, position.y, position.z), 1)
+        )
 
         if let camera = camNode.camera {
             camera.automaticallyAdjustsZRange = false
@@ -1354,12 +1413,16 @@ final class ViewerViewModel: ObservableObject {
     ///
     /// A viewport that has not been laid out yet would report a zero size and solve for a
     /// nonsense distance, so in that case the part-sized default from load is kept instead.
+    ///
+    /// The fit is solved once per model, not once per scene hand-over: SwiftUI can hand
+    /// the same scene to a fresh renderer while the push transition is still laying out
+    /// the viewport, and re-solving against those in-flight bounds would size the same
+    /// part differently depending on when the hand-over happened.
     private func applyInitialFraming(in view: SCNView) {
-        guard view.bounds.width > 1, view.bounds.height > 1 else {
-            applyCamera()
-            return
+        if !framedOnce, view.bounds.width > 1, view.bounds.height > 1 {
+            cameraDistance = fitDistance(for: view)
+            framedOnce = true
         }
-        cameraDistance = fitDistance(for: view)
         cameraOrbitDistance = cameraDistance
         applyCamera()
     }
@@ -1416,7 +1479,9 @@ final class ViewerViewModel: ObservableObject {
         cameraElevation = 0.18
         cameraOrbitDistance = cameraDistance
         cameraTarget = SCNVector3(0, 0, 0)
+        reassertPointOfView()
         applyCamera()
+        Self.cameraLog.info("reset view: az 0.00 el 0.18")
     }
 
     func setViewDirection(_ direction: ViewDirection) {
@@ -1445,7 +1510,9 @@ final class ViewerViewModel: ObservableObject {
         }
         cameraOrbitDistance = cameraDistance
         cameraTarget = SCNVector3(0, 0, 0)
+        reassertPointOfView()
         applyCamera()
+        Self.cameraLog.info("view \(direction.rawValue, privacy: .public): az \(String(format: "%.2f", cameraAzimuth), privacy: .public) el \(String(format: "%.2f", cameraElevation), privacy: .public)")
     }
 
     // MARK: - Measure

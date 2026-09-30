@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SceneKit
+import os
 
 struct ViewerView: View {
     let file: RecentFile
@@ -755,14 +756,17 @@ extension View {
     /// button itself keeps working — it pops programmatically and never consults
     /// this gesture recognizer.
     ///
-    /// SwiftUI offers no first-party API for this, and switching the recognizer
-    /// off with `isEnabled = false` does not stick: the framework re-enables it
-    /// whenever navigation state changes (push, pop, navigation-item updates —
-    /// and this screen rewrites its toolbar on every measurement tap), so the
-    /// swipe came back shortly after every disable. The veto therefore lives at
-    /// the delegate level, where `shouldBegin` decides, and is reinstalled on
-    /// every SwiftUI update of this screen — the same render pass in which any
-    /// re-enable would happen.
+    /// SwiftUI offers no first-party API for this, and neither disabling the
+    /// recognizer nor vetoing it through a delegate is final on its own: the
+    /// framework re-arms it whenever navigation state changes (push, pop,
+    /// navigation-item updates — and this screen rewrites its toolbar on every
+    /// measurement tap), and a screen-scoped install cannot see those moments
+    /// because this screen does not re-render during a transition it is leaving.
+    /// The suppression therefore lives in one shared place — see
+    /// `SwipeBackSuppressor` — and is re-asserted from every vantage point UIKit
+    /// gives us: this screen's render passes, its appear callbacks, and the
+    /// navigation controller's did-show notification, which fires exactly when a
+    /// transition finishes re-arming anything.
     func disableInteractivePopGesture() -> some View {
         background(InteractivePopDisabler())
     }
@@ -773,8 +777,8 @@ private struct InteractivePopDisabler: UIViewControllerRepresentable {
         PopDisablerVC()
     }
 
-    func updateUIViewController(_ uiViewController: PopDisablerVC, context: Context) {
-        uiViewController.install()
+    func updateUIViewController(_ controller: PopDisablerVC, context: Context) {
+        SwipeBackSuppressor.shared.install(from: controller)
     }
 }
 
@@ -798,10 +802,119 @@ private final class PopGestureVetoer: NSObject, UIGestureRecognizerDelegate {
     }
 }
 
+/// Keeps the navigation controller's interactive pop gesture dead.
+///
+/// Two things defeat the per-screen install that came before it. First, an
+/// embedded view controller's `navigationController` accessor walks a
+/// SwiftUI-internal parent chain that on current SwiftUI builds can fail to
+/// reach the real navigation controller at all — the disable then silently
+/// no-ops. Second, SwiftUI re-arms the recognizer when a transition finishes —
+/// re-enabling it and pointing its targets and delegate back at its own
+/// handler — at moments this screen does not re-render on.
+///
+/// The fix addresses both. The controller is found by walking the window's
+/// whole view-controller tree (root, children, presented sheets) instead of the
+/// parent chain, the recognizer is disarmed three independent ways (no targets,
+/// disabled, and the vetoing delegate), and all of it is re-applied after every
+/// navigation transition via the did-show notification. A log breadcrumb
+/// records each newly suppressed controller so a device report can be checked
+/// against the console (`log stream --predicate 'subsystem == "com.xiaochun.3DViews"'`).
+@MainActor
+private final class SwipeBackSuppressor {
+    static let shared = SwipeBackSuppressor()
+
+    private static let logger = Logger(subsystem: "com.xiaochun.3DViews", category: "swipe-back")
+
+    private weak var lastNavController: UINavigationController?
+    private var observingDidShow = false
+
+    func install(from viewController: UIViewController) {
+        var roots: [UIViewController] = []
+        if let root = viewController.view.window?.rootViewController {
+            roots.append(root)
+            if let presented = root.presentedViewController {
+                roots.append(presented)
+            }
+        }
+        // Fallback for the passes that run before the view joins a window.
+        roots.append(viewController)
+
+        var navControllers: [UINavigationController] = []
+        for root in roots {
+            collectNavigationControllers(under: root, into: &navControllers)
+        }
+        var seen = Set<ObjectIdentifier>()
+        let unique = navControllers.filter { seen.insert(ObjectIdentifier($0)).inserted }
+
+        guard !unique.isEmpty else {
+            Self.logger.warning("swipe-back: no navigation controller in the window tree yet")
+            return
+        }
+        for nav in unique {
+            suppress(on: nav)
+        }
+
+        guard !observingDidShow else { return }
+        observingDidShow = true
+        // Posted exactly when a push/pop finishes — the same window in which
+        // SwiftUI re-arms the recognizer. The observer lives on the process-wide
+        // singleton for the app's lifetime, so it is never removed.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(navDidShow(_:)),
+            name: UINavigationController.didShowViewControllerNotification,
+            object: nil
+        )
+    }
+
+    private func collectNavigationControllers(
+        under root: UIViewController?,
+        into result: inout [UINavigationController]
+    ) {
+        guard let root else { return }
+        if let nav = root as? UINavigationController {
+            result.append(nav)
+        }
+        for child in root.children {
+            collectNavigationControllers(under: child, into: &result)
+        }
+        if let presented = root.presentedViewController {
+            collectNavigationControllers(under: presented, into: &result)
+        }
+    }
+
+    @objc private func navDidShow(_ notification: Notification) {
+        guard let nav = notification.object as? UINavigationController else { return }
+        suppress(on: nav)
+    }
+
+    private func suppress(on nav: UINavigationController) {
+        guard let pop = nav.interactivePopGestureRecognizer else {
+            Self.logger.warning("swipe-back: nav controller has no interactive pop recognizer")
+            return
+        }
+        // Three independent kills, because each alone has been re-armed by the
+        // framework at one point or another: no targets means nothing left to
+        // invoke, disabled means the touch stream never reaches it even if a
+        // target comes back, and the vetoing delegate refuses a begin attempt
+        // even while it is enabled.
+        pop.removeTarget(nil, action: nil)
+        pop.isEnabled = false
+        if pop.delegate !== PopGestureVetoer.shared {
+            pop.delegate = PopGestureVetoer.shared
+        }
+        if lastNavController !== nav {
+            Self.logger.info("swipe-back: suppressed pop on \(String(describing: type(of: nav)), privacy: .public)")
+            lastNavController = nav
+        }
+    }
+}
+
 /// Embeds the veto installation into the viewer's hierarchy. `viewDidAppear` is
-/// the first point at which `navigationController` is guaranteed to be non-nil;
-/// `updateUIViewController` re-asserts the veto on every SwiftUI render of the
-/// screen so a framework re-enable cannot outlive the pass that caused it.
+/// the first point at which the view is in a window — which the window-tree
+/// walk needs — and `updateUIViewController` re-asserts the veto on every
+/// SwiftUI render of the screen so a framework re-enable cannot outlive the
+/// pass that caused it.
 private final class PopDisablerVC: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -810,20 +923,12 @@ private final class PopDisablerVC: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        install()
+        SwipeBackSuppressor.shared.install(from: self)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        install()
-    }
-
-    func install() {
-        guard let pop = navigationController?.interactivePopGestureRecognizer else { return }
-        pop.isEnabled = false
-        if pop.delegate !== PopGestureVetoer.shared {
-            pop.delegate = PopGestureVetoer.shared
-        }
+        SwipeBackSuppressor.shared.install(from: self)
     }
 }
 
