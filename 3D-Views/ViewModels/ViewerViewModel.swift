@@ -14,28 +14,6 @@ enum InteractionMode: Equatable {
     case measure
 }
 
-enum SnapKind: String {
-    case endpoint = "端点"
-    case midpoint = "中点"
-    case center = "圆心"
-    case quadrant = "象限点"
-    case edge = "边"
-    case face = "面"
-    case none = ""
-
-    /// Disambiguation priority: vertices win over edge-derived points, which win over
-    /// a bare surface hit. Mirrors the "prefer edges over surfaces, then nearest of the
-    /// same type" rule used by production CAD snapping engines.
-    var priority: Int {
-        switch self {
-        case .endpoint, .center, .quadrant: return 0
-        case .midpoint, .edge: return 1
-        case .face: return 2
-        case .none: return 3
-        }
-    }
-}
-
 /// A picked topological entity.
 ///
 /// Measuring *entities* rather than raw points is what every mainstream CAD package
@@ -72,13 +50,27 @@ enum PickEntity: Equatable {
         case .face(let i): return "面 \(i + 1)"
         }
     }
+
+    /// Marker colour, mirroring the convention the old snap engine used: red holds
+    /// points and vertices, green reads as an edge, teal as a face.
+    var markerColor: UIColor {
+        switch self {
+        case .freePoint, .vertex: return .systemRed
+        case .edge: return .systemGreen
+        case .face: return .systemTeal
+        }
+    }
 }
 
-struct SnapPoint {
-    let position: SCNVector3
-    let kind: SnapKind
-    /// Topological entity this candidate belongs to, when one is known.
-    let entity: PickEntity?
+/// One committed pick.
+///
+/// The measurement used to be three parallel arrays — position, snap kind, entity —
+/// which had to be appended to, truncated and cleared in lockstep. A single value
+/// removes that class of bug outright and is what the selection list enumerates.
+struct Pick: Identifiable {
+    let id = UUID()
+    let point: SCNVector3
+    let entity: PickEntity
 }
 
 /// Standard orthographic viewing directions offered by the 「视图」 control.
@@ -171,10 +163,10 @@ final class ViewerViewModel: ObservableObject {
     @Published var mode: InteractionMode = .orbit
     @Published var measureType: MeasureType = .distance
     @Published var displayUnit: DisplayUnit = .millimeter
-    @Published var pickedPoints: [SCNVector3] = []
-    @Published var pickedKinds: [SnapKind] = []
-    /// The topological entity behind each entry of `pickedPoints`; parallel array.
-    @Published var pickedEntities: [PickEntity] = []
+
+    /// Every pick of the current measurement, in the order they were taken.
+    @Published var picks: [Pick] = []
+
     /// Non-fatal explanation shown under the result, e.g. why an angle can't be formed.
     @Published var measureMessage: String?
 
@@ -209,6 +201,11 @@ final class ViewerViewModel: ObservableObject {
     private var measureFaceGroup: SCNNode?
     private var previewFaceNode: SCNNode?
 
+    /// Bright polylines over the picked edges. World space, so they are children of the
+    /// scene root rather than the model node.
+    private var measureEdgeNode: SCNNode?
+    private var previewEdgeNode: SCNNode?
+
     /// Per-face overlay geometry keyed by style and face index. Built once per face and
     /// reused while the finger slides across it, so a drag over a densely tessellated
     /// face does not re-emit its triangles on every update.
@@ -220,14 +217,11 @@ final class ViewerViewModel: ObservableObject {
     private var modelVertices: [SCNVector3] = []
     private var modelTriangleIndices: [UInt32] = []
 
-    /// Snap kind of the preselect, kept private because it only colours the highlight.
-    private var previewKind: SnapKind?
     private var modelNode: SCNNode?
-    private var snapPoints: [SnapPoint] = []
 
-    /// The loaded kernel shape. Kept alive for the lifetime of the model because
-    /// entity measurements (`ShapeDistance`, `Face.angle`, `Edge.circleProperties`)
-    /// need the B-rep, not just the tessellation drawn on screen.
+    /// The loaded kernel shape. Kept alive for the lifetime of the model because every
+    /// pick is resolved against the B-rep — by ray casting — and entity measurements
+    /// (`ShapeDistance`, `Face.angle`, `Edge.circleProperties`) need it too.
     private var shape: OCCTSwift.Shape?
 
     /// Whether the loaded file carried real B-rep topology (STEP) rather than a mesh
@@ -235,18 +229,20 @@ final class ViewerViewModel: ObservableObject {
     /// are individual facets and entity measurement would be meaningless on it.
     private var isBrep = false
 
-    /// Maps a SceneKit triangle ordinal to the B-rep face it was meshed from.
-    ///
-    /// `Mesh.sceneKitGeometry()` keeps only vertices, normals and indices, so the
-    /// face association has to be captured at load time: `trianglesWithFaces()` is
-    /// written in the same order as `Mesh.indices`, which is the order SceneKit
-    /// numbers its triangles, which is what `SCNHitTestResult.faceIndex` reports.
+    /// Maps a SceneKit triangle ordinal to the B-rep face it was meshed from. Only
+    /// needed by the SceneKit hit-test fallback; the kernel ray cast reports the face
+    /// index directly.
     private var triangleToFace: [Int32] = []
 
-    /// Edge index → its polyline already converted to world space, for screen-space
-    /// edge picking. World space because `allowsCameraControl` moves the camera, never
-    /// the model, so these never change after load and taps stay cheap.
+    /// Edge index → its polyline in world space. World space because
+    /// `allowsCameraControl` moves the camera, never the model, so these never change
+    /// after load. Used both for screen-space edge picking and for drawing the picked
+    /// edges back over the model.
     private var edgeWorldPolylines: [(edgeIndex: Int, points: [SCNVector3])] = []
+
+    /// Vertex index → world position. Index is the one `Shape.vertices()` enumerates,
+    /// which is the one `Shape.subShape(type: .vertex, index:)` addresses.
+    private var vertexWorld: [(index: Int, position: SCNVector3)] = []
 
     /// Set by `SceneView` once the renderer exists. Only used for screen-space sizing
     /// of annotations and for hit-testing; deliberately not `@Published`, so attaching
@@ -257,10 +253,14 @@ final class ViewerViewModel: ObservableObject {
         renderView = view
     }
 
-    /// Screen-space snap radius, in points. Replaces the old world-space threshold
-    /// (`max(maxDim, 10) * 0.04`), which made snapping depend on zoom level instead of
-    /// on the finger. 14 pt is a comfortable touch target on iPhone and iPad alike.
+    /// Screen-space snap radius, in points. 14 pt is a comfortable touch target on
+    /// iPhone and iPad alike, and it is the same tolerance for edges and vertices.
     private let snapScreenRadius: CGFloat = 14
+
+    /// Throttle for the press-and-hold preselect: a `changed` event that has not moved
+    /// the finger meaningfully cannot resolve to a different entity, and re-running the
+    /// pick is the expensive part of that gesture.
+    private var lastPreviewTouch: CGPoint?
 
     /// Largest model dimension, cached for fallbacks and for camera framing.
     private var modelDim: Float = 10
@@ -276,7 +276,7 @@ final class ViewerViewModel: ObservableObject {
     }
 
     var isComplete: Bool {
-        pickedPoints.count == requiredPickCount
+        picks.count == requiredPickCount
     }
 
     // MARK: - Load
@@ -300,28 +300,43 @@ final class ViewerViewModel: ObservableObject {
             var loadedShape: OCCTSwift.Shape?
             var meshTrianglesWithFaces: [OCCTSwift.Triangle] = []
 
-            if ext == "step" || ext == "stp" {
-                let loaded = try OCCTSwift.Shape.loadSTEP(from: url)
-                loadedShape = loaded
-                guard let mesh = loaded.mesh(linearDeflection: 0.1, angularDeflection: 0.2) else {
-                    loadError = "STEP 文件网格化失败。"
-                    return
-                }
-                meshTrianglesWithFaces = mesh.trianglesWithFaces()
-                geometry = mesh.sceneKitGeometry()
+            let brep = (ext == "step" || ext == "stp")
+            if brep {
+                loadedShape = try OCCTSwift.Shape.loadSTEP(from: url)
             } else {
                 guard let loaded = OCCTSwift.Shape.readSTL(from: url.path) else {
                     loadError = "STL 文件读取失败。"
                     return
                 }
                 loadedShape = loaded
-                guard let mesh = loaded.mesh(linearDeflection: 0.1) else {
-                    loadError = "STL 文件网格化失败。"
-                    return
-                }
-                meshTrianglesWithFaces = mesh.trianglesWithFaces()
-                geometry = mesh.sceneKitGeometry()
             }
+
+            // Deflection is chosen from the part's own size rather than a fixed 0.1:
+            // an absolute value that suits a 100 mm part over-tessellates a metre-long
+            // one and, worse, leaves a 20 mm part visibly faceted — the "细节没显示出来"
+            // report. Scaling with the diagonal keeps curvature detail proportional.
+            let deflection = Self.tessellationDeflection(for: loadedShape)
+
+            let mesh: OCCTSwift.Mesh?
+            if brep {
+                var params = OCCTSwift.MeshParameters.default
+                params.deflection = deflection
+                // The angular bound is what actually governs a small fillet or a bore on a
+                // part that is otherwise large: the linear deflection is measured against the
+                // whole part's scale, so without a tight angle those features collapse to a
+                // handful of facets however fine the linear bound is set.
+                params.angle = 0.15
+                params.adjustMinSize = true
+                mesh = loadedShape?.mesh(parameters: params)
+            } else {
+                mesh = loadedShape?.mesh(linearDeflection: deflection)
+            }
+            guard let mesh else {
+                loadError = brep ? "STEP 文件网格化失败。" : "STL 文件网格化失败。"
+                return
+            }
+            meshTrianglesWithFaces = mesh.trianglesWithFaces()
+            geometry = mesh.sceneKitGeometry()
 
             let (bbMin, bbMax) = geometry.boundingBox
             let sizeX = bbMax.x - bbMin.x
@@ -337,31 +352,35 @@ final class ViewerViewModel: ObservableObject {
                 (bbMin.z + bbMax.z) / 2
             )
 
-            // Real B-rep edge polylines. Previously the app duplicated the *triangle*
-            // mesh and rendered it with `fillMode = .lines`, which draws every
-            // tessellation triangle edge (thousands of hairlines) rather than the
-            // model's actual edges — the main cause of the "unclear model" report.
+            // Real B-rep edge polylines. Drawing the *triangle* mesh with
+            // `fillMode = .lines` instead would draw every tessellation triangle edge
+            // (thousands of hairlines) rather than the model's actual edges.
             //
-            // Only drewable for BREP formats: an STL has no genuine edge structure, so
+            // Only drawable for BREP formats: an STL has no genuine edge structure, so
             // its edge set is just every facet boundary — the same noise again.
-            let brep = (ext == "step" || ext == "stp")
-            let edgeGeometry = brep
-                ? loadedShape.flatMap { $0.edgeMesh(deflection: 0.1) }
-                              .flatMap { Self.makeEdgeGeometry(from: $0) }
-                : nil
+            //
+            // One discretisation feeds both the wireframe drawn on the model and the
+            // screen-space edge picking: the same polylines go to the renderer in the
+            // kernel's own frame and to the picker in world space, so an edge that is drawn
+            // and an edge that can be tapped can never drift apart. The edges are taken at
+            // a finer deflection than the shaded mesh, because a faceted silhouette is far
+            // more visible on a hairline than on a shaded surface.
+            let edgePolylines = brep
+                ? (loadedShape?.allEdgePolylinesIndexed(
+                    deflection: min(deflection, 0.05), maxPointsPerEdge: 64) ?? [])
+                : []
+            let edgeGeometry = Self.makeEdgeGeometry(from: edgePolylines)
 
             let built = Self.buildScene(
                 geometry: geometry,
-                edgeGeometry: edgeGeometry,
+                edgeGeometry: brep ? edgeGeometry : nil,
                 center: center,
                 cameraDistance: cameraDistance
             )
             scene = built
             fileName = url.lastPathComponent
 
-            // Publish the kernel state for entity measurement. `triangleToFace` is
-            // indexed by SceneKit's triangle ordinal (see `SCNHitTestResult.faceIndex`),
-            // and `edgePolylines` by the same edge index `Shape.edge(at:)` accepts.
+            // Publish the kernel state for entity measurement.
             shape = brep ? loadedShape : nil
             isBrep = brep
             triangleToFace = brep ? meshTrianglesWithFaces.map(\.faceIndex) : []
@@ -371,20 +390,19 @@ final class ViewerViewModel: ObservableObject {
             modelVertices = Self.extractVertices(from: geometry)
             modelTriangleIndices = Self.extractTriangleIndices(from: geometry)
             faceOverlayCache.removeAll()
-            measureFaceGroup?.removeFromParentNode()
-            measureFaceGroup = nil
-            previewFaceNode?.removeFromParentNode()
-            previewFaceNode = nil
+            clearHighlightNodes()
 
             let mNode = built.rootNode.childNode(withName: "model", recursively: true)
             modelNode = mNode
 
             if let mNode {
-                edgeWorldPolylines = brep ? Self.buildEdgePolylines(loadedShape, modelNode: mNode) : []
-                snapPoints = buildSnapDatabase(shape: shape, geometry: geometry, modelNode: mNode)
+                edgeWorldPolylines = brep
+                    ? Self.buildEdgePolylines(edgePolylines, modelNode: mNode)
+                    : []
+                vertexWorld = brep ? Self.buildVertexWorld(loadedShape, modelNode: mNode) : []
             } else {
                 edgeWorldPolylines = []
-                snapPoints = []
+                vertexWorld = []
             }
 
             clearMeasure()
@@ -393,60 +411,61 @@ final class ViewerViewModel: ObservableObject {
         }
     }
 
+    /// Linear deflection scaled to the part: fine enough to show small fillets and
+    /// holes, coarse enough not to explode on a large assembly.
+    private static func tessellationDeflection(for shape: OCCTSwift.Shape?) -> Double {
+        guard let box = shape?.bounds else { return 0.1 }
+        let diagonal = simd_length(box.max - box.min)
+        guard diagonal.isFinite, diagonal > 0 else { return 0.1 }
+        return min(max(diagonal * 0.0004, 0.01), 0.5)
+    }
+
     // MARK: - Edge geometry
 
     /// Builds a single line-primitive geometry from the kernel's edge polylines.
-    private static func makeEdgeGeometry(from data: OCCTSwift.EdgeMeshData) -> SCNGeometry? {
-        let verts = data.vertices
-        guard verts.count >= 2 else { return nil }
-
+    ///
+    /// Takes the same `(edgeIndex, points)` list the picker consumes, in the kernel's own
+    /// frame, so the wireframe on the model and the set of tappable edges are one and the
+    /// same set of curves.
+    private static func makeEdgeGeometry(
+        from polys: [(edgeIndex: Int, points: [SIMD3<Double>])]
+    ) -> SCNGeometry? {
+        var positions: [SCNVector3] = []
         var indices: [UInt32] = []
-        indices.reserveCapacity(verts.count * 2)
 
-        let starts = data.segmentStarts
-        for i in 0..<starts.count {
-            let start = starts[i]
-            // `segmentStarts` carries a trailing sentinel equal to `vertices.count`
-            // in some versions; treating the last entry as an empty range makes both
-            // layouts safe.
-            let end = (i + 1 < starts.count) ? starts[i + 1] : verts.count
-            guard start >= 0, end <= verts.count, end - start >= 2 else { continue }
-            for k in start..<(end - 1) {
-                indices.append(UInt32(k))
-                indices.append(UInt32(k + 1))
+        for entry in polys {
+            let pts = entry.points
+            guard pts.count >= 2 else { continue }
+            let base = UInt32(positions.count)
+            for p in pts {
+                positions.append(SCNVector3(Float(p.x), Float(p.y), Float(p.z)))
+            }
+            for i in 0..<(pts.count - 1) {
+                indices.append(base + UInt32(i))
+                indices.append(base + UInt32(i + 1))
             }
         }
 
         guard indices.count >= 2 else { return nil }
 
-        let source = SCNGeometrySource(vertices: verts.map {
-            SCNVector3($0.x, $0.y, $0.z)
-        })
+        let source = SCNGeometrySource(vertices: positions)
         let element = SCNGeometryElement(indices: indices, primitiveType: .line)
         return SCNGeometry(sources: [source], elements: [element])
     }
 
-    /// Edge index → world-space polyline, for screen-space edge picking.
+    /// Edge index → world-space polyline, for screen-space edge picking and for the
+    /// picked-edge highlight.
     ///
-    /// `allEdgePolylinesIndexed` is a single batch call (O(edges)); the older
-    /// per-edge `edgePolyline(at:)` loop it replaces was O(edges²) and cost ~20 s on
-    /// a 12k-edge part. The `edgeIndex` it reports is the very index `Shape.edge(at:)`
-    /// and `Edge.index` use, so a hit here addresses the same edge everywhere else.
-    ///
-    /// `maxPointsPerEdge` must be inside `2...Sampling.maximumSampleCount`
-    /// (10,000,000) or the result comes back empty (#558); 64 is plenty to hit an edge
-    /// on screen while keeping the per-tap projection loop short.
+    /// `edgeIndex` is the very index `Shape.edge(at:)` and `Edge.index` use, so a hit here
+    /// addresses the same edge everywhere else.
     private static func buildEdgePolylines(
-        _ shape: OCCTSwift.Shape?,
+        _ polys: [(edgeIndex: Int, points: [SIMD3<Double>])],
         modelNode: SCNNode
     ) -> [(edgeIndex: Int, points: [SCNVector3])] {
-        guard let shape else { return [] }
-
-        let polylines = shape.allEdgePolylinesIndexed(deflection: 0.1, maxPointsPerEdge: 64)
         var result: [(edgeIndex: Int, points: [SCNVector3])] = []
-        result.reserveCapacity(polylines.count)
+        result.reserveCapacity(polys.count)
 
-        for entry in polylines {
+        for entry in polys {
             guard entry.points.count >= 2 else { continue }
             let world = entry.points.map { p in
                 modelNode.convertPosition(
@@ -457,89 +476,20 @@ final class ViewerViewModel: ObservableObject {
         return result
     }
 
-    // MARK: - Snap Database
-
-    private func buildSnapDatabase(shape: OCCTSwift.Shape?,
-                                   geometry: SCNGeometry,
-                                   modelNode: SCNNode) -> [SnapPoint] {
-        let toWorld: (SIMD3<Double>) -> SCNVector3 = { local in
-            modelNode.convertPosition(
-                SCNVector3(Float(local.x), Float(local.y), Float(local.z)), to: nil)
+    /// Vertex index → world position, for vertex picking.
+    ///
+    /// `vertices()[i]` and `subShape(type: .vertex, index: i)` walk the same
+    /// `TopTools_IndexedMapOfShape`, so the enumerated index is a usable entity
+    /// reference.
+    private static func buildVertexWorld(
+        _ shape: OCCTSwift.Shape?,
+        modelNode: SCNNode
+    ) -> [(index: Int, position: SCNVector3)] {
+        guard let shape else { return [] }
+        return shape.vertices().enumerated().map { index, v in
+            let local = SCNVector3(Float(v.x), Float(v.y), Float(v.z))
+            return (index, modelNode.convertPosition(local, to: nil))
         }
-
-        var result: [SnapPoint] = []
-
-        guard let shape else {
-            // STL fallback: the mesh has no B-rep topology, so the vertices are the
-            // only meaningful snap candidates and none of them addresses an entity.
-            return Self.extractVertices(from: geometry).map {
-                SnapPoint(position: modelNode.convertPosition($0, to: nil),
-                          kind: .endpoint,
-                          entity: .freePoint)
-            }
-        }
-
-        // `vertices()[i]` and `subShape(type: .vertex, index: i)` walk the same
-        // `TopTools_IndexedMapOfShape`, so the enumerated index is a usable entity
-        // reference; duplicates are dropped from the *snap list* only, and the index
-        // kept is the first occurrence's.
-        var seen = Set<SIMD3<Int64>>()
-        for (index, v) in shape.vertices().enumerated() {
-            let key = quantize(v)
-            if seen.insert(key).inserted {
-                result.append(SnapPoint(position: toWorld(v),
-                                        kind: .endpoint,
-                                        entity: .vertex(index)))
-            }
-        }
-
-        let edgePolys = shape.allEdgePolylinesIndexed(deflection: 0.1, maxPointsPerEdge: 500)
-        for (edgeIndex, pts) in edgePolys {
-            guard pts.count >= 2 else { continue }
-            let entity = PickEntity.edge(edgeIndex)
-
-            // Let OCCT classify the curve instead of fitting a circle to samples.
-            // `circleProperties` is only non-nil when the kernel itself reports
-            // `curveType == .circle`, so a spline that happens to be round no longer
-            // masquerades as a circle. The reported radius is still a three-point fit
-            // on OCCT's own uniform parameter samples, but the *classification* (and
-            // the axis / angular range that come with it) is the kernel's.
-            if let circle = shape.edge(at: edgeIndex)?.circleProperties {
-                result.append(SnapPoint(position: toWorld(circle.center),
-                                        kind: .center,
-                                        entity: entity))
-
-                let axis = simd_normalize(circle.axis)
-                var refDir = pts[0] - circle.center
-                // Project onto the circle plane; `pts[0]` is a point *on* the circle
-                // so this only removes numeric drift along the axis.
-                refDir -= simd_dot(refDir, axis) * axis
-                let refLen = simd_length(refDir)
-                if refLen > 1e-9 {
-                    refDir /= refLen
-                    let perpDir = simd_cross(axis, refDir)
-                    for d in [refDir, perpDir, -refDir, -perpDir] {
-                        result.append(SnapPoint(position: toWorld(circle.center + circle.radius * d),
-                                                kind: .quadrant,
-                                                entity: entity))
-                    }
-                }
-            } else {
-                let mid = pts[pts.count / 2]
-                result.append(SnapPoint(position: toWorld(mid),
-                                        kind: .midpoint,
-                                        entity: entity))
-            }
-        }
-
-        return result
-    }
-
-    private func quantize(_ p: SIMD3<Double>) -> SIMD3<Int64> {
-        let scale = 1000.0
-        return SIMD3(Int64((p.x * scale).rounded()),
-                     Int64((p.y * scale).rounded()),
-                     Int64((p.z * scale).rounded()))
     }
 
     /// Flattens the model's triangle index buffer.
@@ -605,12 +555,14 @@ final class ViewerViewModel: ObservableObject {
         let scene = SCNScene()
 
         // A neutral machined-steel grey reads far better against the light backdrop
-        // than the previous mid-green, which sat at almost the same luminance as the
-        // background and flattened facet-to-facet shading differences.
+        // than a mid-green, which sat at almost the same luminance as the background
+        // and flattened facet-to-facet shading differences. Kept a touch darker than the
+        // backdrop with a real specular highlight, so curvature and small features read
+        // as shaded surfaces rather than as one flat silhouette.
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.62, green: 0.66, blue: 0.72, alpha: 1.0)
-        mat.specular.contents = UIColor(white: 0.35, alpha: 1.0)
-        mat.shininess = 0.18
+        mat.diffuse.contents = UIColor(red: 0.56, green: 0.60, blue: 0.66, alpha: 1.0)
+        mat.specular.contents = UIColor(white: 0.55, alpha: 1.0)
+        mat.shininess = 0.28
         mat.lightingModel = .phong
         mat.isDoubleSided = true
         geometry.materials = [mat]
@@ -658,9 +610,16 @@ final class ViewerViewModel: ObservableObject {
 
         let camera = SCNCamera()
         camera.fieldOfView = 45
-        camera.automaticallyAdjustsZRange = false
-        camera.zNear = Double(max(cameraDistance * 0.01, 0.01))
-        camera.zFar = Double(cameraDistance * 12)
+        // `automaticallyAdjustsZRange` defaults to `false`, which leaves SceneKit's own
+        // `zNear = 1` / `zFar = 100` in force. The camera is placed at
+        // `2.4 × modelDim`, so anything past a few dozen units is behind the far plane
+        // and simply does not render; dollying in then pushes the feature under
+        // inspection through the near plane. Both failures read as "the detail is
+        // missing" — small fillets and holes gone, a face cut open — rather than as a
+        // camera problem. Letting SceneKit fit the range to the scene each frame is what
+        // keeps every feature in front of the camera at any zoom. It has to be set
+        // explicitly: it is not the default.
+        camera.automaticallyAdjustsZRange = true
         camera.wantsHDR = false
         camera.bloomIntensity = 0
 
@@ -783,17 +742,10 @@ final class ViewerViewModel: ObservableObject {
         return CGFloat(probe) / screenLen
     }
 
-    /// Convenience entry point used by `SceneView`, which has already attached itself
-    /// through `attach(view:)`.
-    func handleTap(screenPoint: CGPoint) {
-        guard let view = renderView else { return }
-        handleTap(screenPoint: screenPoint, in: view)
-    }
-
     func handleTap(screenPoint: CGPoint, in view: SCNView) {
         guard mode == .measure else { return }
-        guard let (snapped, kind, entity) = snap(screenPoint: screenPoint, in: view) else { return }
-        commitPick(point: snapped, kind: kind, entity: entity, in: view)
+        guard let pick = resolvePick(at: screenPoint, in: view) else { return }
+        commitPick(pick, in: view)
     }
 
     // MARK: - Preselect
@@ -802,27 +754,34 @@ final class ViewerViewModel: ObservableObject {
     ///
     /// Nothing is committed here: this exists so the entity about to be measured can be
     /// highlighted first. Every mainstream CAD application keeps preselection and
-    /// selection as two distinct states (in OCCT, the highlight presentation as against
-    /// the selection presentation) because a face picked by eye on a phone is easy to
-    /// get wrong, and without a preview the mistake only surfaces after committing.
+    /// selection as two distinct states because a face picked by eye on a phone is easy
+    /// to get wrong, and without a preview the mistake only surfaces after committing.
     func handlePreview(screenPoint: CGPoint, in view: SCNView) {
         guard mode == .measure else { return }
 
-        guard let (point, kind, entity) = snap(screenPoint: screenPoint, in: view) else {
+        // A `changed` event that has not moved the finger meaningfully cannot resolve to
+        // a different entity, and the pick — a kernel ray cast — is the expensive part.
+        if let last = lastPreviewTouch {
+            let dx = screenPoint.x - last.x
+            let dy = screenPoint.y - last.y
+            if dx * dx + dy * dy < 25 { return }
+        }
+        lastPreviewTouch = screenPoint
+
+        guard let pick = resolvePick(at: screenPoint, in: view) else {
             clearPreview()
             return
         }
 
         // Skip the rebuild when the highlight would not change: a drag across one face
-        // fires many updates, and each one projects every snap point and re-highlights.
-        if entity == previewEntity, let current = previewPoint,
-           Self.distance(current, point) < max(modelDim, 1) * 0.001 {
+        // fires many updates, and each one re-highlights.
+        if pick.entity == previewEntity, let current = previewPoint,
+           Self.distance(current, pick.point) < max(modelDim, 1) * 0.001 {
             return
         }
 
-        previewPoint = point
-        previewKind = kind
-        previewEntity = entity
+        previewPoint = pick.point
+        previewEntity = pick.entity
         updatePreviewVisuals(in: view)
     }
 
@@ -837,32 +796,29 @@ final class ViewerViewModel: ObservableObject {
         guard mode == .measure,
               let entity = previewEntity,
               let point = previewPoint else { return }
-        commitPick(point: point, kind: previewKind ?? .face, entity: entity, in: view)
+        commitPick(Pick(point: point, entity: entity), in: view)
     }
 
     /// Drops the preselect highlight without committing anything.
     func clearPreview() {
         previewPoint = nil
-        previewKind = nil
         previewEntity = nil
+        lastPreviewTouch = nil
         previewGroup?.removeFromParentNode()
         previewGroup = nil
         previewFaceNode?.removeFromParentNode()
         previewFaceNode = nil
+        previewEdgeNode?.removeFromParentNode()
+        previewEdgeNode = nil
     }
 
     /// Shared commit for both interaction paths — a quick tap and the release of a
-    /// press-and-hold — so the two can never diverge in how they fill the arrays.
-    private func commitPick(point: SCNVector3, kind: SnapKind, entity: PickEntity,
-                            in view: SCNView) {
-        if pickedPoints.count >= requiredPickCount {
-            pickedPoints = [point]
-            pickedKinds = [kind]
-            pickedEntities = [entity]
+    /// press-and-hold — so the two can never diverge in how they fill the list.
+    private func commitPick(_ pick: Pick, in view: SCNView) {
+        if picks.count >= requiredPickCount {
+            picks = [pick]
         } else {
-            pickedPoints.append(point)
-            pickedKinds.append(kind)
-            pickedEntities.append(entity)
+            picks.append(pick)
         }
 
         computeResults()
@@ -882,119 +838,177 @@ final class ViewerViewModel: ObservableObject {
     /// instructions and the result panel wording.
     var usesEntityMeasurement: Bool { isBrep }
 
-    /// The entities picked so far, named the way the instructions name them.
-    var pickedEntityNames: [String] {
-        pickedEntities.prefix(pickedPoints.count).map(\.description)
-    }
-
     /// Name of the entity currently under the finger, if any.
     var previewEntityName: String? {
         previewEntity?.description
     }
 
-    /// Screen-space snapping.
-    ///
-    /// Every candidate is projected to the viewport and compared in 2D points, so the
-    /// effective tolerance is constant on screen at any zoom level. Candidates hidden
-    /// behind the front-most surface under the tap are rejected.
-    ///
-    /// Returns the topological entity the snap resolved to alongside the position, so
-    /// the measurement can be computed against the kernel's geometry rather than the
-    /// tessellation. Order of preference is the researched "edges first, then faces,
-    /// then nearest of the same type": an explicit snap candidate (vertex, circle
-    /// centre, quadrant, edge midpoint) wins over a bare edge hit, which in turn wins
-    /// over the plain surface under the finger.
-    private func snap(screenPoint: CGPoint, in view: SCNView)
-        -> (SCNVector3, SnapKind, PickEntity)? {
+    // MARK: - Picking
 
-        let modelHits = view.hitTest(screenPoint, options: [
+    /// Resolves a screen point to a topological entity.
+    ///
+    /// The kernel does the work: a ray is built from the live SceneKit camera and cast
+    /// against the loaded `Shape` with `Shape.raycast`. That is what makes taps
+    /// reliable — it intersects the *B-rep surfaces*, so a face is found no matter how
+    /// its tessellation happens to be wound, whereas SceneKit's own hit test culls
+    /// back-facing triangles and silently answers nothing for a face wound the other
+    /// way. It also returns the face index directly, so the face association no longer
+    /// depends on reproducing SceneKit's triangle ordering.
+    ///
+    /// A tap that lands near an edge or a vertex is snapped to it, exactly as a CAD
+    /// cursor would, by measuring against the edge and vertex caches in world space and
+    /// confirming the candidate on screen. Anything else resolves to the face under the
+    /// tap.
+    private func resolvePick(at screenPoint: CGPoint, in view: SCNView) -> Pick? {
+        guard modelNode != nil else { return nil }
+
+        var surfacePoint: SCNVector3?
+        var surfaceEntity: PickEntity?
+
+        if isBrep, let shape, let ray = rayThrough(screenPoint, in: view) {
+            if let hit = raycastHit(shape: shape, ray: ray) {
+                surfacePoint = hit.point
+                surfaceEntity = .face(hit.faceIndex)
+            }
+        }
+
+        // Fallback for an STL import (no kernel topology to cast against) and for the
+        // rare graze the ray cast declines. `backFaceCulling` is switched off here for
+        // the same reason the ray cast exists: a triangle wound away from the camera is
+        // still a surface the user can see and tap.
+        if surfacePoint == nil, let hit = sceneKitHit(at: screenPoint, in: view) {
+            surfacePoint = hit.point
+            surfaceEntity = hit.entity
+        }
+
+        guard let surfacePoint else { return nil }
+
+        // Vertex first, then edge: the more specific entity wins when both are within
+        // reach, which is the order every CAD cursor resolves a corner.
+        if let vertex = nearestVertex(to: screenPoint, near: surfacePoint, in: view) {
+            return Pick(point: vertex.position, entity: .vertex(vertex.index))
+        }
+        if let edge = nearestEdge(to: screenPoint, near: surfacePoint, in: view) {
+            return Pick(point: edge.point, entity: .edge(edge.edgeIndex))
+        }
+        return Pick(point: surfacePoint, entity: surfaceEntity ?? .freePoint)
+    }
+
+    /// Casts the pick ray against the kernel shape, returning the nearest hit point in
+    /// world space and the B-rep face index it belongs to.
+    private func raycastHit(shape: OCCTSwift.Shape,
+                            ray: (origin: SCNVector3, direction: SCNVector3))
+        -> (point: SCNVector3, faceIndex: Int)? {
+        guard let modelNode else { return nil }
+
+        let localOrigin = modelNode.convertPosition(ray.origin, from: nil)
+        let localDirection = modelNode.convertVector(ray.direction, from: nil)
+
+        // Tolerance scales with the part. An absolute value would either sit below the
+        // kernel's own resolution on a large model or swallow whole small features on a
+        // tiny one, and either way the ray/surface solver starts failing to converge on
+        // some faces — which surfaces as "this face does not respond to a tap" rather
+        // than as a tolerance problem. 1e-5 of the model's extent keeps the intersection
+        // solver comfortable (it is the library's own default at unit scale) while
+        // staying far below any feature a user would try to tap.
+        let tolerance = max(Double(modelDim) * 1e-5, 1e-6)
+        guard let hit = shape.raycastNearest(
+            origin: SIMD3(Double(localOrigin.x), Double(localOrigin.y), Double(localOrigin.z)),
+            direction: SIMD3(Double(localDirection.x), Double(localDirection.y), Double(localDirection.z)),
+            tolerance: tolerance
+        ) else { return nil }
+
+        let local = SCNVector3(Float(hit.point.x), Float(hit.point.y), Float(hit.point.z))
+        return (modelNode.convertPosition(local, to: nil), hit.faceIndex)
+    }
+
+    /// The pick ray through a screen point, in world space.
+    ///
+    /// Built from the view's own `unprojectPoint` at the near and far planes, so it is
+    /// exact by construction for perspective and orthographic cameras alike and cannot
+    /// drift out of sync with the rendered view.
+    private func rayThrough(_ screenPoint: CGPoint, in view: SCNView)
+        -> (origin: SCNVector3, direction: SCNVector3)? {
+        let near = view.unprojectPoint(SCNVector3(Float(screenPoint.x), Float(screenPoint.y), 0))
+        let far = view.unprojectPoint(SCNVector3(Float(screenPoint.x), Float(screenPoint.y), 1))
+        let dx = far.x - near.x, dy = far.y - near.y, dz = far.z - near.z
+        let length = (dx * dx + dy * dy + dz * dz).squareRoot()
+        guard length > 1e-9 else { return nil }
+        return (near, SCNVector3(dx / length, dy / length, dz / length))
+    }
+
+    /// SceneKit hit test, used only when the kernel cannot answer (an STL, or a ray the
+    /// cast declines).
+    private func sceneKitHit(at screenPoint: CGPoint, in view: SCNView)
+        -> (point: SCNVector3, entity: PickEntity)? {
+        let hits = view.hitTest(screenPoint, options: [
             .searchMode: SCNHitTestSearchMode.all.rawValue,
-            .ignoreHiddenNodes: true
+            .ignoreHiddenNodes: true,
+            .backFaceCulling: false
         ]).filter { $0.node === modelNode }
 
-        let cameraPosition = view.pointOfView?.worldPosition
-        var frontWorld: SCNVector3?
-        var frontDistance = Float.greatestFiniteMagnitude
-        // `SCNHitTestResult.faceIndex` is an `Int`, not the `Int32` the mesh tables use.
-        var frontFaceIndex: Int?
-        if let cameraPosition {
-            for hit in modelHits {
-                let d = Self.distance(cameraPosition, hit.worldCoordinates)
-                if d < frontDistance {
-                    frontDistance = d
-                    frontWorld = hit.worldCoordinates
-                    frontFaceIndex = hit.faceIndex
-                }
+        guard let cameraPosition = view.pointOfView?.worldPosition else {
+            return hits.first.map { ($0.worldCoordinates, faceEntity(for: $0.faceIndex)) }
+        }
+
+        var best: (point: SCNVector3, entity: PickEntity)?
+        var bestDistance = Float.greatestFiniteMagnitude
+        for hit in hits {
+            let d = Self.distance(cameraPosition, hit.worldCoordinates)
+            if d < bestDistance {
+                bestDistance = d
+                best = (hit.worldCoordinates, faceEntity(for: hit.faceIndex))
             }
         }
-
-        let occlusionTolerance = max(modelDim, 1) * 0.004
-        var bestKind: SnapKind?
-        var bestPoint: SCNVector3?
-        var bestEntity: PickEntity?
-        var bestScreenDistance = CGFloat.greatestFiniteMagnitude
-        var bestPriority = Int.max
-
-        for candidate in snapPoints {
-            let projected = view.projectPoint(candidate.position)
-            guard projected.z >= 0, projected.z <= 1 else { continue }
-
-            let dx = CGFloat(projected.x) - screenPoint.x
-            let dy = CGFloat(projected.y) - screenPoint.y
-            let screenDistance = (dx * dx + dy * dy).squareRoot()
-            guard screenDistance <= snapScreenRadius else { continue }
-
-            if let cameraPosition, frontWorld != nil {
-                let d = Self.distance(cameraPosition, candidate.position)
-                if d - frontDistance > occlusionTolerance { continue }
-            }
-
-            let priority = candidate.kind.priority
-            if priority < bestPriority ||
-                (priority == bestPriority && screenDistance < bestScreenDistance) {
-                bestPriority = priority
-                bestScreenDistance = screenDistance
-                bestKind = candidate.kind
-                bestPoint = candidate.position
-                bestEntity = candidate.entity
-            }
-        }
-
-        if let bestPoint, let bestKind {
-            return (bestPoint, bestKind, bestEntity ?? .freePoint)
-        }
-
-        // No discrete candidate: try the edges themselves, in screen space and at the
-        // same tolerance, so tapping along an edge measures *that edge* — the only way
-        // to get an edge-to-edge minimum distance, an edge angle or a circle radius.
-        if isBrep, let edgeHit = nearestEdgeHit(to: screenPoint, in: view) {
-            return (edgeHit.point, .edge, .edge(edgeHit.edgeIndex))
-        }
-
-        // Nothing close enough: fall back to the surface directly under the tap. Tapping
-        // empty space is ignored rather than adding a stray point.
-        if let frontWorld {
-            return (frontWorld, .face, faceEntity(for: frontFaceIndex))
-        }
-        return nil
+        return best
     }
 
     /// Maps a SceneKit hit's triangle ordinal onto the B-rep face it was tessellated
-    /// from.
-    ///
-    /// `Mesh.sceneKitGeometry()` carries only positions, normals and indices — the
-    /// face association is dropped — so the mapping has to be captured at load time
-    /// from `trianglesWithFaces()`, whose order matches `Mesh.indices`, which is in
-    /// turn the order `SCNHitTestResult.faceIndex` numbers triangles in.
+    /// from. Only reachable on the fallback path; the ray cast names the face itself.
     private func faceEntity(for triangleIndex: Int?) -> PickEntity {
         guard let triangleIndex, triangleIndex >= 0,
               triangleIndex < triangleToFace.count else { return .freePoint }
         return .face(Int(triangleToFace[triangleIndex]))
     }
 
-    /// Closest edge polyline to a screen point, within the snap radius.
-    private func nearestEdgeHit(to screenPoint: CGPoint, in view: SCNView)
-        -> (point: SCNVector3, edgeIndex: Int)? {
+    /// Closest vertex to the tap, among those actually near the tapped surface point.
+    ///
+    /// The 3D pre-filter is what keeps this honest: without it a vertex on the far side
+    /// of the part could project into the same screen neighbourhood and steal the pick.
+    private func nearestVertex(to screenPoint: CGPoint, near surfacePoint: SCNVector3,
+                               in view: SCNView) -> (index: Int, position: SCNVector3)? {
+        guard !vertexWorld.isEmpty else { return nil }
+        let tolerance = Float(unitsPerPoint(at: surfacePoint, in: view))
+            * Float(snapScreenRadius) * 2
+
+        var best: (index: Int, position: SCNVector3)?
+        var bestScreen = snapScreenRadius
+
+        for vertex in vertexWorld {
+            guard Self.within(vertex.position, surfacePoint, tolerance) else { continue }
+            let projected = view.projectPoint(vertex.position)
+            guard projected.z >= 0, projected.z <= 1 else { continue }
+            let dx = CGFloat(projected.x) - screenPoint.x
+            let dy = CGFloat(projected.y) - screenPoint.y
+            let d = (dx * dx + dy * dy).squareRoot()
+            if d < bestScreen {
+                bestScreen = d
+                best = vertex
+            }
+        }
+        return best
+    }
+
+    /// Closest edge polyline to the tap, within the snap radius.
+    ///
+    /// Candidates are pre-filtered in 3D against the tapped surface point, so an edge
+    /// behind the part can never win on screen distance alone. Only the survivors are
+    /// projected, which is what keeps the tap cheap on a part with thousands of edges.
+    private func nearestEdge(to screenPoint: CGPoint, near surfacePoint: SCNVector3,
+                             in view: SCNView) -> (point: SCNVector3, edgeIndex: Int)? {
+        guard !edgeWorldPolylines.isEmpty else { return nil }
+        let tolerance = Float(unitsPerPoint(at: surfacePoint, in: view))
+            * Float(snapScreenRadius) * 3
 
         var best: (point: SCNVector3, edgeIndex: Int)?
         var bestDistance = snapScreenRadius
@@ -1002,6 +1016,9 @@ final class ViewerViewModel: ObservableObject {
         for entry in edgeWorldPolylines {
             let pts = entry.points
             guard pts.count >= 2 else { continue }
+            guard pts.contains(where: { Self.within($0, surfacePoint, tolerance) }) else {
+                continue
+            }
 
             var previous = view.projectPoint(pts[0])
             for i in 1..<pts.count {
@@ -1041,6 +1058,12 @@ final class ViewerViewModel: ObservableObject {
         return best
     }
 
+    /// Whether `p` lies within `radius` of `q`, in world units.
+    private static func within(_ p: SCNVector3, _ q: SCNVector3, _ radius: Float) -> Bool {
+        let dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z
+        return dx * dx + dy * dy + dz * dz <= radius * radius
+    }
+
     private static func segmentScreenDistance(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
         let t = segmentParameter(p, a, b)
         let cx = a.x + (b.x - a.x) * t
@@ -1062,6 +1085,8 @@ final class ViewerViewModel: ObservableObject {
         return (dx * dx + dy * dy + dz * dz).squareRoot()
     }
 
+    // MARK: - Results
+
     private func computeResults() {
         distanceResult = nil
         angleResult = nil
@@ -1071,24 +1096,24 @@ final class ViewerViewModel: ObservableObject {
         closestPointB = nil
         measureMessage = nil
 
-        guard pickedPoints.count == requiredPickCount else { return }
+        guard picks.count == requiredPickCount else { return }
 
         if isBrep, computeEntityResults() { return }
 
         switch measureType {
         case .distance, .linear:
-            let a = pickedPoints[0], b = pickedPoints[1]
+            let a = picks[0].point, b = picks[1].point
             let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
             distanceResult = (dx*dx + dy*dy + dz*dz).squareRoot()
 
         case .angle:
-            guard pickedPoints.count >= 3 else { return }
-            let v1 = SCNVector3(pickedPoints[0].x - pickedPoints[1].x,
-                                 pickedPoints[0].y - pickedPoints[1].y,
-                                 pickedPoints[0].z - pickedPoints[1].z)
-            let v2 = SCNVector3(pickedPoints[2].x - pickedPoints[1].x,
-                                 pickedPoints[2].y - pickedPoints[1].y,
-                                 pickedPoints[2].z - pickedPoints[1].z)
+            guard picks.count >= 3 else { return }
+            let v1 = SCNVector3(picks[0].point.x - picks[1].point.x,
+                                 picks[0].point.y - picks[1].point.y,
+                                 picks[0].point.z - picks[1].point.z)
+            let v2 = SCNVector3(picks[2].point.x - picks[1].point.x,
+                                 picks[2].point.y - picks[1].point.y,
+                                 picks[2].point.z - picks[1].point.z)
             let dot = v1.x*v2.x + v1.y*v2.y + v1.z*v2.z
             let m1 = (v1.x*v1.x + v1.y*v1.y + v1.z*v1.z).squareRoot()
             let m2 = (v2.x*v2.x + v2.y*v2.y + v2.z*v2.z).squareRoot()
@@ -1097,9 +1122,9 @@ final class ViewerViewModel: ObservableObject {
             angleResult = acos(cosAngle) * 180 / Float.pi
 
         case .radius:
-            guard pickedPoints.count >= 3 else { return }
+            guard picks.count >= 3 else { return }
             if let (center, radius) = Self.circumcircle(
-                pickedPoints[0], pickedPoints[1], pickedPoints[2]
+                picks[0].point, picks[1].point, picks[2].point
             ) {
                 radiusCenter = center
                 radiusResult = radius
@@ -1120,7 +1145,7 @@ final class ViewerViewModel: ObservableObject {
     /// caller fall back to the point-based maths; that fallback is also the only path
     /// on an STL import, which has no B-rep topology at all.
     private func computeEntityResults() -> Bool {
-        let entities = Array(pickedEntities.prefix(pickedPoints.count))
+        let entities = picks.map(\.entity)
         guard entities.count == requiredPickCount else { return false }
 
         switch measureType {
@@ -1259,12 +1284,23 @@ final class ViewerViewModel: ObservableObject {
         return (center, radius)
     }
 
-    /// Removes the most recently picked point and recomputes.
+    // MARK: - Selection list
+
+    /// Removes the most recently picked entity and recomputes.
     func undoLastPoint() {
-        guard !pickedPoints.isEmpty else { return }
-        pickedPoints.removeLast()
-        if !pickedKinds.isEmpty { pickedKinds.removeLast() }
-        if !pickedEntities.isEmpty { pickedEntities.removeLast() }
+        guard !picks.isEmpty else { return }
+        picks.removeLast()
+        computeResults()
+        updateMeasureVisuals(in: renderView)
+    }
+
+    /// Removes one entity from the selection list and recomputes.
+    ///
+    /// This is what makes a mis-pick recoverable without restarting the measurement:
+    /// the list names every pick, and each one can be dropped on its own.
+    func removePick(at index: Int) {
+        guard picks.indices.contains(index) else { return }
+        picks.remove(at: index)
         computeResults()
         updateMeasureVisuals(in: renderView)
     }
@@ -1275,9 +1311,7 @@ final class ViewerViewModel: ObservableObject {
     }
 
     func clearMeasure() {
-        pickedPoints = []
-        pickedKinds = []
-        pickedEntities = []
+        picks = []
         distanceResult = nil
         angleResult = nil
         radiusResult = nil
@@ -1287,8 +1321,7 @@ final class ViewerViewModel: ObservableObject {
         measureMessage = nil
         measureGroup?.removeFromParentNode()
         measureGroup = nil
-        measureFaceGroup?.removeFromParentNode()
-        measureFaceGroup = nil
+        clearHighlightNodes()
     }
 
     /// Changes the display unit and remembers it, so `SettingsView` and the viewer
@@ -1328,26 +1361,40 @@ final class ViewerViewModel: ObservableObject {
         }
     }
 
-    /// Rebuilds the translucent whole-face highlights for the committed picks and the
-    /// preselect.
+    private func clearHighlightNodes() {
+        measureFaceGroup?.removeFromParentNode()
+        measureFaceGroup = nil
+        measureEdgeNode?.removeFromParentNode()
+        measureEdgeNode = nil
+    }
+
+    /// Rebuilds the highlights for the committed picks and the preselect.
     ///
     /// A dot marks *where* on a face the finger landed, which is enough for a vertex or
     /// an edge but tells the user almost nothing about which of a part's faces was
     /// actually taken — the failure mode the preselect exists to prevent. Tinting the
-    /// whole face is what makes the pick unambiguous.
-    private func updateFaceHighlights() {
-        measureFaceGroup?.removeFromParentNode()
-        measureFaceGroup = nil
+    /// whole face is what makes the pick unambiguous, and drawing the picked edge is
+    /// what does the same for a wireframe pick.
+    private func updateSelectionHighlights() {
+        clearHighlightNodes()
         previewFaceNode?.removeFromParentNode()
         previewFaceNode = nil
+        previewEdgeNode?.removeFromParentNode()
+        previewEdgeNode = nil
 
         guard isBrep, let modelNode else { return }
         let inflate = max(modelDim, 1) * 0.0015
 
         var pickedFaces: [Int] = []
-        for entity in pickedEntities.prefix(pickedPoints.count) {
-            if case .face(let i) = entity, !pickedFaces.contains(i) {
+        var pickedEdges: [Int] = []
+        for pick in picks {
+            switch pick.entity {
+            case .face(let i) where !pickedFaces.contains(i):
                 pickedFaces.append(i)
+            case .edge(let i) where !pickedEdges.contains(i):
+                pickedEdges.append(i)
+            default:
+                break
             }
         }
 
@@ -1358,7 +1405,6 @@ final class ViewerViewModel: ObservableObject {
                 guard let geo = faceOverlayGeometry(faceIndex: i, style: .measure,
                                                     inflate: inflate) else { continue }
                 let node = SCNNode(geometry: geo)
-                node.name = "measure_face"
                 // Drawn after the model and the wireframe so the tint reads as a
                 // coverage of the face rather than being buried by the shaded surface.
                 node.renderingOrder = 10
@@ -1370,16 +1416,67 @@ final class ViewerViewModel: ObservableObject {
             }
         }
 
+        if !pickedEdges.isEmpty, let geo = edgeHighlightGeometry(edgeIndices: pickedEdges) {
+            let node = SCNNode(geometry: geo)
+            node.renderingOrder = 12
+            scene?.rootNode.addChildNode(node)
+            measureEdgeNode = node
+        }
+
         // The preselect is skipped when it is already a committed pick, which would
         // otherwise stack two translucent layers on the same face and darken it.
         if case .face(let i) = previewEntity, !pickedFaces.contains(i),
            let geo = faceOverlayGeometry(faceIndex: i, style: .preview, inflate: inflate) {
             let node = SCNNode(geometry: geo)
-            node.name = "preview_face"
             node.renderingOrder = 11
             modelNode.addChildNode(node)
             previewFaceNode = node
+        } else if case .edge(let i) = previewEntity, !pickedEdges.contains(i),
+                  let geo = edgeHighlightGeometry(edgeIndices: [i]) {
+            let node = SCNNode(geometry: geo)
+            node.renderingOrder = 12
+            scene?.rootNode.addChildNode(node)
+            previewEdgeNode = node
         }
+    }
+
+    /// Bright polyline over the given edges, lifted a hair off the surface.
+    ///
+    /// World space, so the lift is a scale about the model's own centre — the model is
+    /// recentred on the origin at load, which makes that a uniform outward nudge.
+    private func edgeHighlightGeometry(edgeIndices: [Int]) -> SCNGeometry? {
+        let wanted = Set(edgeIndices)
+        var positions: [SCNVector3] = []
+
+        for entry in edgeWorldPolylines where wanted.contains(entry.edgeIndex) {
+            let pts = entry.points
+            guard pts.count >= 2 else { continue }
+            for i in 0..<(pts.count - 1) {
+                positions.append(Self.lifted(pts[i]))
+                positions.append(Self.lifted(pts[i + 1]))
+            }
+        }
+
+        guard positions.count >= 2 else { return nil }
+
+        let source = SCNGeometrySource(vertices: positions)
+        let indices = positions.indices.map { UInt32($0) }
+        let element = SCNGeometryElement(indices: indices, primitiveType: .line)
+        let geo = SCNGeometry(sources: [source], elements: [element])
+
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.systemTeal
+        material.emission.contents = UIColor.systemTeal.withAlphaComponent(0.65)
+        material.lightingModel = .constant
+        material.readsFromDepthBuffer = true
+        material.writesToDepthBuffer = false
+        geo.materials = [material]
+        return geo
+    }
+
+    private static func lifted(_ p: SCNVector3) -> SCNVector3 {
+        let k: Float = 1.0025
+        return SCNVector3(p.x * k, p.y * k, p.z * k)
     }
 
     private func faceOverlayGeometry(faceIndex: Int, style: FaceHighlightStyle,
@@ -1520,16 +1617,17 @@ final class ViewerViewModel: ObservableObject {
         scene.rootNode.addChildNode(group)
         previewGroup = group
 
-        // The dot and label say *where* the finger is; this tints the whole face it
-        // resolved to, which is the part that is easy to get wrong by eye.
-        updateFaceHighlights()
+        // The dot and label say *where* the finger is; this tints the whole face (or
+        // traces the edge) it resolved to, which is the part that is easy to get wrong
+        // by eye.
+        updateSelectionHighlights()
     }
 
     /// Rebuilds the measurement annotations.
     ///
     /// Marker, line and label sizes are derived from the live camera through
-    /// `unitsPerPoint(at:in:)`, so they hold a constant size on screen instead of the
-    /// previous arbitrary fraction of the model's bounding box.
+    /// `unitsPerPoint(at:in:)`, so they hold a constant size on screen instead of an
+    /// arbitrary fraction of the model's bounding box.
     private func updateMeasureVisuals(in view: SCNView?) {
         measureGroup?.removeFromParentNode()
 
@@ -1545,10 +1643,8 @@ final class ViewerViewModel: ObservableObject {
         let group = SCNNode()
         group.name = "measure_group"
 
-        for (i, point) in pickedPoints.enumerated() {
-            let kind = i < pickedKinds.count ? pickedKinds[i] : .none
-            let entity = i < pickedEntities.count ? pickedEntities[i] : .freePoint
-            addMarker(at: point, kind: kind, entity: entity, index: i,
+        for (i, pick) in picks.enumerated() {
+            addMarker(at: pick.point, entity: pick.entity, index: i,
                       radius: markerRadius, to: group)
         }
 
@@ -1558,13 +1654,13 @@ final class ViewerViewModel: ObservableObject {
         // distance longer than the one being reported.
         if let a = closestPointA, let b = closestPointB {
             addCylinderLine(from: a, to: b, lineRadius: lineRadius, to: group)
-            addMarker(at: a, kind: .none, entity: .freePoint, index: -1,
+            addMarker(at: a, entity: .freePoint, index: -1,
                       radius: markerRadius * 0.7, to: group, showTag: false)
-            addMarker(at: b, kind: .none, entity: .freePoint, index: -1,
+            addMarker(at: b, entity: .freePoint, index: -1,
                       radius: markerRadius * 0.7, to: group, showTag: false)
-        } else if pickedPoints.count >= 2 {
-            for i in 0..<pickedPoints.count-1 {
-                addCylinderLine(from: pickedPoints[i], to: pickedPoints[i+1],
+        } else if picks.count >= 2 {
+            for i in 0..<picks.count-1 {
+                addCylinderLine(from: picks[i].point, to: picks[i+1].point,
                                 lineRadius: lineRadius, to: group)
             }
         }
@@ -1581,7 +1677,7 @@ final class ViewerViewModel: ObservableObject {
             cn.name = "measure_dot"
             group.addChildNode(cn)
 
-            addCylinderLine(from: center, to: pickedPoints[0],
+            addCylinderLine(from: center, to: picks[0].point,
                             lineRadius: lineRadius, to: group, color: .systemBlue)
         }
 
@@ -1617,23 +1713,15 @@ final class ViewerViewModel: ObservableObject {
         measureGroup = group
 
         // Last, and outside `group`: the whole-face tint lives in the model's local
-        // space, whereas every annotation above is in world space.
-        updateFaceHighlights()
+        // space while the picked-edge trace lives in world space, whereas every
+        // annotation above is in world space.
+        updateSelectionHighlights()
     }
 
-    private func addMarker(at point: SCNVector3, kind: SnapKind, entity: PickEntity,
-                           index: Int, radius markerRadius: Float, to group: SCNNode,
+    private func addMarker(at point: SCNVector3, entity: PickEntity, index: Int,
+                           radius markerRadius: Float, to group: SCNNode,
                            showTag: Bool = true) {
-        let color: UIColor
-        switch kind {
-        case .endpoint: color = UIColor.systemRed
-        case .center: color = UIColor.systemBlue
-        case .midpoint: color = UIColor.systemOrange
-        case .quadrant: color = UIColor.systemPurple
-        case .edge: color = UIColor.systemGreen
-        case .face: color = UIColor.systemTeal
-        case .none: color = UIColor.systemRed
-        }
+        let color = entity.markerColor
 
         let sphere = SCNSphere(radius: CGFloat(markerRadius))
         let mat = SCNMaterial()
@@ -1709,12 +1797,12 @@ final class ViewerViewModel: ObservableObject {
     }
 
     private func labelAnchor() -> SCNVector3? {
-        guard !pickedPoints.isEmpty else { return nil }
-        if pickedPoints.count == 1 { return pickedPoints[0] }
-        let sum = pickedPoints.dropFirst().reduce(pickedPoints[0]) {
-            SCNVector3($0.x + $1.x, $0.y + $1.y, $0.z + $1.z)
+        guard !picks.isEmpty else { return nil }
+        if picks.count == 1 { return picks[0].point }
+        let sum = picks.dropFirst().reduce(picks[0].point) {
+            SCNVector3($0.x + $1.point.x, $0.y + $1.point.y, $0.z + $1.point.z)
         }
-        let n = Float(pickedPoints.count)
+        let n = Float(picks.count)
         return SCNVector3(sum.x/n, sum.y/n, sum.z/n)
     }
 }

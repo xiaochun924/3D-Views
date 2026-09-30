@@ -79,6 +79,12 @@ struct ViewerView: View {
             VStack {
                 Spacer()
                 if viewModel.mode == .measure {
+                    // The selection list sits directly above the toolbars so a
+                    // mis-picked entity can be dropped without leaving measurement mode
+                    // or restarting from scratch.
+                    if !viewModel.picks.isEmpty {
+                        selectionPanel
+                    }
                     measureToolbar
                 } else {
                     mainToolbar
@@ -179,23 +185,6 @@ struct ViewerView: View {
                 .padding(.vertical, 8)
             }
 
-            if !viewModel.pickedEntityNames.isEmpty {
-                Divider()
-                HStack(spacing: 8) {
-                    // Indexed rather than keyed by name: picking the same entity twice
-                    // is legal while a measurement is being assembled, and duplicate
-                    // ids would trip SwiftUI's identity check.
-                    ForEach(Array(viewModel.pickedEntityNames.enumerated()), id: \.offset) { entry in
-                        Text(entry.element)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-            }
-
             if let message = viewModel.measureMessage {
                 Divider()
                 HStack(spacing: 6) {
@@ -224,9 +213,9 @@ struct ViewerView: View {
         if let a = viewModel.closestPointA, let b = viewModel.closestPointB {
             return SCNVector3(b.x - a.x, b.y - a.y, b.z - a.z)
         }
-        guard viewModel.pickedPoints.count >= 2 else { return nil }
-        let a = viewModel.pickedPoints[0]
-        let b = viewModel.pickedPoints[1]
+        guard viewModel.picks.count >= 2 else { return nil }
+        let a = viewModel.picks[0].point
+        let b = viewModel.picks[1].point
         return SCNVector3(b.x - a.x, b.y - a.y, b.z - a.z)
     }
 
@@ -259,19 +248,94 @@ struct ViewerView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// The selection list: every entity taken for the current measurement, each one
+    /// removable on its own.
+    ///
+    /// Individual removal is the point. A distance between two faces regularly needs a
+    /// first pick that turns out to be the wrong face, and without this the only way
+    /// back was 「清空」 — throwing away the picks that were already right and starting
+    /// the measurement over.
+    private var selectionPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "scope")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.blue)
+                Text("已选实体")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\(viewModel.picks.count)/\(viewModel.requiredPickCount)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button { viewModel.clearMeasure() } label: {
+                    Text("清空")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.blue)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            // A measurement never holds more than the three picks its type asks for,
+            // so the list is bounded and needs no scrolling or height cap.
+            VStack(spacing: 0) {
+                ForEach(Array(viewModel.picks.enumerated()), id: \.element.id) { entry in
+                    selectionRow(index: entry.offset, pick: entry.element)
+                    if entry.offset != viewModel.picks.count - 1 {
+                        Divider().padding(.leading, 40)
+                    }
+                }
+            }
+        }
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+    }
+
+    /// One row of the selection list: ordinal, the entity it resolved to, and the
+    /// control that drops just this pick.
+    private func selectionRow(index: Int, pick: Pick) -> some View {
+        HStack(spacing: 10) {
+            Text("\(index + 1)")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+                .frame(width: 20, height: 20)
+                .background(Color(uiColor: pick.entity.markerColor), in: Circle())
+
+            Text(pick.entity.description)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+
+            Spacer()
+
+            Button { viewModel.removePick(at: index) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("移除 \(pick.entity.description)")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
     private var measureToolbar: some View {
         HStack(spacing: 0) {
             // Backsteps one point at a time so a mis-tap never forces the whole
             // measurement to be restarted; leaves measure mode once there is nothing
             // left to take back.
             Button {
-                if viewModel.pickedPoints.isEmpty {
+                if viewModel.picks.isEmpty {
                     viewModel.toggleMeasureMode()
                 } else {
                     viewModel.undoLastPoint()
                 }
             } label: {
-                Image(systemName: viewModel.pickedPoints.isEmpty
+                Image(systemName: viewModel.picks.isEmpty
                       ? "arrow.uturn.backward" : "arrow.uturn.backward.circle")
                     .font(.system(size: 18, weight: .medium))
                     .foregroundColor(.white)
