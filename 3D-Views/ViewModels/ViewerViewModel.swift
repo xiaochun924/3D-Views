@@ -92,8 +92,9 @@ struct Pick: Identifiable {
 /// well — there is no farthest-point query anywhere in the library. So only ``min`` is
 /// exact; the other two are assembled in the view model, and both are approximations.
 enum DistanceMode: String, CaseIterable, Identifiable {
-    /// Distance between the two entities' own axis centres — a circle's centre, or a
-    /// point on a cylinder's axis.
+    /// Distance between the two entities' own axes — a circle's centre line, or a
+    /// cylinder's surface axis. Measured axis to axis, so two concentric features read 0
+    /// even when they sit at different heights on the shared axis.
     case center
     /// The kernel's closest approach. Exact.
     case min
@@ -2060,28 +2061,39 @@ final class ViewerViewModel: ObservableObject {
                 return true
 
             case .center:
-                // The centres are both the endpoints and the reading. This mode says
-                // nothing about how close the two entities approach each other, which
-                // is exactly why it cannot be a view-level restatement of the number
-                // the kernel returned.
-                //
                 // Deliberately *not* via `subShape(for:)`. That returns a shape holding
                 // exactly one face, and the centre lookup then indexes it with the
                 // original face number — `shape.face(at: 7)` on a one-face shape is nil
                 // for every face but the first, which is what made two tapped circular
                 // faces silently measure nothing. The whole model is indexed here
                 // instead, exactly as the radius and area branches below already do it.
-                guard let shape, let a = center(of: picks[0], shape: shape),
-                      let b = center(of: picks[1], shape: shape) else {
+                guard let shape,
+                      let a = CenterFeature.of(picks[0], shape: shape,
+                                               at: kernelPoint(picks[0].point)),
+                      let b = CenterFeature.of(picks[1], shape: shape,
+                                               at: kernelPoint(picks[1].point)) else {
                     measureMessage = "请点选圆边或回转面来量取中心距"
                     distanceResult = nil
                     closestPointA = nil
                     closestPointB = nil
                     return true
                 }
-                closestPointA = a
-                closestPointB = b
-                distanceResult = Self.distance(a, b)
+
+                // Two axes are measured axis-to-axis, not point-to-point. Reducing each
+                // to a point first would make two coaxial faces report the gap between
+                // them instead of the 0 they should: the points differ, the lines do
+                // not. This is FreeCAD's `discAxisDistance` / `cylinderAxisDistance`
+                // reading, and the one that matches "中心".
+                guard let solved = CenterFeature.separation(of: a, and: b) else {
+                    measureMessage = "两个中心无法比较"
+                    distanceResult = nil
+                    closestPointA = nil
+                    closestPointB = nil
+                    return true
+                }
+                closestPointA = world(solved.0)
+                closestPointB = world(solved.1)
+                distanceResult = Float(solved.2)
                 return true
 
             case .max:
@@ -2242,96 +2254,202 @@ final class ViewerViewModel: ObservableObject {
         return SIMD3<Double>(Double(p.x), Double(p.y), Double(p.z))
     }
 
-    /// The point the centre-distance mode measures from, in world coordinates.
+    /// Whether `direction` describes the surface itself rather than the construction
+    /// frame the surface happens to be expressed in.
     ///
-    /// SolidWorks reads a "centre" off the feature the user actually sees, so this walks
-    /// the same ladder and only drops to a weaker reading when the stronger one is
-    /// genuinely unavailable. For the case that matters — tapping a flat circular face,
-    /// a bore's end, a boss's top — the answer is the circle of its own boundary wire,
-    /// which is exact. A face with no circular boundary is a cylinder or a cone, and
-    /// there the centre is the point where the face's own middle meets its axis.
-    ///
-    /// The old version tested `face.primaryAxis` first and stopped there. That is nil
-    /// for *every* plane, so a circular face never reached any axis handling and fell
-    /// straight through to `surfaceInertia`, which silently yields nil when the kernel
-    /// throws inside the inertia integral. Two misses stacked into one failure, and the
-    /// user saw "--".
-    ///
-    /// Nothing here returns nil for a face or an edge any more: the last rung is the
-    /// spot the finger landed on, so the mode always answers with *something*.
-    /// `Shape.centerOfMass` is no use as a fallback: it is the *volume* centroid and
-    /// returns nil for every face, edge, wire and open shell.
-    private func center(of pick: Pick, shape: OCCTSwift.Shape) -> SCNVector3? {
-        switch pick.entity {
-        case .face(let i):
-            guard let face = shape.face(at: i) else { return pick.point }
-
-            // Rung 1 — a circular boundary edge. Exact, and the only reading that
-            // matches what the user means by "圆面": the circle they can see.
-            if let circle = Self.boundaryCircle(of: face) { return world(circle) }
-
-            // Rung 2 — a surface of revolution. `primaryAxis.origin` alone is wrong:
-            // the kernel hands back the *construction origin of the underlying infinite
-            // surface*, so two coaxial bores of equal diameter would measure a non-zero
-            // "centre distance" between them. Projecting the face's own UV midpoint onto
-            // that axis gives the point on the axis that belongs to this face.
-            if let axis = face.primaryAxis,
-               let onAxis = Self.pointOnAxis(of: face, axis: axis) {
-                return world(onAxis)
-            }
-
-            // Rung 3 — the area centroid. Right for a flat disc whose boundary is not a
-            // circle, and the same number the old code was reaching for.
-            if let centroid = face.surfaceInertia.centerOfMass { return world(centroid) }
-
-            // Rung 4 — the bounding box of the surface. Coarse, but never absent.
-            if let box = face.bounds {
-                return world((box.min + box.max) / 2)
-            }
-            return pick.point
-
-        case .edge(let i):
-            guard let edge = shape.edge(at: i) else { return pick.point }
-            if let circle = edge.circleProperties { return world(circle.center) }
-            if let centroid = edge.curveInertia.centerOfMass { return world(centroid) }
-            return pick.point
-
-        case .vertex, .freePoint:
-            // A vertex is its own centre, and the tapped position is already the most
-            // accurate statement of where it is.
-            return pick.point
+    /// `.sphere` is excluded on purpose: a sphere is symmetric about *every* axis through
+    /// its centre, so its `direction` is an arbitrary pole and comparing two of them would
+    /// invent a difference that is not in the geometry. `.extrusion`'s direction is the
+    /// sweep direction of the extrusion, equally not an axis of revolution — the kernel's
+    /// own documentation says so. Only these four carry a genuine rotation axis.
+    private static func isGenuineAxis(_ kind: OCCTSwift.ShapeAxis.Kind) -> Bool {
+        switch kind {
+        case .cylinder, .cone, .torus, .revolution: return true
+        case .sphere, .extrusion, .symmetry: return false
         }
     }
 
-    /// The centre of the first circular edge on a face's outer boundary, in kernel
-    /// coordinates.
+    /// What a picked entity contributes to a centre-distance measurement.
     ///
-    /// Only `outerWire` is walked. A counterbore's bottom face carries two circles, one
-    /// of them on an inner wire, and choosing between them by index would be arbitrary;
-    /// the outer one is the circle the face is actually shaped by.
-    private static func boundaryCircle(of face: OCCTSwift.Face) -> SIMD3<Double>? {
-        guard let edges = face.outerWire?.edges() else { return nil }
+    /// A circular feature has to stay a *line* until both picks are known. Collapsing it
+    /// to one point first is what made two concentric circular faces read as their
+    /// separation: each face legitimately yields a different point on the *same* axis,
+    /// so the point-to-point distance is the gap between them while the honest answer is
+    /// 0. FreeCAD keeps the same distinction — `Measurement::discAxisDistance` and
+    /// `MeasureType::TwoCylinders` both feed `gp_Circ::Axis()` / `gp_Cylinder::Axis()`
+    /// straight into `gp_Lin::Distance` rather than differencing locations.
+    private enum CenterFeature {
+        /// A circular face, a circular edge, a vertex or anything else that really does
+        /// have one centre.
+        case point(SIMD3<Double>)
+        /// A disc's circle axis or a cylinder's surface axis, in kernel coordinates.
+        case axis(origin: SIMD3<Double>, direction: SIMD3<Double>)
+
+        /// The centre of a picked entity, or nil when even the fallbacks are exhausted.
+        ///
+        /// `pickedPoint` is the tapped position already converted into kernel coordinates
+        /// — it is passed in rather than computed here because the conversion belongs to
+        /// the view model's transform, and this type is static.
+        static func of(_ pick: Pick, shape: OCCTSwift.Shape,
+                       at pickedPoint: SIMD3<Double>) -> CenterFeature? {
+            switch pick.entity {
+            case .face(let i):
+                guard let face = shape.face(at: i) else { return nil }
+
+                // A disc first: a planar face whose boundary is one circle. Reading the
+                // axis rather than the centre is what lets a stack of concentric discs
+                // measure 0 against each other.
+                if face.isPlanar, let circle = ViewerViewModel.discCircle(of: face) {
+                    return .axis(origin: circle.center, direction: circle.axis)
+                }
+
+                // A cylinder, cone or torus — its axis is the feature. Tested only for
+                // the kinds where the axis is intrinsic: a sphere's `direction` is just
+                // an arbitrary construction-frame pole, and an extrusion's is its sweep
+                // direction, so both would be invented geometry rather than measured.
+                if let axis = face.primaryAxis, ViewerViewModel.isGenuineAxis(axis.kind) {
+                    return .axis(origin: axis.origin, direction: axis.direction)
+                }
+
+                // A sphere reports its centre through the same accessor even though its
+                // direction is meaningless, so it is still a point, not an axis.
+                if let axis = face.primaryAxis, axis.kind == .sphere {
+                    return .point(axis.origin)
+                }
+
+                // The area centroid. Right for a flat face whose boundary is not a
+                // circle, and the value the original code was reaching for.
+                if let centroid = face.surfaceInertia.centerOfMass { return .point(centroid) }
+
+                // The bounding box of the surface. Coarse, but never absent.
+                if let box = face.bounds { return .point((box.min + box.max) / 2) }
+                return nil
+
+            case .edge(let i):
+                guard let edge = shape.edge(at: i) else { return nil }
+                if let circle = edge.circleProperties { return .point(circle.center) }
+                if let centroid = edge.curveInertia.centerOfMass { return .point(centroid) }
+                return nil
+
+            case .vertex, .freePoint:
+                // A vertex is its own centre, and the tapped position is already the most
+                // accurate statement of where it is.
+                return .point(pickedPoint)
+            }
+        }
+
+        /// The distance between two centres, plus the witness point on each, in kernel
+        /// coordinates.
+        static func separation(of a: CenterFeature, and b: CenterFeature)
+            -> (SIMD3<Double>, SIMD3<Double>, Double)? {
+            switch (a, b) {
+            case let (.point(p), .point(q)):
+                return (p, q, Self.length(q - p))
+
+            case let (.axis(o1, d1), .axis(o2, d2)):
+                return closestPoints(between: o1, direction: d1, and: o2, direction: d2)
+
+            case let (.point(p), .axis(o, d)):
+                guard let foot = Self.foot(of: p, on: o, direction: d) else { return nil }
+                return (p, foot, Self.length(foot - p))
+
+            case let (.axis(o, d), .point(q)):
+                guard let foot = Self.foot(of: q, on: o, direction: d) else { return nil }
+                return (foot, q, Self.length(q - foot))
+            }
+        }
+
+        /// The point of an axis nearest `p`; nil when the axis is degenerate.
+        private static func foot(of p: SIMD3<Double>, on origin: SIMD3<Double>,
+                                 direction: SIMD3<Double>) -> SIMD3<Double>? {
+            let unit = Self.unit(direction)
+            guard let unit else { return nil }
+            return origin + unit * simd_dot(p - origin, unit)
+        }
+
+        /// The closest pair of points on two infinite lines — the standard skew-line
+        /// construction, and the reason two coaxial features measure exactly 0.
+        ///
+        /// Parallel lines take the perpendicular through the first origin: the
+        /// cross-product form divides by `sin²θ` and is singular there, while the answer
+        /// is the same perpendicular offset the closed form would have produced as a limit.
+        private static func closestPoints(between o1: SIMD3<Double>, direction d1: SIMD3<Double>,
+                                          and o2: SIMD3<Double>, direction d2: SIMD3<Double>)
+            -> (SIMD3<Double>, SIMD3<Double>, Double)? {
+            guard let u = Self.unit(d1), let v = Self.unit(d2) else { return nil }
+
+            let w = o1 - o2
+            let cross = simd_cross(u, v)
+            let sine = Self.length(cross)
+
+            if sine > 1e-9 {
+                // Skew or intersecting: the common perpendicular joins the two feet.
+                let t1 = simd_dot(simd_cross(w, v), cross) / (sine * sine)
+                let t2 = simd_dot(simd_cross(w, u), cross) / (sine * sine)
+                let q1 = o1 + u * t1
+                let q2 = o2 + v * t2
+                return (q1, q2, Self.length(q2 - q1))
+            }
+
+            // Parallel: drop the component of the offset that lies along the shared
+            // direction. Whatever remains is perpendicular to both lines, so its length is
+            // the separation — and it is exactly zero when the two origins coincide on one
+            // common axis, which is the concentric case this whole path exists for.
+            let perpendicular = w - u * simd_dot(w, u)
+            return (o1, o1 - perpendicular, Self.length(perpendicular))
+        }
+
+        private static func unit(_ v: SIMD3<Double>) -> SIMD3<Double>? {
+            let length = Self.length(v)
+            guard length > 1e-12 else { return nil }
+            return v / length
+        }
+
+        private static func length(_ v: SIMD3<Double>) -> Double {
+            (v.x * v.x + v.y * v.y + v.z * v.z).squareRoot()
+        }
+    }
+
+    /// A face's boundary circle as the *axis* of that circle, or nil when the boundary is
+    /// not a single circle.
+    ///
+    /// The origin returned is the circle's centre and the direction its plane normal —
+    /// together `gp_Circ::Axis()`, the line FreeCAD's `getDiscAxis` builds and feeds to
+    /// `gp_Lin::Distance`. Reading the axis rather than just the centre is what makes two
+    /// stacked concentric discs measure 0 instead of their separation.
+    ///
+    /// Every boundary edge must be the *same* circle, which is what a disc looks like
+    /// after a boolean has cut it into arcs. Note that this alone does **not** exclude a
+    /// cylinder — a bore's two end rims are concentric, so their centres and normals
+    /// agree — and the caller's `face.isPlanar` test is what actually keeps a cylindrical
+    /// side wall out of this path. The end caps of a cylinder are planar, so they are
+    /// discs and belong here; the side wall is not, and takes the surface-axis branch.
+    private static func discCircle(of face: OCCTSwift.Face)
+        -> (center: SIMD3<Double>, axis: SIMD3<Double>)? {
+        guard let edges = face.outerWire?.edges(), !edges.isEmpty else { return nil }
+
+        var centre: SIMD3<Double>?
+        var axis: SIMD3<Double>?
         for edge in edges {
-            if let circle = edge.circleProperties { return circle.center }
+            guard let circle = edge.circleProperties else { return nil }
+            if let centre, let axis {
+                let drift = max(Self.length(circle.center - centre),
+                                Self.length(circle.axis - axis))
+                // Tolerance scaled to the model, so a large part is not held to a small
+                // part's precision. 1e-6 mm on a 1 mm feature, 1e-3 mm on a 1 m one.
+                let scale = max(Self.length(centre), 1)
+                guard drift <= scale * 1e-6 else { return nil }
+            } else {
+                centre = circle.center
+                axis = circle.axis
+            }
         }
-        return nil
+        guard let centre, let axis else { return nil }
+        return (centre, axis)
     }
 
-    /// The point where a face's own middle meets its surface-of-revolution axis.
-    ///
-    /// The split is the one `MeasurementHelpers` uses to read a cylinder's height: take
-    /// the vector from the axis origin to the midpoint, keep its component along the
-    /// axis, and add that back to the origin.
-    private static func pointOnAxis(of face: OCCTSwift.Face, axis: OCCTSwift.ShapeAxis) -> SIMD3<Double>? {
-        guard let bounds = face.uvBounds else { return nil }
-        let u = (bounds.uMin + bounds.uMax) / 2
-        let v = (bounds.vMin + bounds.vMax) / 2
-        guard let midpoint = face.point(atU: u, v: v) else { return nil }
-
-        let direction = simd_normalize(axis.direction)
-        let offset = midpoint - axis.origin
-        let along = simd_dot(offset, direction)
-        return axis.origin + direction * along
+    private static func length(_ v: SIMD3<Double>) -> Double {
+        (v.x * v.x + v.y * v.y + v.z * v.z).squareRoot()
     }
 
     /// A point set dense enough to bracket the farthest pair on one entity.
