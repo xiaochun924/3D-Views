@@ -540,7 +540,7 @@ final class ViewerViewModel: ObservableObject {
             let meshEdges = Self.makeSharpEdgeGeometry(
                 vertices: modelVertices,
                 triangles: meshTrianglesWithFaces,
-                edgeWidth: Float(max(maxDim * 0.0025, 0.005))
+                edgeWidth: Float(max(maxDim * 0.0012, 0.0025))
             )
 
             let outlineGeometry = Self.makeOutlineGeometry(
@@ -1124,12 +1124,17 @@ final class ViewerViewModel: ObservableObject {
             outlineMat.writesToDepthBuffer = false
             outlineGeometry.materials = [outlineMat]
 
-            // 3 % inflation. Applied through the same explicit anchor pair as the edge
-            // overlay — v -> center + 1.03 * (v - center).
+            // 1.5 % inflation. Applied through the same explicit anchor pair as the edge
+            // overlay — v -> center + 1.015 * (v - center).
+            //
+            // Halved from 3 %: the shell is scaled about the centre while the rim it
+            // shows is measured at the model's outer edge, so a 3 % scale reads as a
+            // ~1.5 %-of-size band, six times the feature-edge tube width. That is the
+            // heavy black line around the silhouette, and it swamped the edges.
             let outlineAnchor = SCNNode()
             outlineAnchor.name = "outlineAnchor"
             outlineAnchor.position = center
-            outlineAnchor.scale = SCNVector3(1.03, 1.03, 1.03)
+            outlineAnchor.scale = SCNVector3(1.015, 1.015, 1.015)
 
             let outlineNode = SCNNode(geometry: outlineGeometry)
             outlineNode.name = "outline"
