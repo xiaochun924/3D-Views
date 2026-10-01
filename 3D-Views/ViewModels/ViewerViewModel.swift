@@ -218,9 +218,12 @@ enum MeasureType: String, CaseIterable, Identifiable {
         switch self {
         case .distance: return "ruler"
         case .angle: return "angle"
-        // A diameter arrow, not the radius "clockwise" arc the type used to carry:
-        // the panel reports a diameter by default, so the button should say so.
-        case .radius: return "diameter"
+        // A double-headed arrow, not the "diameter" glyph the type was first given:
+        // that symbol is newer than this app's floor and renders as nothing at all on
+        // the devices it was tried on, which reads as a broken button rather than a
+        // missing one. This is the same arrow the 半径/直径 switch uses, so the two
+        // controls that mean "diameter" also look alike.
+        case .radius: return "arrow.left.and.right"
         case .linear: return "move.3d"
         case .area: return "square.dashed"
         case .volume: return "cube.transparent"
@@ -334,6 +337,27 @@ final class ViewerViewModel: ObservableObject {
     @Published var angleResult: Float?
     @Published var radiusResult: Float?
     @Published var radiusCenter: SCNVector3?
+
+    /// Whether a radius reading is stated as its diameter.
+    ///
+    /// This looks like the pure presentation the ``distanceMode`` comment above says
+    /// does not belong here, and it was first written as a `@State` in the view for
+    /// exactly that reason. That was wrong: the same reading is written down in three
+    /// places — the result card, the label pinned to the geometry in the scene, and
+    /// the history entry — and a view-side flag could only ever reach the first, so
+    /// the card said 直径 while the model still floated the raw radius. Keeping it on
+    /// the model is what makes the three agree.
+    ///
+    /// Diameter is the default: a bore is ordered, drilled and inspected by its
+    /// diameter, so the radius is the rarer thing to want and the one that has to be
+    /// asked for. Unlike ``distanceMode`` this only restates one number, so it
+    /// re-draws the annotations without re-deriving anything from the kernel.
+    @Published var radiusShowsDiameter: Bool = true {
+        didSet {
+            guard oldValue != radiusShowsDiameter else { return }
+            updateMeasureVisuals(in: renderView)
+        }
+    }
 
     /// Area of the picked face, in square display units.
     @Published var areaResult: Float?
@@ -3274,7 +3298,9 @@ final class ViewerViewModel: ObservableObject {
         case .angle:
             return angleResult.map { String(format: "%.1f°", $0) }
         case .radius:
-            return radiusResult.map { displayUnit.format($0) }
+            return radiusResult.map {
+                displayUnit.format(radiusShowsDiameter ? $0 * 2 : $0)
+            }
         case .area:
             return areaResult.map { displayUnit.formatArea($0) }
         case .volume:
@@ -3294,7 +3320,7 @@ final class ViewerViewModel: ObservableObject {
             return String(format: "%.1f°", a)
         case .radius:
             guard let r = radiusResult else { return nil }
-            return displayUnit.format(r)
+            return displayUnit.format(radiusShowsDiameter ? r * 2 : r)
         case .area:
             guard let a = areaResult else { return nil }
             return displayUnit.formatArea(a)

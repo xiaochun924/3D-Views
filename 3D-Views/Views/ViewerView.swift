@@ -13,13 +13,6 @@ struct ViewerView: View {
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showSettings = false
     @State private var copiedToPasteboard = false
-    /// Whether a radius reading is reported as its diameter. Diameter is the default
-    /// — a bore is ordered, drilled and inspected by its diameter, so the radius is
-    /// the rarer thing to want and it is the one that has to be asked for. Sticky on
-    /// purpose: a shop that thinks in diameters keeps thinking in diameters,
-    /// measurement after measurement, and re-flipping it every time would be the
-    /// annoying part.
-    @State private var radiusShowsDiameter = true
 
     var body: some View {
         ZStack {
@@ -309,6 +302,10 @@ struct ViewerView: View {
     /// A two-segment capsule rather than a `Picker`, because this sits inside the
     /// reading card and a full-height segmented control would be the tallest thing
     /// in a panel that was just shrunk.
+    ///
+    /// It writes through to the model rather than to local state, so the number the
+    /// card shows, the label floating on the geometry and the entry the history list
+    /// keeps are all the same statement of the reading.
     private var radiusToggle: some View {
         HStack(spacing: 2) {
             radiusToggleSegment(icon: "r.circle", label: "半径", diameter: false)
@@ -321,9 +318,9 @@ struct ViewerView: View {
     }
 
     private func radiusToggleSegment(icon: String, label: String, diameter: Bool) -> some View {
-        let selected = radiusShowsDiameter == diameter
+        let selected = viewModel.radiusShowsDiameter == diameter
         return Button {
-            withAnimation(.snappy(duration: 0.2)) { radiusShowsDiameter = diameter }
+            withAnimation(.snappy(duration: 0.2)) { viewModel.radiusShowsDiameter = diameter }
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: icon)
@@ -423,7 +420,7 @@ struct ViewerView: View {
             // an STL has no entities to measure between, so it keeps the plain reading.
             return viewModel.usesEntityMeasurement ? viewModel.distanceMode.label : "距离"
         case .angle: return "角度"
-        case .radius: return radiusShowsDiameter ? "直径" : "半径"
+        case .radius: return viewModel.radiusShowsDiameter ? "直径" : "半径"
         case .area: return "面积"
         case .volume: return "体积"
         case .boundingBox: return "包围盒尺寸"
@@ -440,7 +437,7 @@ struct ViewerView: View {
             // One number, stated as radius or as diameter — the toggle above decides
             // which, and both come from the same kernel reading.
             if let r = viewModel.radiusResult {
-                return viewModel.displayUnit.format(radiusShowsDiameter ? r * 2 : r)
+                return viewModel.displayUnit.format(viewModel.radiusShowsDiameter ? r * 2 : r)
             }
         case .area:
             if let a = viewModel.areaResult { return viewModel.displayUnit.formatArea(a) }
@@ -484,13 +481,18 @@ struct ViewerView: View {
 
     /// The measure-mode toolbar: one compact row.
     ///
-    /// Exit/undo sits fixed on the left, the unit menu fixed on the right, and the
+    /// Exit/undo sits fixed on the left, the display menu fixed on the right, and the
     /// seven measurement types scroll in between. Display mode is offered here too:
     /// seeing inside a bore to pick its wall is often *why* one reaches for 透明 or
     /// 线框, and having to leave measure mode to change it made those two picks
     /// impossible in the one situation that calls for them. Switching does drop the
     /// picks in progress — the scene graph is rebuilt — but a finished reading
     /// survives either way.
+    ///
+    /// The display menu holds the outermost slot and the unit menu sits inward of it,
+    /// which is the other way round from how the orbit toolbar reads. Display mode is
+    /// the one that gets touched mid-measurement, so it takes the edge the thumb finds
+    /// without looking; the unit is set once and then left alone.
     private var measureToolbar: some View {
         HStack(spacing: 0) {
             toolButton(icon: viewModel.picks.isEmpty ? "xmark" : "arrow.uturn.backward.circle",
@@ -508,11 +510,11 @@ struct ViewerView: View {
 
             toolRowDivider
 
-            displayModeMenu()
+            unitMenu
 
             toolRowDivider
 
-            unitMenu
+            displayModeMenu()
         }
         .padding(.vertical, 5)
         .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
