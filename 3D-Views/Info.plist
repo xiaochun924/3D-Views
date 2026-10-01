@@ -58,6 +58,19 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>Any Data File</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+				<string>public.content</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>STL CAD File</string>
 			<key>CFBundleTypeExtensions</key>
 			<array>

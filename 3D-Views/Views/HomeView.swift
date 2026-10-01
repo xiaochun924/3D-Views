@@ -156,6 +156,9 @@ struct HomeView: View {
                 // way the import fails is a genuine file-system problem — which is
                 // worth saying out loud rather than navigating to a file that is not
                 // there.
+                // This picker path is the one that works, so it is also the only way to
+                // see what UTI the system tags a real STEP/STL with on this device.
+                history.note("文件选择器拿到：\(url.lastPathComponent)（\(FileHistory.describeType(of: url))）")
                 do {
                     let file = try history.addFile(sourceURL: url)
                     history.importFailure = nil

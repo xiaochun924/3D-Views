@@ -226,6 +226,22 @@ final class FileHistory: ObservableObject {
         return false
     }
 
+    /// The type the system actually tags a file with — path extension plus the UTI from
+    /// `contentType` — for a file that reached the app through the in-app picker.
+    ///
+    /// That path works, which makes it the only way to learn what UTI Files tags a
+    /// `.step`/`.stl` with on the real device. It is what the catch-all `public.data`
+    /// entry in `CFBundleDocumentTypes` is currently standing in for: once the real UTI
+    /// is known, the declaration can be narrowed from "any data file" back to the
+    /// specific type, which is what it ought to name.
+    static func describeType(of url: URL) -> String {
+        let ext = url.pathExtension.isEmpty ? "无扩展名" : url.pathExtension
+        let identifier = (try? url.resourceValues(forKeys: [.contentTypeKey]))?
+            .contentType?
+            .identifier
+        return "\(ext) / \(identifier ?? "UTI 未知")"
+    }
+
     func removeFile(_ file: RecentFile) {
         try? FileManager.default.removeItem(at: file.fileURL)
         files.removeAll { $0.id == file.id }

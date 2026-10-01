@@ -57,6 +57,12 @@ targets:
               - stl
             LSItemContentTypes:
               - com.xiaochun.stl
+          - CFBundleTypeName: Any Data File
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.data
+              - public.content
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.xiaochun.step
             UTTypeDescription: STEP CAD File
