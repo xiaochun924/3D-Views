@@ -199,11 +199,15 @@ enum MeasureType: String, CaseIterable, Identifiable {
     case boundingBox
 
     var id: String { rawValue }
+    /// Standard of measurement, and therefore the number the reading card names.
+    ///
+    /// The diameter is the default the panel shows, so the label reads 直径; the card
+    /// still carries a 半径/直径 switch for the times a radius is what is wanted.
     var label: String {
         switch self {
         case .distance: return "距离"
         case .angle: return "角度"
-        case .radius: return "半径"
+        case .radius: return "直径"
         case .linear: return "线性测量"
         case .area: return "面积"
         case .volume: return "体积"
@@ -214,7 +218,9 @@ enum MeasureType: String, CaseIterable, Identifiable {
         switch self {
         case .distance: return "ruler"
         case .angle: return "angle"
-        case .radius: return "clockwise"
+        // A diameter arrow, not the radius "clockwise" arc the type used to carry:
+        // the panel reports a diameter by default, so the button should say so.
+        case .radius: return "diameter"
         case .linear: return "move.3d"
         case .area: return "square.dashed"
         case .volume: return "cube.transparent"
@@ -311,7 +317,12 @@ final class ViewerViewModel: ObservableObject {
     /// writing down one reading: centre distance and maximum distance are different
     /// computations from the kernel's closest approach, so this belongs to the model
     /// rather than the view, and changing it re-derives the result.
-    @Published var distanceMode: DistanceMode = .min {
+    ///
+    /// Defaults to ``DistanceMode/center``: on a part the question is nearly always
+    /// "how far apart are these two centres" — a bore to a bore, a boss to a boss —
+    /// and the minimum distance between two picked faces is more often a wall
+    /// thickness the user did not ask about.
+    @Published var distanceMode: DistanceMode = .center {
         didSet {
             guard oldValue != distanceMode else { return }
             computeResults()

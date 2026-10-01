@@ -13,10 +13,13 @@ struct ViewerView: View {
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showSettings = false
     @State private var copiedToPasteboard = false
-    /// Whether a radius reading is reported as its diameter. Sticky on purpose: a
-    /// shop that thinks in diameters keeps thinking in diameters, measurement after
-    /// measurement, and re-flipping it every time would be the annoying part.
-    @State private var radiusShowsDiameter = false
+    /// Whether a radius reading is reported as its diameter. Diameter is the default
+    /// — a bore is ordered, drilled and inspected by its diameter, so the radius is
+    /// the rarer thing to want and it is the one that has to be asked for. Sticky on
+    /// purpose: a shop that thinks in diameters keeps thinking in diameters,
+    /// measurement after measurement, and re-flipping it every time would be the
+    /// annoying part.
+    @State private var radiusShowsDiameter = true
 
     var body: some View {
         ZStack {
@@ -482,12 +485,12 @@ struct ViewerView: View {
     /// The measure-mode toolbar: one compact row.
     ///
     /// Exit/undo sits fixed on the left, the unit menu fixed on the right, and the
-    /// seven measurement types — grouped 距离 (distance kinds), 形状 (angle, radius,
-    /// area), 模型 (volume, bounding box) — scroll in between. Everything else this
-    /// mode once carried was folded away: the hint capsule carries the pick tally,
-    /// finished readings archive themselves onto the model, and display mode plus
-    /// the annotation controls live in the orbit toolbar. Fewer floating panels,
-    /// less model occlusion.
+    /// seven measurement types scroll in between. Display mode is offered here too:
+    /// seeing inside a bore to pick its wall is often *why* one reaches for 透明 or
+    /// 线框, and having to leave measure mode to change it made those two picks
+    /// impossible in the one situation that calls for them. Switching does drop the
+    /// picks in progress — the scene graph is rebuilt — but a finished reading
+    /// survives either way.
     private var measureToolbar: some View {
         HStack(spacing: 0) {
             toolButton(icon: viewModel.picks.isEmpty ? "xmark" : "arrow.uturn.backward.circle",
@@ -502,6 +505,10 @@ struct ViewerView: View {
             toolRowDivider
 
             measureTypeRow
+
+            toolRowDivider
+
+            displayModeMenu()
 
             toolRowDivider
 
@@ -523,14 +530,12 @@ struct ViewerView: View {
                             .frame(width: 1, height: 34)
                             .padding(.horizontal, 5)
                     }
-                    VStack(spacing: 1) {
-                        Text(group.title)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary)
-                        HStack(spacing: 0) {
-                            ForEach(group.types) { type in
-                                measureTypeButton(type)
-                            }
+                    // The group captions (距离 / 形状 / 模型) are gone: the divider
+                    // already separates the runs, and at 9pt the captions cost a row
+                    // of height while saying only what the icons say better.
+                    HStack(spacing: 0) {
+                        ForEach(group.types) { type in
+                            measureTypeButton(type)
                         }
                     }
                 }
@@ -614,12 +619,14 @@ struct ViewerView: View {
         .accessibilityLabel(type.label)
     }
 
-    /// Display-mode picker for the orbit toolbar.
+    /// Display-mode picker, offered in the orbit toolbar and again in the measure
+    /// toolbar.
     ///
-    /// It used to be offered while measuring too — seeing an internal bore is often
-    /// why one reaches for 透明 or 线框 — but that row is part of the clutter this
-    /// pass removes. The tradeoff: switching display mode mid-measurement drops the
-    /// picks in progress; a finished reading survives the switch either way.
+    /// Measuring wants it more than orbiting does: seeing an internal bore is often
+    /// *why* one reaches for 透明 or 线框, and having to leave measure mode to change
+    /// it made those two picks impossible in the one situation that calls for them.
+    /// The tradeoff is unchanged either way — switching display mode mid-measurement
+    /// drops the picks in progress, while a finished reading survives the switch.
     private func displayModeMenu() -> some View {
         Menu {
             ForEach(DisplayMode.allCases) { mode in
@@ -967,7 +974,10 @@ extension View {
     }
 }
 
-/// One labelled group of measurement types in the toolbar's type row.
+/// One group of measurement types in the toolbar's type row.
+///
+/// The title is no longer drawn — the row lost its captions — but it stays as the
+/// group's identity, which is what the `ForEach` keys the divider placement on.
 private struct MeasureTypeGroup {
     let title: String
     let types: [MeasureType]
