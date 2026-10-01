@@ -89,14 +89,39 @@ struct HomeView: View {
                 navPath.append(entry)
                 history.pendingOpen = nil
             }
+            .alert(
+                "无法导入",
+                isPresented: Binding(
+                    get: { history.importFailure != nil },
+                    set: { if !$0 { history.importFailure = nil } }
+                ),
+                presenting: history.importFailure
+            ) { _ in
+                Button("好", role: .cancel) {}
+            } message: { reason in
+                // The handover path used to end in a silent `nil`, so a share that
+                // could not be carried out was indistinguishable from one that never
+                // arrived — the app just sat on the file list. Saying why is the whole
+                // point of keeping the failure around.
+                Text(reason)
+            }
         }
     }
 
     private func openPicker() {
         DocumentPicker.shared.present(
             onPicked: { url in
-                let file = history.addFile(sourceURL: url)
-                navPath.append(file)
+                // `asCopy: true` means this URL is already a sandbox copy, so the only
+                // way the import fails is a genuine file-system problem — which is
+                // worth saying out loud rather than navigating to a file that is not
+                // there.
+                do {
+                    let file = try history.addFile(sourceURL: url)
+                    history.importFailure = nil
+                    navPath.append(file)
+                } catch {
+                    history.importFailure = "导入失败：\(error.localizedDescription)"
+                }
             },
             onCancel: {}
         )

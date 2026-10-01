@@ -55,7 +55,7 @@ targets:
               - stl
             LSItemContentTypes:
               - com.xiaochun.stl
-        UTImportedTypeDeclarations:
+        UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.xiaochun.step
             UTTypeDescription: STEP CAD File
             UTTypeConformsTo:
