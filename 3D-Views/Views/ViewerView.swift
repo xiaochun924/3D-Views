@@ -71,7 +71,7 @@ struct ViewerView: View {
             // dedicated selection panel is gone. One capsule, nothing else floating.
             if viewModel.mode == .measure && !viewModel.isComplete {
                 VStack {
-                    Spacer().frame(height: 28)
+                    Spacer().frame(height: 6)
                     HStack {
                         Spacer()
                         VStack(spacing: 4) {
@@ -94,7 +94,7 @@ struct ViewerView: View {
 
             if viewModel.isComplete {
                 VStack {
-                    Spacer().frame(height: 28)
+                    Spacer().frame(height: 6)
                     HStack {
                         Spacer()
                         resultPanel
