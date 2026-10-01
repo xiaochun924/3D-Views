@@ -176,13 +176,30 @@ struct ViewerView: View {
 
     private var resultPanel: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: viewModel.measureType.icon)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.blue)
                 Text(viewModel.measureType.label)
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
+                    .font(.system(size: 12, weight: .semibold))
+                // What the number belongs to, stated on the same line that names the
+                // measurement. These chips were a row of their own until they were
+                // folded in here — one less band laid across the model.
+                ForEach(Array(viewModel.picks.enumerated()), id: \.element.id) { entry in
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(Color(uiColor: entry.element.entity.markerColor))
+                            .frame(width: 5, height: 5)
+                        Text(entry.element.entity.description)
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color(.tertiarySystemFill), in: Capsule())
+                }
+                Spacer(minLength: 4)
                 // Puts the reading on the clipboard — the most common thing to do
                 // with a measured number is paste it into a drawing note or a chat.
                 // The glyph flips to a checkmark for a beat so the tap has feedback.
@@ -196,47 +213,26 @@ struct ViewerView: View {
                         }
                     } label: {
                         Image(systemName: copiedToPasteboard ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 15, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundColor(copiedToPasteboard ? .green : .blue)
                     }
                     .accessibilityLabel("复制测量结果")
                 }
                 Button { viewModel.clearMeasure() } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
+                        .font(.system(size: 13))
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
 
             Divider()
 
-            VStack(spacing: 5) {
-                // What the number belongs to. A distance between two faces is a
-                // different fact from the same number between two edges, and the
-                // chips carry the exact entities — color-matched to their markers.
-                if !viewModel.picks.isEmpty {
-                    HStack(spacing: 5) {
-                        ForEach(Array(viewModel.picks.enumerated()), id: \.element.id) { entry in
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(Color(uiColor: entry.element.entity.markerColor))
-                                    .frame(width: 6, height: 6)
-                                Text(entry.element.entity.description)
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                            }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(Color(.tertiarySystemFill), in: Capsule())
-                        }
-                    }
-                }
+            VStack(spacing: 4) {
                 Text(mainResultValue)
-                    .font(.system(size: 22, weight: .bold, design: .monospaced))
+                    .font(.system(size: 20, weight: .bold, design: .monospaced))
                     .contentTransition(.numericText())
                     .animation(.snappy(duration: 0.25), value: mainResultValue)
                     .lineLimit(1)
@@ -246,54 +242,53 @@ struct ViewerView: View {
                 // the panel carries one number and a switch rather than two rows.
                 if viewModel.measureType == .radius, viewModel.isComplete {
                     radiusToggle
-                        .padding(.top, 1)
                 }
             }
-            .padding(.vertical, 7)
+            .padding(.vertical, 5)
 
             if (viewModel.measureType == .distance || viewModel.measureType == .linear),
                let delta = deltaVector {
                 Divider()
                 HStack(spacing: 0) {
                     deltaColumn(label: "X", value: delta.x, color: .red)
-                    Divider().frame(height: 28)
+                    Divider().frame(height: 22)
                     deltaColumn(label: "Y", value: delta.y, color: .green)
-                    Divider().frame(height: 28)
+                    Divider().frame(height: 22)
                     deltaColumn(label: "Z", value: delta.z, color: .blue)
                 }
-                .padding(.vertical, 6)
+                .padding(.vertical, 4)
             }
 
             if viewModel.measureType == .boundingBox, let e = viewModel.boundingBoxExtents {
                 Divider()
-                VStack(spacing: 4) {
+                VStack(spacing: 3) {
                     extentRow(icon: "arrow.left.and.right", label: "长 X", value: e.x)
                     extentRow(icon: "arrow.up.and.down", label: "宽 Y", value: e.y)
                     extentRow(icon: "cube", label: "高 Z", value: e.z)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
             }
 
             if let message = viewModel.measureMessage {
                 Divider()
-                HStack(alignment: .top, spacing: 6) {
+                HStack(alignment: .top, spacing: 5) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10))
+                        .font(.system(size: 9))
                     Text(message)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .multilineTextAlignment(.leading)
                     Spacer(minLength: 0)
                 }
                 .foregroundColor(.orange)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
             }
         }
-        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         // Wide tablets get a centered card, not a reading stretched across the screen.
-        .frame(maxWidth: 340)
-        .padding(.horizontal, 16)
+        .frame(maxWidth: 300)
+        .padding(.horizontal, 12)
     }
 
     /// 半径 ⇄ 直径: one reading, two ways of stating it.
@@ -317,15 +312,15 @@ struct ViewerView: View {
         return Button {
             withAnimation(.snappy(duration: 0.2)) { radiusShowsDiameter = diameter }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Image(systemName: icon)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                 Text(label)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
             }
             .foregroundColor(selected ? .primary : .secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
             .background(selected ? Color(.systemBackground) : Color.clear, in: Capsule())
             .contentShape(Capsule())
         }
@@ -412,27 +407,27 @@ struct ViewerView: View {
     }
 
     private func deltaColumn(label: String, value: Float, color: Color) -> some View {
-        VStack(spacing: 1) {
-            Text(label).font(.system(size: 11, weight: .bold)).foregroundColor(color)
+        VStack(spacing: 0) {
+            Text(label).font(.system(size: 10, weight: .bold)).foregroundColor(color)
             Text(viewModel.displayUnit.format(value))
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
         }
         .frame(maxWidth: .infinity)
     }
 
     /// One axis of the bounding box: icon, axis label, extent.
     private func extentRow(icon: String, label: String, value: Float) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Image(systemName: icon)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 9, weight: .medium))
                 .foregroundColor(.blue)
-                .frame(width: 16)
+                .frame(width: 14)
             Text(label)
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .foregroundColor(.secondary)
             Spacer()
             Text(viewModel.displayUnit.format(value))
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
         }
     }
 
