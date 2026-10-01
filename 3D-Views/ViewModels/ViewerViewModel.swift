@@ -533,14 +533,81 @@ final class ViewerViewModel: ObservableObject {
 
     // MARK: - Load
 
+    /// The formats `loadFile` knows how to dispatch, one case per kernel reader.
+    ///
+    /// A type rather than a chain of `ext ==` comparisons because the loader now has to
+    /// answer three separate questions about a file — which reader opens it, whether it
+    /// arrives as B-rep or as bare triangles, and what to call it in an error — and a
+    /// string comparison cannot be asked any of them twice without drifting apart.
+    enum ModelFormat {
+        case step
+        case stl
+        case iges
+        case obj
+        case brep
+
+        /// True for the formats the kernel hands back as topology, false for the ones
+        /// that are only ever a triangle soup.
+        ///
+        /// This is the switch that decides whether measurement works at all: `shape`,
+        /// `triangleToFace` and every entity pick are populated only for B-rep, so a mesh
+        /// format routed through the B-rep branch would produce a viewer whose measure
+        /// mode silently does nothing.
+        var isBrep: Bool {
+            switch self {
+            case .step, .iges, .brep: return true
+            case .stl, .obj: return false
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .step: return "STEP"
+            case .stl: return "STL"
+            case .iges: return "IGES"
+            case .obj: return "OBJ"
+            case .brep: return "BREP"
+            }
+        }
+
+        /// `nil` for anything the kernel has no reader for.
+        ///
+        /// `.brep` deliberately has no second spelling: OCCT's own extension is `.brep`
+        /// and nothing else, whereas `.stp`/`.step` and `.igs`/`.iges` are both in
+        /// genuine use and both have to land here.
+        static func named(_ ext: String) -> ModelFormat? {
+            switch ext {
+            case "step", "stp": return .step
+            case "stl": return .stl
+            case "iges", "igs": return .iges
+            case "obj": return .obj
+            case "brep": return .brep
+            default: return nil
+            }
+        }
+    }
+
+    /// The path extension of a URL when it names a file this viewer can open, `nil`
+    /// otherwise.
+    private static func format(for ext: String) -> ModelFormat? {
+        ModelFormat.named(ext)
+    }
+
     func loadFile(url: URL) async {
         isLoading = true
         loadError = nil
         defer { isLoading = false }
 
         let ext = url.pathExtension.lowercased()
-        guard ext == "step" || ext == "stp" || ext == "stl" else {
-            loadError = "不支持的文件格式。"
+        guard let format = Self.format(for: ext) else {
+            // Name the format when we recognise it, so the one likely case — a
+            // SolidWorks part dragged straight in — says what to do instead of just
+            // saying no. `FileHistory` keeps the same table for the same reason.
+            if let named = FileHistory.knownUnsupportedFormats[ext] {
+                loadError = "暂不支持 \(named)（.\(ext)）原生格式。请在原软件里另存为 STEP 或 IGES 后再打开。"
+            } else {
+                loadError = "不支持的文件格式。"
+            }
             return
         }
 
@@ -552,15 +619,25 @@ final class ViewerViewModel: ObservableObject {
             var loadedShape: OCCTSwift.Shape?
             var meshTrianglesWithFaces: [OCCTSwift.Triangle] = []
 
-            let brep = (ext == "step" || ext == "stp")
-            if brep {
+            // Only STEP and STL have a bespoke entry point that can fail in a way worth
+            // naming. The other three go through one shared door below, so their errors
+            // are reported by the trailing catch rather than by a per-format guard.
+            let brep = format.isBrep
+            switch format {
+            case .step:
                 loadedShape = try OCCTSwift.Shape.loadSTEP(from: url)
-            } else {
+            case .stl:
                 guard let loaded = OCCTSwift.Shape.readSTL(from: url.path) else {
                     loadError = "STL 文件读取失败。"
                     return
                 }
                 loadedShape = loaded
+            case .iges:
+                loadedShape = try OCCTSwift.Shape.loadIGES(from: url)
+            case .obj:
+                loadedShape = try OCCTSwift.Shape.loadOBJ(from: url)
+            case .brep:
+                loadedShape = try OCCTSwift.Shape.loadBREP(from: url)
             }
 
             // Deflection is chosen from the part's own size rather than a fixed 0.1:
@@ -587,7 +664,7 @@ final class ViewerViewModel: ObservableObject {
                 mesh = loadedShape?.mesh(linearDeflection: deflection)
             }
             guard let mesh else {
-                loadError = brep ? "STEP 文件网格化失败。" : "STL 文件网格化失败。"
+                loadError = "\(format.label) 文件网格化失败。"
                 return
             }
             meshTrianglesWithFaces = mesh.trianglesWithFaces()

@@ -61,7 +61,38 @@ final class FileHistory: ObservableObject {
 
     /// The formats the viewer can actually open, in one place because three gates consult
     /// it: the handover from another app, the sandbox scan, and the rejection message.
-    static let supportedExtensions: Set<String> = ["step", "stp", "stl"]
+    ///
+    /// Every entry here has a reader in the kernel, which is the only thing that makes it
+    /// honest to list: `Shape.loadSTEP`, `readSTL`, `loadIGES`, `loadOBJ` and `loadBREP`.
+    /// IGES and OBJ are the two that matter in practice — they are what a SolidWorks or
+    /// Fusion user can "save as" without owning anything else, and both were sitting
+    /// unused in the kernel while the app accepted only STEP and STL.
+    static let supportedExtensions: Set<String> = [
+        "step", "stp",
+        "stl",
+        "iges", "igs",
+        "obj",
+        "brep"
+    ]
+
+    /// The formats a CAD user is most likely to try and that this viewer cannot open,
+    /// mapped to the advice worth showing. Kept apart from `supportedExtensions` because
+    /// the useful part is the message, not the gate.
+    ///
+    /// SolidWorks' native format is the one that brings people here. It is a private
+    /// binary container with no published specification and no open-source reader, and
+    /// OpenCASCADE — the kernel this app is built on — has never had one either, so the
+    /// refusal is the whole product surface available: there is no version of this that
+    /// ends in geometry. Saying so plainly, and naming the two exports that do work, is
+    /// better than the silence the gate used to produce.
+    static let knownUnsupportedFormats: [String: String] = [
+        "sldprt": "SolidWorks 零件",
+        "sldasm": "SolidWorks 装配体",
+        "slddrw": "SolidWorks 工程图",
+        "x_t": "Parasolid",
+        "x_b": "Parasolid",
+        "jt": "JT"
+    ]
 
     /// The path extension of a URL when it names a file this viewer can open, `nil`
     /// otherwise. Case-insensitive: `PART.STEP` is the same format as `part.step`.
@@ -384,7 +415,17 @@ final class FileHistory: ObservableObject {
         lastHandover = (handedOverPath, Date())
 
         guard Self.looksLikeCADFile(url) else {
-            importFailure = "只能打开 STEP、STP 或 STL 文件。"
+            // A format we can name gets named, and told what to do about it. Everything
+            // else keeps the generic line. The previous message listed only the formats
+            // that worked, which left a SolidWorks user staring at "只能打开 STEP、STP
+            // 或 STL 文件" with no idea that a two-tap export in their own app fixes it.
+            if let refusal = Self.unsupportedFormatMessage(for: url) {
+                importFailure = refusal
+            } else {
+                importFailure = "只能打开 " + Self.supportedExtensions.sorted()
+                    .map { $0.uppercased() }
+                    .joined(separator: "、") + " 文件。"
+            }
             note("  拒绝：类型不支持（扩展名「\(url.pathExtension)」）")
             return nil
         }
@@ -634,6 +675,21 @@ final class FileHistory: ObservableObject {
             .contentType?
             .identifier
         return "\(ext) / \(identifier ?? "UTI 未知")"
+    }
+
+    /// The message for a file that is recognisably a CAD format we cannot read, or `nil`
+    /// when the extension means nothing in particular.
+    ///
+    /// Separate from the gate above because the two want different things: the gate is a
+    /// yes/no on the path extension, and this is the sentence shown to a person. Only the
+    /// second benefits from knowing *which* format was refused — a SolidWorks part gets
+    /// the export advice, a stray `.txt` gets the generic list.
+    static func unsupportedFormatMessage(for url: URL) -> String? {
+        guard let label = knownUnsupportedFormats[url.pathExtension.lowercased()] else {
+            return nil
+        }
+        return "暂不支持 \(label)（.\(url.pathExtension.lowercased())）原生格式。"
+            + "请在原软件里另存为 STEP 或 IGES 后再打开。"
     }
 
     func removeFile(_ file: RecentFile) {

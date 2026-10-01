@@ -176,7 +176,7 @@ struct ViewerView: View {
         case .distance, .linear: return "点选两点；靠近顶点或圆心会自动吸附"
         case .angle: return "依次点选：点1、角顶点、点3"
         case .radius: return "在圆弧上点选三个点"
-        case .area: return "点选一个面；面积测量仅支持 STEP 模型"
+        case .area: return "点选一个面；面积测量仅支持 STEP / IGES / BREP 模型"
         case .volume, .boundingBox: return "由模型外形直接计算，无需点选"
         }
     }

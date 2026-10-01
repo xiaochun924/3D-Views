@@ -98,6 +98,32 @@ targets:
               - stl
             LSItemContentTypes:
               - com.xiaochun.stl
+          # IGES 是 SolidWorks / Fusion 用户不额外花钱就能导出的通用格式，也是这次
+          # 「增加 SW 支持」真正落地的那一半 —— 原生 .sldprt 私有且无开源实现，
+          # 内核读不了，只能靠这两个出口。
+          - CFBundleTypeName: IGES CAD File
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            CFBundleTypeExtensions:
+              - iges
+              - igs
+            LSItemContentTypes:
+              - com.xiaochun.iges
+          - CFBundleTypeName: OBJ Mesh
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            CFBundleTypeExtensions:
+              - obj
+            LSItemContentTypes:
+              - com.xiaochun.obj
+          # BREP 没有第二拼写：OCCT 自己的扩展名就这一个。
+          - CFBundleTypeName: OCCT BREP File
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            CFBundleTypeExtensions:
+              - brep
+            LSItemContentTypes:
+              - com.xiaochun.brep
           - CFBundleTypeName: Any Data File
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
@@ -120,6 +146,28 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - stl
+          - UTTypeIdentifier: com.xiaochun.iges
+            UTTypeDescription: IGES CAD File
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - iges
+                - igs
+          - UTTypeIdentifier: com.xiaochun.obj
+            UTTypeDescription: OBJ Mesh
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - obj
+          - UTTypeIdentifier: com.xiaochun.brep
+            UTTypeDescription: OCCT BREP File
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - brep
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews

@@ -41,7 +41,7 @@ struct SettingsView: View {
             } header: {
                 Text("支持格式")
             } footer: {
-                Text("支持 STEP（.step、.stp）和 STL 文件。点击右上角按钮导入文件，或在「文件」App 中选择分享到本应用。分享没反应时，导入诊断里能看到文件走到了哪一步。")
+                Text("支持 STEP（.step、.stp）、IGES（.iges、.igs）、STL、OBJ、BREP 文件。其中 STEP / IGES / BREP 带实体拓扑，可以量测面、边、顶点；STL 和 OBJ 只有三角网格，只能量测点与距离。SolidWorks、Parasolid 等原生格式读不了，请在原软件里另存为 STEP 或 IGES。点击右上角按钮导入文件，或在「文件」App 中选择分享到本应用。分享没反应时，导入诊断里能看到文件走到了哪一步。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
