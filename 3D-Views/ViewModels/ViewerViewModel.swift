@@ -2039,13 +2039,13 @@ final class ViewerViewModel: ObservableObject {
 
         switch measureType {
         case .distance, .linear:
-            guard entities.count == 2,
-                  let first = subShape(for: entities[0]),
-                  let second = subShape(for: entities[1]) else { return false }
+            guard entities.count == 2 else { return false }
 
             switch distanceMode {
             case .min:
-                guard let measure = OCCTSwift.ShapeDistance(shape1: first, shape2: second),
+                guard let first = subShape(for: entities[0]),
+                      let second = subShape(for: entities[1]),
+                      let measure = OCCTSwift.ShapeDistance(shape1: first, shape2: second),
                       measure.isDone else { return false }
 
                 distanceResult = Float(measure.value)
@@ -2064,9 +2064,19 @@ final class ViewerViewModel: ObservableObject {
                 // nothing about how close the two entities approach each other, which
                 // is exactly why it cannot be a view-level restatement of the number
                 // the kernel returned.
-                guard let a = center(of: picks[0], shape: first),
-                      let b = center(of: picks[1], shape: second) else {
+                //
+                // Deliberately *not* via `subShape(for:)`. That returns a shape holding
+                // exactly one face, and the centre lookup then indexes it with the
+                // original face number — `shape.face(at: 7)` on a one-face shape is nil
+                // for every face but the first, which is what made two tapped circular
+                // faces silently measure nothing. The whole model is indexed here
+                // instead, exactly as the radius and area branches below already do it.
+                guard let shape, let a = center(of: picks[0], shape: shape),
+                      let b = center(of: picks[1], shape: shape) else {
                     measureMessage = "请点选圆边或回转面来量取中心距"
+                    distanceResult = nil
+                    closestPointA = nil
+                    closestPointB = nil
                     return true
                 }
                 closestPointA = a
@@ -2075,8 +2085,8 @@ final class ViewerViewModel: ObservableObject {
                 return true
 
             case .max:
-                let pointsA = extremePoints(of: picks[0], shape: first)
-                let pointsB = extremePoints(of: picks[1], shape: second)
+                let pointsA = extremePoints(of: picks[0])
+                let pointsB = extremePoints(of: picks[1])
                 guard !pointsA.isEmpty, !pointsB.isEmpty else { return false }
 
                 // Searched here because the kernel will not: see `DistanceMode`. The
@@ -2234,29 +2244,94 @@ final class ViewerViewModel: ObservableObject {
 
     /// The point the centre-distance mode measures from, in world coordinates.
     ///
-    /// "中心" means the centre a machinist would quote: a circular edge's circle, or a
-    /// point on a cylindrical face's axis. A sphere reports its own centre through the
-    /// same axis accessor. Anything with neither — a plane, a straight edge, a vertex —
-    /// falls back to its own centroid rather than refusing, so the mode always answers.
-    /// `Shape.centerOfMass` is no use for that fallback: it is the *volume* centroid and
+    /// SolidWorks reads a "centre" off the feature the user actually sees, so this walks
+    /// the same ladder and only drops to a weaker reading when the stronger one is
+    /// genuinely unavailable. For the case that matters — tapping a flat circular face,
+    /// a bore's end, a boss's top — the answer is the circle of its own boundary wire,
+    /// which is exact. A face with no circular boundary is a cylinder or a cone, and
+    /// there the centre is the point where the face's own middle meets its axis.
+    ///
+    /// The old version tested `face.primaryAxis` first and stopped there. That is nil
+    /// for *every* plane, so a circular face never reached any axis handling and fell
+    /// straight through to `surfaceInertia`, which silently yields nil when the kernel
+    /// throws inside the inertia integral. Two misses stacked into one failure, and the
+    /// user saw "--".
+    ///
+    /// Nothing here returns nil for a face or an edge any more: the last rung is the
+    /// spot the finger landed on, so the mode always answers with *something*.
+    /// `Shape.centerOfMass` is no use as a fallback: it is the *volume* centroid and
     /// returns nil for every face, edge, wire and open shell.
     private func center(of pick: Pick, shape: OCCTSwift.Shape) -> SCNVector3? {
         switch pick.entity {
         case .face(let i):
-            guard let face = shape.face(at: i) else { return nil }
-            if let axis = face.primaryAxis { return world(axis.origin) }
-            return face.surfaceInertia.centerOfMass.map { world($0) }
+            guard let face = shape.face(at: i) else { return pick.point }
+
+            // Rung 1 — a circular boundary edge. Exact, and the only reading that
+            // matches what the user means by "圆面": the circle they can see.
+            if let circle = Self.boundaryCircle(of: face) { return world(circle) }
+
+            // Rung 2 — a surface of revolution. `primaryAxis.origin` alone is wrong:
+            // the kernel hands back the *construction origin of the underlying infinite
+            // surface*, so two coaxial bores of equal diameter would measure a non-zero
+            // "centre distance" between them. Projecting the face's own UV midpoint onto
+            // that axis gives the point on the axis that belongs to this face.
+            if let axis = face.primaryAxis,
+               let onAxis = Self.pointOnAxis(of: face, axis: axis) {
+                return world(onAxis)
+            }
+
+            // Rung 3 — the area centroid. Right for a flat disc whose boundary is not a
+            // circle, and the same number the old code was reaching for.
+            if let centroid = face.surfaceInertia.centerOfMass { return world(centroid) }
+
+            // Rung 4 — the bounding box of the surface. Coarse, but never absent.
+            if let box = face.bounds {
+                return world((box.min + box.max) / 2)
+            }
+            return pick.point
 
         case .edge(let i):
-            guard let edge = shape.edge(at: i) else { return nil }
+            guard let edge = shape.edge(at: i) else { return pick.point }
             if let circle = edge.circleProperties { return world(circle.center) }
-            return edge.curveInertia.centerOfMass.map { world($0) }
+            if let centroid = edge.curveInertia.centerOfMass { return world(centroid) }
+            return pick.point
 
         case .vertex, .freePoint:
             // A vertex is its own centre, and the tapped position is already the most
             // accurate statement of where it is.
             return pick.point
         }
+    }
+
+    /// The centre of the first circular edge on a face's outer boundary, in kernel
+    /// coordinates.
+    ///
+    /// Only `outerWire` is walked. A counterbore's bottom face carries two circles, one
+    /// of them on an inner wire, and choosing between them by index would be arbitrary;
+    /// the outer one is the circle the face is actually shaped by.
+    private static func boundaryCircle(of face: OCCTSwift.Face) -> SIMD3<Double>? {
+        guard let edges = face.outerWire?.edges() else { return nil }
+        for edge in edges {
+            if let circle = edge.circleProperties { return circle.center }
+        }
+        return nil
+    }
+
+    /// The point where a face's own middle meets its surface-of-revolution axis.
+    ///
+    /// The split is the one `MeasurementHelpers` uses to read a cylinder's height: take
+    /// the vector from the axis origin to the midpoint, keep its component along the
+    /// axis, and add that back to the origin.
+    private static func pointOnAxis(of face: OCCTSwift.Face, axis: OCCTSwift.ShapeAxis) -> SIMD3<Double>? {
+        guard let bounds = face.uvBounds else { return nil }
+        let u = (bounds.uMin + bounds.uMax) / 2
+        let v = (bounds.vMin + bounds.vMax) / 2
+        guard let midpoint = face.point(atU: u, v: v) else { return nil }
+
+        let direction = simd_normalize(axis.direction)
+        let offset = midpoint - axis.origin
+        let along = simd_dot(offset, direction)
+        return axis.origin + direction * along
     }
 
     /// A point set dense enough to bracket the farthest pair on one entity.
@@ -2267,10 +2342,10 @@ final class ViewerViewModel: ObservableObject {
     /// declines to classify any of them the unfiltered grid is used instead — a slightly
     /// generous answer beats an empty one — but a face that classifies cleanly is
     /// measured only over the part that actually exists.
-    private func extremePoints(of pick: Pick, shape: OCCTSwift.Shape) -> [SIMD3<Double>] {
+    private func extremePoints(of pick: Pick) -> [SIMD3<Double>] {
         switch pick.entity {
         case .face(let i):
-            guard let face = shape.face(at: i), let bounds = face.uvBounds else { return [] }
+            guard let face = shape?.face(at: i), let bounds = face.uvBounds else { return [] }
 
             let steps = 12
             var onFace: [SIMD3<Double>] = []
@@ -2290,7 +2365,7 @@ final class ViewerViewModel: ObservableObject {
             return onFace.count >= 3 ? onFace : all
 
         case .edge(let i):
-            guard let edge = shape.edge(at: i), let bounds = edge.parameterBounds else { return [] }
+            guard let edge = shape?.edge(at: i), let bounds = edge.parameterBounds else { return [] }
 
             var points: [SIMD3<Double>] = []
             let steps = 24
