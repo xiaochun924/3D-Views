@@ -36,6 +36,12 @@ final class FileHistory: ObservableObject {
 
     private let userDefaultsKey = "RecentFiles"
 
+    /// The most recent URL handed over from outside the app, and when. Two delivery
+    /// hooks are wired up (see `AppDelegate`) because which one the system uses depends
+    /// on the app's lifecycle mode; this is what stops a lifecycle that calls both from
+    /// importing the same document twice.
+    private var lastHandover: (path: String, at: Date)?
+
     private init() {
         load()
     }
@@ -77,6 +83,19 @@ final class FileHistory: ObservableObject {
     /// for STEP/STL, but the share sheet can still offer it for neighbouring types.
     @discardableResult
     func receiveExternalFile(at url: URL) -> RecentFile? {
+        // Both delivery hooks lead here, and the system may use either or both
+        // depending on the app's lifecycle mode. The first sighting wins; a repeat of
+        // the same file within a couple of seconds is the second hook carrying the
+        // same handover, not a second handover. Without this the file would be
+        // imported twice and listed twice.
+        let handedOverPath = url.standardizedFileURL.path
+        if let last = lastHandover,
+           last.path == handedOverPath,
+           Date().timeIntervalSince(last.at) < 2 {
+            return nil
+        }
+        lastHandover = (handedOverPath, Date())
+
         guard Self.looksLikeCADFile(url) else {
             importFailure = "只能打开 STEP、STP 或 STL 文件。"
             return nil
