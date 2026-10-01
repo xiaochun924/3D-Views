@@ -9,6 +9,7 @@ struct HomeView: View {
     @StateObject private var history = FileHistory.shared
     @State private var navPath = NavigationPath()
     @State private var showSettings = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack(path: $navPath) {
@@ -95,6 +96,14 @@ struct HomeView: View {
                 guard let entry else { return }
                 navPath.append(entry)
                 history.pendingOpen = nil
+            }
+            // The other half of the sandbox scan. A file copied into the app's own folder
+            // in Files arrives while the app is already running, so nothing in the launch
+            // sequence would ever notice it — coming back to the foreground is when to
+            // look. Safe to run repeatedly: the scan only imports what it has not seen.
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                history.importFromSandbox()
             }
             .alert(
                 "无法导入",

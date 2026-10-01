@@ -44,6 +44,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         } else {
             FileHistory.shared.note("冷启动，launchOptions 无 URL")
         }
+        // A launch caused by 「拷贝到 3D Views」 carries no URL at all: iOS copies the file
+        // into our own sandbox and expects the app to go and find it. Nothing else runs on
+        // such a launch, so the scan belongs here as well as on every return to the
+        // foreground — and this is the one path that works even if the URL is never
+        // delivered to either hook below.
+        FileHistory.shared.importFromSandbox()
         return true
     }
 

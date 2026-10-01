@@ -55,6 +55,21 @@ final class FileHistory: ObservableObject {
 
     private let handoverLogKey = "HandoverLog"
 
+    /// What `importFromSandbox` has already taken from under `Documents`, so a file the
+    /// user copied in is imported once rather than on every scan.
+    private let sandboxScanKey = "SandboxScanFingerprints"
+
+    /// The formats the viewer can actually open, in one place because three gates consult
+    /// it: the handover from another app, the sandbox scan, and the rejection message.
+    static let supportedExtensions: Set<String> = ["step", "stp", "stl"]
+
+    /// The path extension of a URL when it names a file this viewer can open, `nil`
+    /// otherwise. Case-insensitive: `PART.STEP` is the same format as `part.step`.
+    static func supportedExtension(of url: URL) -> String? {
+        let ext = url.pathExtension.lowercased()
+        return supportedExtensions.contains(ext) ? ext : nil
+    }
+
     private init() {
         load()
         handoverLog = UserDefaults.standard.stringArray(forKey: handoverLogKey) ?? []
@@ -140,6 +155,11 @@ final class FileHistory: ObservableObject {
             localPath: sourceURL.lastPathComponent,
             openedAt: Date()
         )
+        // The destination path is a file's identity here, so importing the same name again
+        // refreshes its entry rather than adding a second row pointing at the same file.
+        // Without this, a handover that the sandbox scan also finds — or the same file
+        // picked twice — lists twice.
+        files.removeAll { $0.localPath == entry.localPath }
         files.insert(entry, at: 0)
         if files.count > 20 { files = Array(files.prefix(20)) }
         save()
@@ -197,6 +217,98 @@ final class FileHistory: ObservableObject {
         }
     }
 
+    /// Files the system parked in our own sandbox instead of handing the app a URL.
+    ///
+    /// Three different routes bring a file in from outside, and only the first delivers a
+    /// URL: the document handovers above, a copy iOS drops in `Documents/Inbox`, and a
+    /// copy placed in `Documents` itself — that folder is browsable in Files under
+    /// 「我的 iPhone」→「3D Views」 because the app declares `UIFileSharingEnabled`. The last
+    /// two are found by looking rather than by being told, which is exactly why the
+    /// handover hooks can stay silent while the app is nonetheless launched for a file.
+    ///
+    /// `Inbox` is drained as it is read: iOS expects an app to take what it put there, and
+    /// a file left in place would be imported again on every launch. Files directly under
+    /// `Documents` are copied and left where they are — those belong to the user, placed
+    /// deliberately — with a fingerprint recorded so the same file is not re-imported each
+    /// time the app comes forward.
+    ///
+    /// Returns what it imported, newest scan first, and is safe to call on every launch
+    /// and every return to the foreground: both halves are idempotent by construction.
+    @discardableResult
+    func importFromSandbox() -> [RecentFile] {
+        let manager = FileManager.default
+        let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var imported: [RecentFile] = []
+        var fingerprints = sandboxScanFingerprints
+        var gainedFingerprint = false
+
+        let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
+        if let names = try? manager.contentsOfDirectory(atPath: inbox.path) {
+            for name in names.sorted() {
+                let source = inbox.appendingPathComponent(name)
+                guard Self.supportedExtension(of: source) != nil else { continue }
+                if let entry = importSandboxCopy(at: source, removeSource: true) {
+                    imported.append(entry)
+                }
+            }
+        }
+
+        if let names = try? manager.contentsOfDirectory(atPath: docs.path) {
+            for name in names.sorted() {
+                let source = docs.appendingPathComponent(name)
+                var isDirectory: ObjCBool = false
+                guard manager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+                      !isDirectory.boolValue,
+                      Self.supportedExtension(of: source) != nil
+                else { continue }
+
+                let mark = Self.fingerprint(of: source)
+                guard !fingerprints.contains(mark) else { continue }
+                if let entry = importSandboxCopy(at: source, removeSource: false) {
+                    imported.append(entry)
+                    fingerprints.insert(mark)
+                    gainedFingerprint = true
+                }
+            }
+        }
+
+        if gainedFingerprint { sandboxScanFingerprints = fingerprints }
+        if !imported.isEmpty {
+            note("沙盒扫描：导入 \(imported.count) 个文件")
+            importFailure = nil
+            pendingOpen = imported[0]
+        }
+        return imported
+    }
+
+    /// Imports one file found inside our own sandbox. Never throws: a scan runs over
+    /// whatever happens to be there, and one unreadable file must not stop the rest.
+    private func importSandboxCopy(at source: URL, removeSource: Bool) -> RecentFile? {
+        do {
+            let entry = try addFile(sourceURL: source)
+            if removeSource { try? FileManager.default.removeItem(at: source) }
+            note("  沙盒导入：\(entry.fileName)")
+            return entry
+        } catch {
+            note("  沙盒导入失败：\(source.lastPathComponent)（\(error.localizedDescription)）")
+            return nil
+        }
+    }
+
+    /// Identifies a file by where it is, how big it is, and when it last changed — enough
+    /// to tell "the same file, still sitting there" apart from "a file just put there".
+    private static func fingerprint(of url: URL) -> String {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let size = values?.fileSize ?? 0
+        let changed = Int(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)
+        return "\(url.standardizedFileURL.path)|\(size)|\(changed)"
+    }
+
+    private var sandboxScanFingerprints: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: sandboxScanKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue.suffix(200)), forKey: sandboxScanKey) }
+    }
+
     /// Whether a URL handed over from another app names a file this viewer can open.
     ///
     /// The path extension alone is not enough. A share sheet's temporary copy can arrive
@@ -205,7 +317,7 @@ final class FileHistory: ObservableObject {
     /// floor is the silent half of "the app opened but no file came in". All three are
     /// consulted, and only a URL that fails every one of them is rejected.
     private static func looksLikeCADFile(_ url: URL) -> Bool {
-        let supported: Set<String> = ["step", "stp", "stl"]
+        let supported = Self.supportedExtensions
 
         if supported.contains(url.pathExtension.lowercased()) { return true }
 
