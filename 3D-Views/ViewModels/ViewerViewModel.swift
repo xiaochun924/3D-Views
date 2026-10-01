@@ -153,6 +153,34 @@ enum ViewDirection: String, CaseIterable, Identifiable {
         case .iso: return "cube"
         }
     }
+
+    /// The camera frame this preset should end on, as an orientation in the model's frame.
+    ///
+    /// The camera starts on +Z looking back at the origin, so these are the rotations that
+    /// carry that frame to the named view. Worth spelling out in full rather than going
+    /// through an azimuth/elevation pair: a frame names 俯视图 and 仰视图 *exactly*,
+    /// whereas the angle pair could only ever approach them — the clamp that kept its
+    /// cross product off zero held those two views a fraction of a degree short, and
+    /// that was the same clamp that made a horizontal drag stop responding up there.
+    var cameraOrientation: simd_quatf {
+        switch self {
+        case .front:
+            return simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+        case .back:
+            return simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0))
+        case .left:
+            return simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 1, 0))
+        case .right:
+            return simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(0, 1, 0))
+        case .top:
+            return simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        case .bottom:
+            return simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        case .iso:
+            return simd_quatf(angle: .pi / 4, axis: SIMD3<Float>(0, 1, 0))
+                * simd_quatf(angle: 0.615, axis: SIMD3<Float>(1, 0, 0))
+        }
+    }
 }
 
 /// How the model is drawn.
@@ -580,11 +608,10 @@ final class ViewerViewModel: ObservableObject {
             // A new model invalidates the fit solved for the previous one.
             framedOnce = false
 
-            // Reset the orbital camera to the part's own frame: the same angles every time,
+            // Reset the orbital camera to the part's own frame: the same view every time,
             // at a distance that fits it. Without this, a second, differently sized model
             // would inherit the previous one's zoom and end up cropped or a speck.
-            cameraAzimuth = 0
-            cameraElevation = 0.18
+            cameraOrientation = Self.openingOrientation
             cameraOrbitDistance = cameraDistance
             cameraTarget = SCNVector3(0, 0, 0)
 
@@ -1363,30 +1390,37 @@ final class ViewerViewModel: ObservableObject {
     /// Orbital camera state, in the model's own frame.
     ///
     /// Every model is recentred on the origin at load, so the orbit target starts there
-    /// and only ever moves when the user pans. Keeping the camera as an angle pair and a
-    /// distance — rather than nudging its transform — is what makes orbiting feel stable
-    /// (the model stays put and turns) and what lets the depth range be recomputed from
-    /// the distance on every move.
-    private var cameraAzimuth: Float = 0
-    private var cameraElevation: Float = 0.18
+    /// and only ever moves when the user pans. The camera is kept as an orientation and a
+    /// distance — rather than an azimuth/elevation pair — which is what makes orbiting feel
+    /// stable (the model stays put and turns) and what lets the depth range be recomputed
+    /// from the distance on every move.
+    ///
+    /// `orientation` rotates the canonical camera frame onto the current one: it maps
+    /// `(0, 0, 1)` to the direction from the target out to the camera, so acting on any
+    /// vector with it expresses that vector in the camera's own frame. Storing the frame
+    /// outright rather than two angles is what allows a full tumble — see `orbit`.
+    /// The identity means "camera on +Z, looking back at the origin, no roll", which is
+    /// the same opening view the old `azimuth 0, elevation 0` pair gave.
+    private var cameraOrientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
     private var cameraOrbitDistance: Float = 24
     private var cameraTarget = SCNVector3(0, 0, 0)
 
     /// Set once the initial framing has been solved for the current model.
     private var framedOnce = false
 
-    /// Just under a right angle. At exactly 90° the camera sits on the orbit pole,
-    /// where a horizontal drag has no lever arm and every azimuth lands on the same
-    /// spot, so the last sliver of a degree stays out of reach — visually it is
-    /// straight down either way, and the price of an orbit that never sticks.
-    /// The clamp also keeps the cross product in `applyCamera` non-degenerate: its
-    /// length is cos(elevation), which never drops below ~0.002, comfortably above
-    /// float precision.
-    private let maxElevation: Float = .pi / 2 - 0.002
-
     /// Radians of rotation per point dragged. Roughly a third of a turn across a phone
     /// screen's width, which is the pace every 3D viewer settles on.
     private let orbitRadiansPerPoint: Float = 0.007
+
+    /// The view a freshly loaded part opens on: slightly above dead level, looking down
+    /// a touch, and otherwise square-on.
+    ///
+    /// A dead-level view puts the horizon of a typical part exactly on its silhouette,
+    /// which is the one angle where a box reads as a flat rectangle; the small lift costs
+    /// nothing and shows the top face straight away. Composed about the camera's own
+    /// right axis, the same way a drag is, so the two keep agreeing.
+    private static let openingOrientation = simd_quatf(angle: 0.18,
+                                                       axis: SIMD3<Float>(1, 0, 0))
 
     /// Positions the camera from the orbital state and re-sizes its depth range.
     ///
@@ -1400,44 +1434,27 @@ final class ViewerViewModel: ObservableObject {
         guard let camNode = cameraNode else { return }
 
         let d = cameraOrbitDistance
-        let cosElevation = cos(cameraElevation)
-        let position = SCNVector3(
-            cameraTarget.x + d * cosElevation * sin(cameraAzimuth),
-            cameraTarget.y + d * sin(cameraElevation),
-            cameraTarget.z + d * cosElevation * cos(cameraAzimuth)
-        )
-        camNode.position = position
+        // The basis comes straight out of the stored orientation, so it is exactly the
+        // frame the user dragged to — no world-up reference and no cross product to
+        // degenerate. The old build derived `right` from a fixed world up, which forced
+        // the horizon to stay level at every angle (so the part could never be rolled)
+        // and collapsed to a length of zero as the view approached straight down, where
+        // horizontal dragging stopped working. Both are gone with the angle pair.
+        let right = cameraOrientation.act(SIMD3<Float>(1, 0, 0))
+        let up = cameraOrientation.act(SIMD3<Float>(0, 1, 0))
+        let backward = cameraOrientation.act(SIMD3<Float>(0, 0, 1))
+        let forward = -backward
 
-        // The orientation is built outright from the orbital state instead of via
-        // `look(at:)`: the state alone decides both the position and the basis, so
-        // the same state always yields the same frame — no roll inherited from
-        // whatever orientation the node happened to be carrying, and no
-        // undefined-up edge case near the poles, which is where `look(at:)` gets
-        // flaky and a preset view can come back tilted by a different amount
-        // every time.
-        let forward = simd_normalize(SIMD3<Float>(
-            cameraTarget.x - position.x,
-            cameraTarget.y - position.y,
-            cameraTarget.z - position.z
-        ))
-        // |cross| equals cos(elevation); the elevation clamp keeps it well away
-        // from zero, so one world-up reference serves the whole orbit and the
-        // roll stays continuous everywhere.
-        var right = simd_cross(forward, SIMD3<Float>(0, 1, 0))
-        let rightLength = simd_length(right)
-        if rightLength > 1e-5 {
-            right /= rightLength
-        } else {
-            right = SIMD3<Float>(1, 0, 0)
-        }
-        let up = simd_normalize(simd_cross(right, forward))
+        let position = SIMD3<Float>(cameraTarget.x, cameraTarget.y, cameraTarget.z) + backward * d
+        camNode.simdPosition = SCNVector3(position.x, position.y, position.z)
+
         // SceneKit cameras look down their local -Z, so the basis columns are
         // screen-right, screen-up, and backward.
         camNode.simdTransform = simd_float4x4(
             SIMD4<Float>(right, 0),
             SIMD4<Float>(up, 0),
             SIMD4<Float>(-forward, 0),
-            SIMD4<Float>(SIMD3<Float>(position.x, position.y, position.z), 1)
+            SIMD4<Float>(position, 1)
         )
 
         if let camera = camNode.camera {
@@ -1511,13 +1528,29 @@ final class ViewerViewModel: ObservableObject {
         applyCamera()
     }
 
-    /// One-finger drag: orbit about the target.
+    /// One-finger drag: tumble the part about the target.
+    ///
+    /// Each drag axis is mapped onto the camera's *own* current right/up vectors rather
+    /// than onto a world axis, and the two rotations are composed onto the accumulated
+    /// orientation. That is what makes the motion a free tumble in every direction: there
+    /// is no world up to stay level against, so a diagonal drag rolls the part as well as
+    /// turning it, and no angle is out of reach — including the straight-down view the
+    /// old elevation clamp kept just short of, which is exactly where its horizontal
+    /// drag used to stop responding.
+    ///
+    /// Rotating the camera about the target is the same motion on screen as rotating the
+    /// model, because every model is recentred on the origin at load.
     func orbit(dx: CGFloat, dy: CGFloat) {
-        cameraAzimuth -= Float(dx) * orbitRadiansPerPoint
-        // Dragging down tips the model's top toward the viewer, which is the direction
-        // every touch CAD app uses; hence the sign on `dy`.
-        cameraElevation = min(max(cameraElevation + Float(dy) * orbitRadiansPerPoint,
-                                  -maxElevation), maxElevation)
+        let yaw = simd_quatf(angle: -Float(dx) * orbitRadiansPerPoint,
+                             axis: SIMD3<Float>(0, 1, 0))
+        let pitch = simd_quatf(angle: -Float(dy) * orbitRadiansPerPoint,
+                               axis: SIMD3<Float>(1, 0, 0))
+        // Post-multiplied, so both axes are read in the camera's *current* frame. Doing
+        // it the other way round would turn the second axis into a world axis and the
+        // view would start behaving differently depending on how the part was already
+        // oriented.
+        cameraOrientation = cameraOrientation * yaw * pitch
+        cameraOrientation = simd_normalize(cameraOrientation)
         applyCamera()
     }
 
@@ -1624,53 +1657,36 @@ final class ViewerViewModel: ObservableObject {
         // part through a big part of a turn in a single frame, so the frame is dropped
         // and the clock reset instead.
         guard elapsed > 0, elapsed < 0.25 else { return }
-        cameraAzimuth -= Float(elapsed * Self.autoRotationRadiansPerSecond)
+        // Turned about the camera's *own* up axis, so the rotation follows whichever way
+        // the user has tumbled the part to: a part viewed from underneath keeps turning
+        // about the screen's vertical once it is running. Driving a world axis instead
+        // would look correct only from the opening view.
+        let step = simd_quatf(angle: -Float(elapsed * Self.autoRotationRadiansPerSecond),
+                              axis: SIMD3<Float>(0, 1, 0))
+        cameraOrientation = simd_normalize(cameraOrientation * step)
         applyCamera()
     }
 
     func resetView() {
-        cameraAzimuth = 0
-        cameraElevation = 0.18
+        cameraOrientation = Self.openingOrientation
         cameraOrbitDistance = cameraDistance
         cameraTarget = SCNVector3(0, 0, 0)
         reassertPointOfView()
         applyCamera()
-        Self.cameraLog.info("reset view: az 0.00 el 0.18")
+        Self.cameraLog.info("reset view: opening orientation")
     }
 
     func setViewDirection(_ direction: ViewDirection) {
-        switch direction {
-        case .front:
-            cameraAzimuth = 0
-            cameraElevation = 0
-        case .back:
-            cameraAzimuth = .pi
-            cameraElevation = 0
-        case .left:
-            cameraAzimuth = -.pi / 2
-            cameraElevation = 0
-        case .right:
-            cameraAzimuth = .pi / 2
-            cameraElevation = 0
-        case .top:
-            cameraAzimuth = 0
-            cameraElevation = maxElevation
-        case .bottom:
-            cameraAzimuth = 0
-            cameraElevation = -maxElevation
-        case .iso:
-            cameraAzimuth = 0.75
-            cameraElevation = 0.55
-        }
+        // Each preset is written as the camera frame it should end on, in one piece. The
+        // old build set an azimuth and an elevation and let the world-up cross product
+        // finish the job, which is also why `.top` and `.bottom` had to sit a fraction of
+        // a degree off true vertical; a frame can name those views exactly.
+        cameraOrientation = direction.cameraOrientation
         cameraOrbitDistance = cameraDistance
         cameraTarget = SCNVector3(0, 0, 0)
         reassertPointOfView()
         applyCamera()
-        // Interpolation arguments are autoclosures; formatting into locals keeps
-        // the property reads out of them (explicit-self capture rules).
-        let azText = String(format: "%.2f", cameraAzimuth)
-        let elText = String(format: "%.2f", cameraElevation)
-        Self.cameraLog.info("view \(direction.rawValue, privacy: .public): az \(azText, privacy: .public) el \(elText, privacy: .public)")
+        Self.cameraLog.info("view \(direction.rawValue, privacy: .public)")
     }
 
     // MARK: - Measure
