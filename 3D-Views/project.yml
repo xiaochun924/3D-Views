@@ -1,4 +1,7 @@
 # XcodeGen 工程定义：在 3D-Views/ 目录执行 `xcodegen generate` 生成 .xcodeproj
+#
+# 这是工程的真源。CI 每次都会重新生成 .xcodeproj，并用下面的 info.properties
+# 覆盖重写 Info.plist —— 所以改 Info.plist 必须改这里，否则改动会被构建时抹掉。
 name: 3D-Views
 options:
   bundleIdPrefix: com.xiaochun
@@ -18,8 +21,23 @@ targets:
         excludes:
           - Models/STEP/**
           - Models/Mesh/**
+          # 分享扩展是独立 target，它的源码不能混进主 App
+          - 3D-Views-Share/**
+          - 3D-Views.entitlements
+          - 3D-Views-Share.entitlements
     dependencies:
       - package: OCCTSwift
+      - target: 3D-Views-Share
+        embed: true
+    # App Group 是主 App 与分享扩展唯一能互相看见的地方。注意：IPA 以
+    # CODE_SIGNING_ALLOWED=NO 构建，这份 entitlement 不会进包，必须由自签工具
+    # 在签名时补上；否则 containerURL(forSecurityApplicationGroupIdentifier:)
+    # 在真机上返回 nil，交接会静默失败（设置页会直接把这一点显示出来）。
+    entitlements:
+      path: 3D-Views.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ffcd1c12e1a9728e.1
     info:
       path: Info.plist
       properties:
@@ -41,6 +59,13 @@ targets:
         CFBundleDevelopmentRegion: zh_CN
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # 分享扩展把文件放进 App Group 之后，用这个 scheme 尝试把主 App 拉到前台。
+        # 分享扩展没有被赋予「打开宿主 App」的正式能力，所以这只是尽力而为；真正
+        # 保证交接完成的是主 App 每次激活时扫描共享收件箱。
+        CFBundleURLTypes:
+          - CFBundleURLName: com.xiaochun.3DViews
+            CFBundleURLSchemes:
+              - 3dviews
         CFBundleDocumentTypes:
           - CFBundleTypeName: STEP CAD File
             CFBundleTypeRole: Viewer
@@ -94,3 +119,49 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         DEVELOPMENT_TEAM: ""
+
+  # 分享面板应用行的来源。没有这个 target，App 在「共享 → 到 3D Views」里就只是
+  # 一个文档打开目标 —— 而这条路在本项目上从未被观察到真正交付过 URL。
+  # 有了它，文件先落进 App Group 收件箱，主 App 每次激活时取走。
+  3D-Views-Share:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: 3D-Views-Share
+        excludes:
+          - Info.plist
+      - path: Shared
+    entitlements:
+      path: 3D-Views-Share.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ffcd1c12e1a9728e.1
+    info:
+      path: 3D-Views-Share/Info.plist
+      properties:
+        CFBundleDisplayName: 3D Views
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          # 与 ShareViewController.swift 里的 @objc(ShareViewController) 对应；
+          # 用 Swift 的 mangled 名字在这里是找不到类的。
+          NSExtensionPrincipalClass: ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsFileWithMaxCount: 20
+              # 「文件」App 分享文档时给的是 public.url / public.file-url，
+              # 只声明文件类型并不够，这一项才是把它放进应用行的关键。
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 0
+              NSExtensionActivationSupportsMovieWithMaxCount: 0
+              NSExtensionActivationSupportsText: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews.Share
+        PRODUCT_NAME: 3D-Views-Share
+        SWIFT_VERSION: "6.2"
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_APPROACHABLE_CONCURRENCY: YES
+        MARKETING_VERSION: 1.0
+        CURRENT_PROJECT_VERSION: 1
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES

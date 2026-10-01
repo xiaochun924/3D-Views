@@ -44,12 +44,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         } else {
             FileHistory.shared.note("冷启动，launchOptions 无 URL")
         }
-        // A launch caused by 「拷贝到 3D Views」 carries no URL at all: iOS copies the file
-        // into our own sandbox and expects the app to go and find it. Nothing else runs on
-        // such a launch, so the scan belongs here as well as on every return to the
-        // foreground — and this is the one path that works even if the URL is never
-        // delivered to either hook below.
-        FileHistory.shared.importFromSandbox()
+        // A launch caused by 「拷贝到 3D Views」, and one caused by the share extension
+        // waking us through `3dviews://`, both carry no file URL: in each the file is
+        // waiting to be found, not handed over. `scheduleInboxSweep` looks now and again a
+        // few seconds later, because at this instant iOS may not have finished copying the
+        // file into `Documents/Inbox` yet — a single scan here can see an empty folder and
+        // be right about it.
+        FileHistory.shared.scheduleInboxSweep(reason: "冷启动")
         return true
     }
 
@@ -58,8 +59,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         open url: URL,
         options: [UIApplication.OpenURLOptionsKey: Any] = [:]
     ) -> Bool {
-        FileHistory.shared.receiveExternalFile(at: url, source: "AppDelegate")
+        FileHistory.shared.handleIncomingURL(url, source: "AppDelegate")
         return true
+    }
+
+    /// A return to the foreground is the moment the share extension's handover becomes
+    /// visible, and it is the only hook that runs for a launch the app slept through.
+    /// `HomeView` watches `scenePhase` too, but a cold launch can mount the view already
+    /// `.active`, so `onChange` has no change to report; this notification has no such gap.
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
     }
 }
 
@@ -72,7 +81,7 @@ struct ViewsApp: App {
             HomeView()
                 // The SwiftUI-side door.
                 .onOpenURL { url in
-                    FileHistory.shared.receiveExternalFile(at: url, source: "onOpenURL")
+                    FileHistory.shared.handleIncomingURL(url, source: "onOpenURL")
                 }
         }
     }

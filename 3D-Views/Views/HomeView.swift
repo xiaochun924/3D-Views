@@ -98,12 +98,15 @@ struct HomeView: View {
                 history.pendingOpen = nil
             }
             // The other half of the sandbox scan. A file copied into the app's own folder
-            // in Files arrives while the app is already running, so nothing in the launch
-            // sequence would ever notice it — coming back to the foreground is when to
-            // look. Safe to run repeatedly: the scan only imports what it has not seen.
+            // in Files — or left in the shared inbox by the share extension — arrives
+            // while the app may already be running, so nothing in the launch sequence
+            // would ever notice it, and coming back to the foreground is when to look.
+            // `scheduleInboxSweep` rather than a bare scan: this observer alone is not
+            // enough, because a cold launch can mount the view already `.active` and then
+            // there is no change for `onChange` to report at all.
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
-                history.importFromSandbox()
+                history.scheduleInboxSweep(reason: "回到前台")
             }
             .alert(
                 "无法导入",

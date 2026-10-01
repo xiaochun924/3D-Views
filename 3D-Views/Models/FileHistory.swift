@@ -125,6 +125,31 @@ final class FileHistory: ObservableObject {
         let bundleID = Bundle.main.bundleIdentifier ?? "?"
         lines.append("Bundle ID：\(bundleID)")
 
+        // The App Group is what the share extension and the app use to see each other, and
+        // it is the one piece of this that the build cannot verify: the IPA is produced
+        // with CODE_SIGNING_ALLOWED=NO, so the entitlement is absent from the package and
+        // has to be re-applied by whatever signs it for the device. If that did not
+        // happen, the container silently does not exist and the handover fails with no
+        // error anywhere — so the state is reported here rather than left to be inferred.
+        if AppGroup.isAvailable, let container = AppGroup.containerURL {
+            lines.append("App Group：可用")
+            lines.append("  \(AppGroup.identifier)")
+            lines.append("  收件箱待取：\(AppGroup.pendingFileCount()) 个")
+            lines.append("  \(container.path)")
+        } else {
+            lines.append("App Group：不可用（签名未带 \(AppGroup.identifier)）")
+        }
+
+        lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装")")
+
+        if let handoff = AppGroup.lastHandoff {
+            let names = handoff.names.isEmpty ? "无" : handoff.names.joined(separator: ",")
+            let failures = handoff.failures.isEmpty ? "" : "｜失败 \(handoff.failures.count) 个"
+            lines.append("上次分享：\(stampFormatter.string(from: handoff.at)) \(names)\(failures)")
+        } else {
+            lines.append("上次分享：无")
+        }
+
         return lines
     }
 
@@ -233,19 +258,23 @@ final class FileHistory: ObservableObject {
     /// time the app comes forward.
     ///
     /// Returns what it imported, newest scan first, and is safe to call on every launch
-    /// and every return to the foreground: both halves are idempotent by construction.
+    /// and every return to the foreground: every half is idempotent by construction.
     @discardableResult
-    func importFromSandbox() -> [RecentFile] {
+    func importFromSandbox(verbose: Bool = true) -> [RecentFile] {
         let manager = FileManager.default
         let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var imported: [RecentFile] = []
         var fingerprints = sandboxScanFingerprints
         var gainedFingerprint = false
 
-        let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
-        if let names = try? manager.contentsOfDirectory(atPath: inbox.path) {
+        // The App Group inbox first, because it is the only route that asks nothing of
+        // the system: the share extension did the copy itself, and this just picks it up.
+        var sharedCount = -1
+        if let shared = AppGroup.ensureInbox() {
+            let names = (try? manager.contentsOfDirectory(atPath: shared.path)) ?? []
+            sharedCount = names.count
             for name in names.sorted() {
-                let source = inbox.appendingPathComponent(name)
+                let source = shared.appendingPathComponent(name)
                 guard Self.supportedExtension(of: source) != nil else { continue }
                 if let entry = importSandboxCopy(at: source, removeSource: true) {
                     imported.append(entry)
@@ -253,6 +282,17 @@ final class FileHistory: ObservableObject {
             }
         }
 
+        let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
+        let inboxNames = (try? manager.contentsOfDirectory(atPath: inbox.path)) ?? []
+        for name in inboxNames.sorted() {
+            let source = inbox.appendingPathComponent(name)
+            guard Self.supportedExtension(of: source) != nil else { continue }
+            if let entry = importSandboxCopy(at: source, removeSource: true) {
+                imported.append(entry)
+            }
+        }
+
+        var docCandidates = 0
         if let names = try? manager.contentsOfDirectory(atPath: docs.path) {
             for name in names.sorted() {
                 let source = docs.appendingPathComponent(name)
@@ -261,6 +301,7 @@ final class FileHistory: ObservableObject {
                       !isDirectory.boolValue,
                       Self.supportedExtension(of: source) != nil
                 else { continue }
+                docCandidates += 1
 
                 let mark = Self.fingerprint(of: source)
                 guard !fingerprints.contains(mark) else { continue }
@@ -273,12 +314,78 @@ final class FileHistory: ObservableObject {
         }
 
         if gainedFingerprint { sandboxScanFingerprints = fingerprints }
+
+        // Unconditional, and that is the whole point of this line. Six rounds of
+        // configuration guessing were run against a log that only spoke when an import
+        // *succeeded* — so "the scan ran and found nothing", "the scan never ran" and
+        // "the new build was never installed" all looked identical, and whichever one
+        // was assumed drove the next wrong change. One line now tells them apart.
+        if verbose {
+            let sharedText = sharedCount < 0 ? "容器不可用" : "\(sharedCount) 项"
+            note("扫描：共享 \(sharedText)｜Inbox \(inboxNames.count) 项｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
+        }
+
         if !imported.isEmpty {
-            note("沙盒扫描：导入 \(imported.count) 个文件")
             importFailure = nil
             pendingOpen = imported[0]
         }
         return imported
+    }
+
+    /// The sweep currently waiting to run its retries, so a burst of activation
+    /// notifications leaves one pending sweep rather than one per notification.
+    private var sweepTask: Task<Void, Never>?
+
+    /// Looks for a handover now, then again a few times over the next few seconds.
+    ///
+    /// The retries are the part that matters. A launch caused by opening a document runs
+    /// `didFinishLaunching` *before* iOS has finished copying the file into
+    /// `Documents/Inbox`, so a single scan at that moment can legitimately see an empty
+    /// folder — and the `scenePhase` observer in `HomeView` does not reliably cover it,
+    /// because on a cold launch the view can mount already `.active`, leaving `onChange`
+    /// with no change to report. Between them, those two are enough to miss a file that
+    /// arrived perfectly well. It is also what makes the share extension work without
+    /// the app ever being handed a URL.
+    func scheduleInboxSweep(reason: String) {
+        importFromSandbox()
+        sweepTask?.cancel()
+        sweepTask = Task { [weak self] in
+            for delay in [300, 1000, 2500] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                if Task.isCancelled { return }
+                self?.importFromSandbox(verbose: false)
+            }
+        }
+    }
+
+    /// The single entry point for a URL from outside the app, whichever door it used.
+    ///
+    /// The app registers `3dviews://` so the share extension has something to call when
+    /// it tries to pull the app forward. That URL names no file — it means "go and look
+    /// in the shared inbox" — and handing it to `receiveExternalFile` would reject it as
+    /// an unsupported type and raise a false 「无法导入」 alert.
+    func handleIncomingURL(_ url: URL, source: String) {
+        if url.scheme?.lowercased() == AppGroup.wakeUpScheme {
+            note("\(source)：收到本 App 链接")
+            scheduleInboxSweep(reason: source)
+            return
+        }
+        receiveExternalFile(at: url, source: source)
+    }
+
+    /// How many files the share extension has left waiting. Shown in `SettingsView`.
+    func sharedInboxFileCount() -> Int {
+        AppGroup.pendingFileCount()
+    }
+
+    /// Whether the installed bundle actually carries the share extension. Read from the
+    /// built product rather than the source tree: a side-loaded build need not be the one
+    /// in the repository, and a missing `.appex` changes what the failure means.
+    static var shareExtensionInstalled: Bool {
+        guard let plugins = Bundle.main.builtInPlugInsURL,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: plugins.path)
+        else { return false }
+        return names.contains { $0.hasSuffix(".appex") }
     }
 
     /// Imports one file found inside our own sandbox. Never throws: a scan runs over
