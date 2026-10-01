@@ -13,6 +13,10 @@ struct ViewerView: View {
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showSettings = false
     @State private var copiedToPasteboard = false
+    /// Whether a radius reading is reported as its diameter. Sticky on purpose: a
+    /// shop that thinks in diameters keeps thinking in diameters, measurement after
+    /// measurement, and re-flipping it every time would be the annoying part.
+    @State private var radiusShowsDiameter = false
 
     var body: some View {
         ZStack {
@@ -172,11 +176,12 @@ struct ViewerView: View {
 
     private var resultPanel: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 6) {
                 Image(systemName: viewModel.measureType.icon)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.blue)
                 Text(viewModel.measureType.label)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 // Puts the reading on the clipboard — the most common thing to do
                 // with a measured number is paste it into a drawing note or a chat.
@@ -191,107 +196,142 @@ struct ViewerView: View {
                         }
                     } label: {
                         Image(systemName: copiedToPasteboard ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 15, weight: .medium))
                             .foregroundColor(copiedToPasteboard ? .green : .blue)
                     }
                     .accessibilityLabel("复制测量结果")
                 }
                 Button { viewModel.clearMeasure() } label: {
                     Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
 
             Divider()
 
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 // What the number belongs to. A distance between two faces is a
                 // different fact from the same number between two edges, and the
                 // chips carry the exact entities — color-matched to their markers.
                 if !viewModel.picks.isEmpty {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         ForEach(Array(viewModel.picks.enumerated()), id: \.element.id) { entry in
                             HStack(spacing: 4) {
                                 Circle()
                                     .fill(Color(uiColor: entry.element.entity.markerColor))
-                                    .frame(width: 7, height: 7)
+                                    .frame(width: 6, height: 6)
                                 Text(entry.element.entity.description)
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
                             .background(Color(.tertiarySystemFill), in: Capsule())
                         }
                     }
                 }
                 Text(mainResultValue)
-                    .font(.system(size: 26, weight: .bold, design: .monospaced))
+                    .font(.system(size: 22, weight: .bold, design: .monospaced))
                     .contentTransition(.numericText())
                     .animation(.snappy(duration: 0.25), value: mainResultValue)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
+
+                // A radius and its diameter are the same reading stated two ways, so
+                // the panel carries one number and a switch rather than two rows.
+                if viewModel.measureType == .radius, viewModel.isComplete {
+                    radiusToggle
+                        .padding(.top, 1)
+                }
             }
-            .padding(.vertical, 12)
+            .padding(.vertical, 7)
 
             if (viewModel.measureType == .distance || viewModel.measureType == .linear),
                let delta = deltaVector {
                 Divider()
                 HStack(spacing: 0) {
                     deltaColumn(label: "X", value: delta.x, color: .red)
-                    Divider().frame(height: 36)
+                    Divider().frame(height: 28)
                     deltaColumn(label: "Y", value: delta.y, color: .green)
-                    Divider().frame(height: 36)
+                    Divider().frame(height: 28)
                     deltaColumn(label: "Z", value: delta.z, color: .blue)
                 }
-                .padding(.vertical, 8)
-            }
-
-            if viewModel.measureType == .radius, let r = viewModel.radiusResult {
-                Divider()
-                HStack {
-                    Text("直径").font(.system(size: 12)).foregroundColor(.secondary)
-                    Spacer()
-                    Text(viewModel.displayUnit.format(r * 2))
-                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             }
 
             if viewModel.measureType == .boundingBox, let e = viewModel.boundingBoxExtents {
                 Divider()
-                VStack(spacing: 6) {
-                    extentRow(label: "长 X", value: e.x)
-                    extentRow(label: "宽 Y", value: e.y)
-                    extentRow(label: "高 Z", value: e.z)
+                VStack(spacing: 4) {
+                    extentRow(icon: "arrow.left.and.right", label: "长 X", value: e.x)
+                    extentRow(icon: "arrow.up.and.down", label: "宽 Y", value: e.y)
+                    extentRow(icon: "cube", label: "高 Z", value: e.z)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
 
             if let message = viewModel.measureMessage {
                 Divider()
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
+                        .font(.system(size: 10))
                     Text(message)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .multilineTextAlignment(.leading)
                     Spacer(minLength: 0)
                 }
                 .foregroundColor(.orange)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
         }
-        .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         // Wide tablets get a centered card, not a reading stretched across the screen.
-        .frame(maxWidth: 440)
-        .padding(.horizontal, 24)
+        .frame(maxWidth: 340)
+        .padding(.horizontal, 16)
+    }
+
+    /// 半径 ⇄ 直径: one reading, two ways of stating it.
+    ///
+    /// A two-segment capsule rather than a `Picker`, because this sits inside the
+    /// reading card and a full-height segmented control would be the tallest thing
+    /// in a panel that was just shrunk.
+    private var radiusToggle: some View {
+        HStack(spacing: 2) {
+            radiusToggleSegment(icon: "r.circle", label: "半径", diameter: false)
+            radiusToggleSegment(icon: "arrow.left.and.right", label: "直径", diameter: true)
+        }
+        .padding(2)
+        .background(Color(.tertiarySystemFill), in: Capsule())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("半径或直径显示")
+    }
+
+    private func radiusToggleSegment(icon: String, label: String, diameter: Bool) -> some View {
+        let selected = radiusShowsDiameter == diameter
+        return Button {
+            withAnimation(.snappy(duration: 0.2)) { radiusShowsDiameter = diameter }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundColor(selected ? .primary : .secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(selected ? Color(.systemBackground) : Color.clear, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     /// The vector between the two endpoints of the measurement.
@@ -310,9 +350,11 @@ struct ViewerView: View {
     }
 
     /// The clipboard form: the labeled reading plus whatever breakdown the panel
-    /// shows underneath, so a pasted value carries its meaning with it.
+    /// shows underneath, so a pasted value carries its meaning with it. A radius
+    /// carries both statements of itself — the one on screen and its complement —
+    /// because a pasted note is often read by someone who thinks in the other one.
     private var resultSummary: String {
-        var lines = ["\(viewModel.measureType.label)：\(mainResultValue)"]
+        var lines = ["\(mainResultLabel)：\(mainResultValue)"]
         if (viewModel.measureType == .distance || viewModel.measureType == .linear),
            let delta = deltaVector {
             lines.append("ΔX \(viewModel.displayUnit.format(delta.x))")
@@ -320,6 +362,7 @@ struct ViewerView: View {
             lines.append("ΔZ \(viewModel.displayUnit.format(delta.z))")
         }
         if viewModel.measureType == .radius, let r = viewModel.radiusResult {
+            lines.append("半径：\(viewModel.displayUnit.format(r))")
             lines.append("直径：\(viewModel.displayUnit.format(r * 2))")
         }
         if viewModel.measureType == .boundingBox, let e = viewModel.boundingBoxExtents {
@@ -334,7 +377,7 @@ struct ViewerView: View {
         switch viewModel.measureType {
         case .distance, .linear: return "距离"
         case .angle: return "角度"
-        case .radius: return "半径"
+        case .radius: return radiusShowsDiameter ? "直径" : "半径"
         case .area: return "面积"
         case .volume: return "体积"
         case .boundingBox: return "包围盒尺寸"
@@ -348,7 +391,11 @@ struct ViewerView: View {
         case .angle:
             if let a = viewModel.angleResult { return String(format: "%.2f°", a) }
         case .radius:
-            if let r = viewModel.radiusResult { return viewModel.displayUnit.format(r) }
+            // One number, stated as radius or as diameter — the toggle above decides
+            // which, and both come from the same kernel reading.
+            if let r = viewModel.radiusResult {
+                return viewModel.displayUnit.format(radiusShowsDiameter ? r * 2 : r)
+            }
         case .area:
             if let a = viewModel.areaResult { return viewModel.displayUnit.formatArea(a) }
         case .volume:
@@ -365,23 +412,27 @@ struct ViewerView: View {
     }
 
     private func deltaColumn(label: String, value: Float, color: Color) -> some View {
-        VStack(spacing: 2) {
-            Text(label).font(.system(size: 12, weight: .bold)).foregroundColor(color)
+        VStack(spacing: 1) {
+            Text(label).font(.system(size: 11, weight: .bold)).foregroundColor(color)
             Text(viewModel.displayUnit.format(value))
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
         }
         .frame(maxWidth: .infinity)
     }
 
-    /// One axis of the bounding box: label on the left, extent on the right.
-    private func extentRow(label: String, value: Float) -> some View {
-        HStack {
+    /// One axis of the bounding box: icon, axis label, extent.
+    private func extentRow(icon: String, label: String, value: Float) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.blue)
+                .frame(width: 16)
             Text(label)
-                .font(.system(size: 12))
+                .font(.system(size: 11))
                 .foregroundColor(.secondary)
             Spacer()
             Text(viewModel.displayUnit.format(value))
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
         }
     }
 
