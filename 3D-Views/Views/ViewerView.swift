@@ -489,10 +489,12 @@ struct ViewerView: View {
     /// picks in progress — the scene graph is rebuilt — but a finished reading
     /// survives either way.
     ///
-    /// The display menu holds the outermost slot and the unit menu sits inward of it,
-    /// which is the other way round from how the orbit toolbar reads. Display mode is
-    /// the one that gets touched mid-measurement, so it takes the edge the thumb finds
-    /// without looking; the unit is set once and then left alone.
+    /// The unit menu used to sit beside it and is gone. It was the only place the unit
+    /// could be changed from the viewer, but it is a setting, not a control: it is set
+    /// once and then left alone, while this row is the scarcest space in the app — it
+    /// has to hold eight measurement types beside a scrolling list. 设置 already
+    /// carries 默认单位 and the model reads that same `defaultUnit` key at init, so
+    /// removing this costs no capability, only a detour through the settings sheet.
     private var measureToolbar: some View {
         HStack(spacing: 0) {
             toolButton(icon: viewModel.picks.isEmpty ? "xmark" : "arrow.uturn.backward.circle",
@@ -510,11 +512,7 @@ struct ViewerView: View {
 
             toolRowDivider
 
-            unitMenu
-
-            toolRowDivider
-
-            displayModeMenu()
+            displayModeMenu(compact: true)
         }
         .padding(.vertical, 5)
         .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -570,25 +568,6 @@ struct ViewerView: View {
         .accessibilityLabel(label)
     }
 
-    private var unitMenu: some View {
-        Menu {
-            ForEach(DisplayUnit.allCases, id: \.self) { unit in
-                Button(unit.rawValue) { viewModel.setUnit(unit) }
-            }
-        } label: {
-            VStack(spacing: 3) {
-                Image(systemName: "number")
-                    .font(.system(size: 17, weight: .medium))
-                Text(viewModel.displayUnit.rawValue)
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .foregroundColor(.primary)
-            .frame(width: 54, height: 44)
-            .contentShape(Rectangle())
-        }
-        .accessibilityLabel("单位")
-    }
-
     /// The measurement types as displayed groups: distance questions, shape
     /// questions answered from one or two picked entities, and whole-model
     /// properties that need no pick at all.
@@ -629,7 +608,13 @@ struct ViewerView: View {
     /// it made those two picks impossible in the one situation that calls for them.
     /// The tradeoff is unchanged either way — switching display mode mid-measurement
     /// drops the picks in progress, while a finished reading survives the switch.
-    private func displayModeMenu() -> some View {
+    ///
+    /// `compact` sizes the label for the measure toolbar, whose controls are a fixed
+    /// 54×44 strip beside a scrolling type list. The orbit toolbar instead shares its
+    /// width equally between whatever buttons it happens to be showing, so the label
+    /// there stretches. Sharing one build put that stretch into the measure row, where
+    /// it had no row to share with and ate the space the type list needed.
+    private func displayModeMenu(compact: Bool = false) -> some View {
         Menu {
             ForEach(DisplayMode.allCases) { mode in
                 Button {
@@ -639,13 +624,18 @@ struct ViewerView: View {
                 }
             }
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: viewModel.displayMode.icon).font(.system(size: 20, weight: .medium))
-                Text("显示").font(.system(size: 11, weight: .medium))
+            VStack(spacing: compact ? 3 : 4) {
+                Image(systemName: viewModel.displayMode.icon)
+                    .font(.system(size: compact ? 17 : 20, weight: .medium))
+                Text("显示")
+                    .font(.system(size: compact ? 10 : 11, weight: .medium))
             }
             .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity)
+            .frame(width: compact ? 54 : nil, height: compact ? 44 : nil)
+            .frame(maxWidth: compact ? nil : .infinity)
+            .contentShape(Rectangle())
         }
+        .accessibilityLabel("显示模式")
     }
 
     /// Orbit-side control over the finished measurements: hide them all for a clean
