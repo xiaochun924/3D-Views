@@ -1273,39 +1273,62 @@ final class ViewerViewModel: ObservableObject {
         cameraNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(cameraNode)
 
-        // A key, a fill and a little ambient on top of the environment above.
+        // Six directional lights, one per cube face, nailed to the world.
         //
-        // The positions set here are only the opening frame's; `applyCamera` re-aims both
-        // directional lights relative to the camera on every move, which is the same thing
-        // the reference viewer's `_followCamera` lights do. A world-fixed rig is the other
-        // half of why an orbit used to lose the model: swing round to the unlit side and
-        // the only light left was ambient, so the part went flat exactly when the user was
-        // looking hardest. Camera-relative lights mean every view arrives lit from the
-        // upper left of the screen, whatever direction that is in the model's frame.
-        let keyLight = SCNLight()
-        keyLight.type = .directional
-        keyLight.intensity = 950
-        let keyNode = SCNNode()
-        keyNode.name = "keyLight"
-        keyNode.light = keyLight
-        keyNode.position = SCNVector3(-cameraDistance * 0.45, cameraDistance * 0.62, cameraDistance * 0.64)
-        keyNode.look(at: SCNVector3(0, 0, 0))
-        scene.rootNode.addChildNode(keyNode)
+        // Nailed down, because the lights belong to the room and the part turns under
+        // them: swing the camera round and the shading stays where it is on the model
+        // instead of sliding along with the view. Both earlier rigs moved. The first was
+        // fixed but had a single key, so orbiting to the far side left nothing but ambient
+        // and the part went flat; the second followed the camera, which kept every view lit
+        // but carried the highlight around with the very rotation the user was trying to
+        // judge.
+        //
+        // Six of them, because that is what keeps the far side lit without the lights
+        // having to move: any unit normal is at least 1/√3 aligned with one of the six
+        // axes, so whatever direction a facet ends up facing it keeps better than half the
+        // light of its best-facing neighbour. The front is the strongest — a little
+        // brighter seen head-on — and the other five fill in behind, above, below and to
+        // either side, so there is no angle left to swing round to that has no light.
+        //
+        // The basis is written out rather than left to `look(at:)`: the top and bottom
+        // lights sit directly above and below the target, and aiming a node at a point it
+        // is already exactly in line with is the one case that heuristic has no answer for.
+        let rig: [(name: String, toward: SIMD3<Float>, intensity: CGFloat, tint: CGFloat)] = [
+            ("keyLight",    SIMD3<Float>(0, 0, 1),  700, 1.00),
+            ("backLight",   SIMD3<Float>(0, 0, -1), 420, 0.88),
+            ("leftLight",   SIMD3<Float>(-1, 0, 0), 420, 0.88),
+            ("rightLight",  SIMD3<Float>(1, 0, 0),  420, 0.88),
+            ("topLight",    SIMD3<Float>(0, 1, 0),  520, 0.94),
+            ("bottomLight", SIMD3<Float>(0, -1, 0), 280, 0.82)
+        ]
+        for face in rig {
+            let light = SCNLight()
+            light.type = .directional
+            light.intensity = face.intensity
+            light.color = UIColor(white: face.tint, alpha: 1.0)
 
-        let fillLight = SCNLight()
-        fillLight.type = .directional
-        fillLight.intensity = 380
-        fillLight.color = UIColor(white: 0.86, alpha: 1.0)
-        let fillNode = SCNNode()
-        fillNode.name = "fillLight"
-        fillNode.light = fillLight
-        fillNode.position = SCNVector3(cameraDistance * 0.60, cameraDistance * 0.10, cameraDistance * 0.55)
-        fillNode.look(at: SCNVector3(0, 0, 0))
-        scene.rootNode.addChildNode(fillNode)
+            // A node's +Z is the way it faces, so its -Z — the way a directional light
+            // shines — points back at the middle of the model.
+            let helper = abs(face.toward.y) > 0.9
+                ? SIMD3<Float>(0, 0, 1)
+                : SIMD3<Float>(0, 1, 0)
+            let side = simd_normalize(simd_cross(helper, face.toward))
+            let rise = simd_cross(face.toward, side)
+
+            let node = SCNNode()
+            node.name = face.name
+            node.light = light
+            node.simdTransform = simd_float4x4(
+                SIMD4<Float>(side, 0),
+                SIMD4<Float>(rise, 0),
+                SIMD4<Float>(face.toward, 0),
+                SIMD4<Float>(face.toward * cameraDistance, 1))
+            scene.rootNode.addChildNode(node)
+        }
 
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 220
+        ambient.intensity = 180
         ambient.color = UIColor(white: 0.80, alpha: 1.0)
         let ambientNode = SCNNode()
         ambientNode.name = "ambientLight"
@@ -1463,63 +1486,6 @@ final class ViewerViewModel: ObservableObject {
             camera.zFar = Double(d + max(modelDim, 1) * 8)
         }
 
-        updateLights(relativeTo: camNode)
-    }
-
-    /// Re-aims the lights as the camera moves.
-    ///
-    /// The key is a headlight, parked on the axis the camera looks down and aimed the same
-    /// way the camera aims, so the face looking back at the viewer is the lit one at every
-    /// angle.
-    ///
-    /// Being *on* the axis is what makes it hold still. A directional light cares only
-    /// about direction, and rolling the camera about the view axis does not change the view
-    /// axis — so a headlight is blind to roll. Any tilt at all breaks that: the tilt is
-    /// carried round the screen as the part rolls, and the highlight visibly orbits the
-    /// model. That is what the earlier builds did, first from the upper left and then from
-    /// nearly straight on; both lights moved, and the lighting read as a part of the model
-    /// rather than as part of the room.
-    ///
-    /// Placed as a whole transform rather than with `look(at:)` because a headlight sits
-    /// on the line through the target: aiming it at the target asks a node to look at a
-    /// point it is already exactly in line with, which is what the straight-down and
-    /// straight-up views are now that the presets name them exactly — precisely the case
-    /// `look(at:)`'s up-vector heuristic has no answer for.
-    ///
-    /// The fill does need a tilt, or a facet square to the viewer reads as flat, and that
-    /// tilt needs a frame that does not roll. The camera's own frame cannot supply one, so
-    /// the offset is squared to the world instead: `side` is always horizontal, and `above`
-    /// rises out of it. The one place that construction fails is looking straight up or
-    /// straight down, where the camera's axes land exactly on the world's and `side`
-    /// collapses to nothing — hence the stand-in reference.
-    private func updateLights(relativeTo camNode: SCNNode) {
-        guard let scene else { return }
-
-        let distance = cameraOrbitDistance
-        let orientation = camNode.simdWorldTransform
-        let origin = camNode.simdWorldPosition
-        let backward = SIMD3<Float>(orientation.columns.2.x,
-                                    orientation.columns.2.y,
-                                    orientation.columns.2.z)
-
-        if let key = scene.rootNode.childNode(withName: "keyLight", recursively: true) {
-            let parked = origin + backward * distance
-            key.simdTransform = simd_float4x4(orientation.columns.0,
-                                              orientation.columns.1,
-                                              orientation.columns.2,
-                                              SIMD4<Float>(parked, 1))
-        }
-
-        guard let fill = scene.rootNode.childNode(withName: "fillLight", recursively: true)
-        else { return }
-        let reference = abs(backward.y) > 0.999
-            ? SIMD3<Float>(0, 0, 1)
-            : SIMD3<Float>(0, 1, 0)
-        let side = simd_normalize(simd_cross(reference, backward))
-        let above = simd_cross(backward, side)
-        let offset = side * 0.38 + above * 0.08 + backward * 0.85
-        fill.simdPosition = origin + offset * distance
-        fill.look(at: cameraTarget)
     }
 
     /// Distance at which the whole part fits the viewport, with a margin.
