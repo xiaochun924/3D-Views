@@ -71,7 +71,7 @@ struct ViewerView: View {
             // dedicated selection panel is gone. One capsule, nothing else floating.
             if viewModel.mode == .measure && !viewModel.isComplete {
                 VStack {
-                    Spacer().frame(height: 60)
+                    Spacer().frame(height: 28)
                     HStack {
                         Spacer()
                         VStack(spacing: 4) {
@@ -94,7 +94,7 @@ struct ViewerView: View {
 
             if viewModel.isComplete {
                 VStack {
-                    Spacer().frame(height: 56)
+                    Spacer().frame(height: 28)
                     HStack {
                         Spacer()
                         resultPanel
@@ -287,7 +287,7 @@ struct ViewerView: View {
         }
         .liquidGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         // Wide tablets get a centered card, not a reading stretched across the screen.
-        .frame(maxWidth: 300)
+        .frame(maxWidth: 260)
         .padding(.horizontal, 12)
     }
 
