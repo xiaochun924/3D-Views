@@ -9,27 +9,50 @@ import UIKit
 /// Takes the document handover on the lifecycle that SwiftUI's `onOpenURL` cannot reach.
 ///
 /// A URL opened from outside the app arrives at one of two doors, and which door is in
-/// use is not the app's choice. `onOpenURL` covers the SwiftUI scene lifecycle. But an
-/// app whose `Info.plist` carries no `UIApplicationSceneManifest` — and this one
-/// deliberately does not, see `c5affb9` — is run by UIKit on the legacy, pre-iOS-13
-/// lifecycle instead, where document URLs are delivered to
-/// `application(_:open:options:)` and never reach a scene at all.
+/// use is not the app's choice. `onOpenURL` covers the SwiftUI scene lifecycle.
+/// `application(_:open:options:)` covers an app that UIKit is running on the legacy,
+/// pre-iOS-13 lifecycle — which is what happens when `Info.plist` carries no usable
+/// `UIApplicationSceneManifest`.
 ///
-/// That mismatch is exactly the report that sent us here: the share sheet hands the file
-/// over, the app comes forward, and nothing else happens — no import, and not even the
-/// rejection message, because the URL was dropped a layer below the SwiftUI handler.
+/// `c5affb9` removed that manifest in the belief that it blocked `onOpenURL`. What it
+/// removed was an empty `<dict/>`, which is not a well-formed manifest, so that
+/// diagnosis is at least as likely to have been about the malformation as about having
+/// one at all. A well-formed manifest has since been put back: it is what a SwiftUI app
+/// is supposed to ship, and its absence is the best remaining explanation for
+/// `onOpenURL` never firing here.
 ///
-/// Both doors are left wired. Whichever the system uses is enough on its own, and
-/// `FileHistory.receiveExternalFile(at:)` recognises a second sighting of the same URL
-/// so a lifecycle that knocks on both only imports once.
+/// The delegate below stays wired regardless. Whichever door the system picks is enough
+/// on its own, and `FileHistory.receiveExternalFile(at:source:)` recognises a second
+/// sighting of the same URL, so a lifecycle that knocks on both still imports once.
+///
+/// Both doors, and the cold-launch path, leave a line in `FileHistory.handoverLog`
+/// naming which one was used. The report that sent us here — "the app comes forward and
+/// nothing happens" — is what a dropped URL, an uninstalled hook, and a rejected file
+/// all look like from the outside; the log is what tells them apart.
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    /// A cold launch caused by opening a document can carry the URL here instead of
+    /// through either door below. Recording the no-URL case too is deliberate: it is
+    /// what separates "the share sheet started the app and the URL went missing" from
+    /// "the app was already running and the URL went missing".
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        if let url = launchOptions?[.url] as? URL {
+            FileHistory.shared.note("冷启动，launchOptions 带 URL：\(url.lastPathComponent)")
+        } else {
+            FileHistory.shared.note("冷启动，launchOptions 无 URL")
+        }
+        return true
+    }
+
     func application(
         _ application: UIApplication,
         open url: URL,
         options: [UIApplication.OpenURLOptionsKey: Any] = [:]
     ) -> Bool {
-        FileHistory.shared.receiveExternalFile(at: url)
+        FileHistory.shared.receiveExternalFile(at: url, source: "AppDelegate")
         return true
     }
 }
@@ -41,11 +64,9 @@ struct ViewsApp: App {
     var body: some Scene {
         WindowGroup {
             HomeView()
-                // The SwiftUI-side door. Kept even though the delegate above is the one
-                // that currently does the work: if a future change restores a scene
-                // manifest, this becomes the live path and the delegate goes quiet.
+                // The SwiftUI-side door.
                 .onOpenURL { url in
-                    FileHistory.shared.receiveExternalFile(at: url)
+                    FileHistory.shared.receiveExternalFile(at: url, source: "onOpenURL")
                 }
         }
     }

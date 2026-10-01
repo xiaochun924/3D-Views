@@ -26,6 +26,8 @@ targets:
         UILaunchScreen:
           UIColorName: ""
           UIImageRespectsSafeAreaInsets: false
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

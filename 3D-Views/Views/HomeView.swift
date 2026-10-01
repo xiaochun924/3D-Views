@@ -55,6 +55,7 @@ struct HomeView: View {
                         }
                     }
                 }
+                diagnosticSection
             }
             .navigationTitle("3D 看图")
             .toolbar {
@@ -105,6 +106,40 @@ struct HomeView: View {
                 // point of keeping the failure around.
                 Text(reason)
             }
+        }
+    }
+
+    /// Temporary. Shows what the *installed* build declares and what the system has
+    /// actually told the app, because the report being chased — "the app comes forward
+    /// and nothing else happens" — looks the same whether the URL was never delivered,
+    /// was delivered to a hook that was never installed, or arrived and was rejected.
+    /// Two rounds were spent guessing between those; this is what replaces guessing.
+    /// Delete this section, and `FileHistory.handoverLog` / `bundleFacts()`, once the
+    /// external handover is confirmed working.
+    @ViewBuilder
+    private var diagnosticSection: some View {
+        Section {
+            if history.handoverLog.isEmpty {
+                Text("尚无记录")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(history.handoverLog, id: \.self) { line in
+                    Text(line)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(FileHistory.bundleFacts(), id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        } header: {
+            Text("导入诊断")
+        } footer: {
+            Text("上半部分是系统告知本 App 的记录，下半部分是当前安装包自己的声明。用于定位外部分享问题，定位完即删。")
+                .font(.system(size: 10))
         }
     }
 

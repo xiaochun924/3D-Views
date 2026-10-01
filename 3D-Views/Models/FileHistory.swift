@@ -42,9 +42,82 @@ final class FileHistory: ObservableObject {
     /// importing the same document twice.
     private var lastHandover: (path: String, at: Date)?
 
+    /// What the system has actually told this app about documents opened from outside
+    /// it, newest first, persisted so it survives the relaunch it may be reporting on.
+    ///
+    /// This exists because the failure being chased — the app comes forward and nothing
+    /// else happens — reads identically whether the URL was never delivered, was
+    /// delivered to a hook that was never installed, or arrived and was rejected. Two
+    /// rounds were spent guessing between those; this is the evidence instead. The
+    /// 诊断 section in `HomeView` shows it. Temporary: remove with that section once
+    /// the handover is confirmed working.
+    @Published private(set) var handoverLog: [String] = []
+
+    private let handoverLogKey = "HandoverLog"
+
     private init() {
         load()
+        handoverLog = UserDefaults.standard.stringArray(forKey: handoverLogKey) ?? []
     }
+
+    /// Records one line of handover evidence. Kept to a short window so the 诊断
+    /// section stays readable and the defaults entry stays small.
+    func note(_ line: String) {
+        let stamp = Self.stampFormatter.string(from: Date())
+        handoverLog.insert("\(stamp) \(line)", at: 0)
+        if handoverLog.count > 12 { handoverLog = Array(handoverLog.prefix(12)) }
+        UserDefaults.standard.set(handoverLog, forKey: handoverLogKey)
+    }
+
+    /// What the **installed** bundle declares, read back from `Bundle.main` rather than
+    /// from the repository. That distinction is the whole point: `Info.plist` is merged
+    /// into the built product from `project.yml` at build time, and a side-loaded build
+    /// need not be the one in the source tree. If the declarations never made it into
+    /// the binary the user is running, no amount of care in the source will show up on
+    /// the device. Temporary, alongside `handoverLog`.
+    static func bundleFacts() -> [String] {
+        var lines: [String] = []
+        let info = Bundle.main.infoDictionary ?? [:]
+
+        if let scene = info["UIApplicationSceneManifest"] as? [String: Any] {
+            let multiple = scene["UIApplicationSupportsMultipleScenes"] as? Bool
+            let text = multiple.map { $0 ? "是" : "否" } ?? "未声明"
+            lines.append("场景清单：有（多场景=\(text)）")
+        } else {
+            lines.append("场景清单：无")
+        }
+
+        if let types = info["CFBundleDocumentTypes"] as? [[String: Any]], !types.isEmpty {
+            lines.append("文档类型：\(types.count) 项")
+            for type in types {
+                let ids = (type["LSItemContentTypes"] as? [String])?.joined(separator: ",") ?? "-"
+                let exts = (type["CFBundleTypeExtensions"] as? [String])?.joined(separator: ",") ?? "-"
+                lines.append("  \(exts) → \(ids)")
+            }
+        } else {
+            lines.append("文档类型：无")
+        }
+
+        let exported = (info["UTExportedTypeDeclarations"] as? [[String: Any]] ?? [])
+            .compactMap { $0["UTTypeIdentifier"] as? String }
+        let imported = (info["UTImportedTypeDeclarations"] as? [[String: Any]] ?? [])
+            .compactMap { $0["UTTypeIdentifier"] as? String }
+        let exportedText = exported.isEmpty ? "无" : exported.joined(separator: ",")
+        let importedText = imported.isEmpty ? "无" : imported.joined(separator: ",")
+        lines.append("导出 UTI：\(exportedText)")
+        lines.append("导入 UTI：\(importedText)")
+
+        let bundleID = Bundle.main.bundleIdentifier ?? "?"
+        lines.append("Bundle ID：\(bundleID)")
+
+        return lines
+    }
+
+    private static let stampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm:ss"
+        return formatter
+    }()
 
     func addFile(sourceURL: URL) throws -> RecentFile {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -82,7 +155,12 @@ final class FileHistory: ObservableObject {
     /// Only the formats the viewer understands are accepted — the app is registered
     /// for STEP/STL, but the share sheet can still offer it for neighbouring types.
     @discardableResult
-    func receiveExternalFile(at url: URL) -> RecentFile? {
+    func receiveExternalFile(at url: URL, source: String) -> RecentFile? {
+        // Logged before the dedup check below, so a lifecycle that knocks on both doors
+        // still leaves evidence of both knocks — that is the reading that says which
+        // door the system is actually using, and its absence says the URL never arrived.
+        note("\(source) 收到：\(url.lastPathComponent)")
+
         // Both delivery hooks lead here, and the system may use either or both
         // depending on the app's lifecycle mode. The first sighting wins; a repeat of
         // the same file within a couple of seconds is the second hook carrying the
