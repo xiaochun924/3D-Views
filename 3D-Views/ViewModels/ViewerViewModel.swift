@@ -1571,7 +1571,9 @@ final class ViewerViewModel: ObservableObject {
     /// rather than as a turning object.
     private static let autoRotationRadiansPerSecond: Double = 2 * .pi / 15
 
-    private var autoRotationTimer: Timer?
+    /// Explicitly `Foundation.Timer`: the OCCT kernel exports a public type of its own
+    /// called `Timer`, and this file imports both modules, so the bare name is ambiguous.
+    private var autoRotationTimer: Foundation.Timer?
     private var lastAutoRotationTick: TimeInterval = 0
 
     /// Turns the part continuously about the origin, for hands-free viewing.
@@ -1598,7 +1600,7 @@ final class ViewerViewModel: ObservableObject {
         guard autoRotationTimer == nil else { return }
 
         lastAutoRotationTick = ProcessInfo.processInfo.systemUptime
-        let timer = Timer(timeInterval: Self.autoRotationInterval, repeats: true) { [weak self] _ in
+        let timer = Foundation.Timer(timeInterval: Self.autoRotationInterval, repeats: true) { [weak self] _ in
             // The run loop delivers this on the main thread; `assumeIsolated` is what
             // tells the compiler that, since the block itself is not isolated.
             MainActor.assumeIsolated {
