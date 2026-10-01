@@ -83,6 +83,35 @@ struct Pick: Identifiable {
     let entity: PickEntity
 }
 
+/// Which of the three distances an entity-to-entity measurement reports.
+///
+/// The kernel only ever answers the *minimum* question. `ShapeDistance` wraps
+/// `BRepExtrema_DistShapeShape`, whose `Value` the OCCT docs define as the minimum
+/// distance, and every other way into OCCT's extrema family that OCCTSwift exposes
+/// (`faceFaceExtrema`, `edgeEdgeExtrema`, `allDistanceSolutions`) enumerates minima as
+/// well — there is no farthest-point query anywhere in the library. So only ``min`` is
+/// exact; the other two are assembled in the view model, and both are approximations.
+enum DistanceMode: String, CaseIterable, Identifiable {
+    /// Distance between the two entities' own axis centres — a circle's centre, or a
+    /// point on a cylinder's axis.
+    case center
+    /// The kernel's closest approach. Exact.
+    case min
+    /// The farthest pair of points on the two entities, searched over sampled point
+    /// sets. An approximation, and the only one of the three the kernel cannot confirm.
+    case max
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .center: return "中心距"
+        case .min: return "最小距离"
+        case .max: return "最大距离"
+        }
+    }
+}
+
 /// One finished measurement, kept on screen after the next one begins.
 ///
 /// The single-measurement model forced a costly either/or: start a new distance and
@@ -274,6 +303,20 @@ final class ViewerViewModel: ObservableObject {
 
     /// Non-fatal explanation shown under the result, e.g. why an angle can't be formed.
     @Published var measureMessage: String?
+
+    /// Which of the three distances an entity-to-entity measurement reports.
+    ///
+    /// Unlike the radius/diameter switch in the result panel, this is not two ways of
+    /// writing down one reading: centre distance and maximum distance are different
+    /// computations from the kernel's closest approach, so this belongs to the model
+    /// rather than the view, and changing it re-derives the result.
+    @Published var distanceMode: DistanceMode = .min {
+        didSet {
+            guard oldValue != distanceMode else { return }
+            computeResults()
+            updateMeasureVisuals(in: renderView)
+        }
+    }
 
     @Published var distanceResult: Float?
     @Published var angleResult: Float?
@@ -1998,20 +2041,62 @@ final class ViewerViewModel: ObservableObject {
         case .distance, .linear:
             guard entities.count == 2,
                   let first = subShape(for: entities[0]),
-                  let second = subShape(for: entities[1]),
-                  let measure = OCCTSwift.ShapeDistance(shape1: first, shape2: second),
-                  measure.isDone else { return false }
+                  let second = subShape(for: entities[1]) else { return false }
 
-            distanceResult = Float(measure.value)
+            switch distanceMode {
+            case .min:
+                guard let measure = OCCTSwift.ShapeDistance(shape1: first, shape2: second),
+                      measure.isDone else { return false }
 
-            // The kernel's own witness points, not the tapped ones: for two faces or
-            // two edges the minimum segment generally sits nowhere near where the
-            // finger landed, so the annotation has to join these to make sense.
-            if measure.solutionCount > 0 {
-                closestPointA = world(measure.pointOnShape1(at: 0))
-                closestPointB = world(measure.pointOnShape2(at: 0))
+                distanceResult = Float(measure.value)
+
+                // The kernel's own witness points, not the tapped ones: for two faces
+                // or two edges the minimum segment generally sits nowhere near where
+                // the finger landed, so the annotation has to join these to make sense.
+                if measure.solutionCount > 0 {
+                    closestPointA = world(measure.pointOnShape1(at: 0))
+                    closestPointB = world(measure.pointOnShape2(at: 0))
+                }
+                return true
+
+            case .center:
+                // The centres are both the endpoints and the reading. This mode says
+                // nothing about how close the two entities approach each other, which
+                // is exactly why it cannot be a view-level restatement of the number
+                // the kernel returned.
+                guard let a = center(of: picks[0], shape: first),
+                      let b = center(of: picks[1], shape: second) else {
+                    measureMessage = "请点选圆边或回转面来量取中心距"
+                    return true
+                }
+                closestPointA = a
+                closestPointB = b
+                distanceResult = Self.distance(a, b)
+                return true
+
+            case .max:
+                let pointsA = extremePoints(of: picks[0], shape: first)
+                let pointsB = extremePoints(of: picks[1], shape: second)
+                guard !pointsA.isEmpty, !pointsB.isEmpty else { return false }
+
+                // Searched here because the kernel will not: see `DistanceMode`. The
+                // witness points come out of the same search, so the annotation joins
+                // the two points the number was actually taken between.
+                var best: (SIMD3<Double>, SIMD3<Double>, Double)?
+                for p in pointsA {
+                    for q in pointsB {
+                        let dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z
+                        let d = (dx * dx + dy * dy + dz * dz).squareRoot()
+                        if best == nil || d > best!.2 { best = (p, q, d) }
+                    }
+                }
+                guard let best else { return false }
+
+                closestPointA = world(best.0)
+                closestPointB = world(best.1)
+                distanceResult = Float(best.2)
+                return true
             }
-            return true
 
         case .angle:
             guard entities.count == 2 else { return false }
@@ -2132,6 +2217,96 @@ final class ViewerViewModel: ObservableObject {
         let local = SCNVector3(Float(point.x), Float(point.y), Float(point.z))
         guard let modelNode else { return local }
         return modelNode.convertPosition(local, to: nil)
+    }
+
+    /// World coordinates → kernel coordinates, the inverse of ``world(_:)``.
+    ///
+    /// The entity paths measure in the kernel's own frame, but a pick records where the
+    /// finger landed in world space, so a tapped position has to come back the other way
+    /// before it can be differenced against kernel geometry.
+    private func kernelPoint(_ point: SCNVector3) -> SIMD3<Double> {
+        guard let modelNode else {
+            return SIMD3<Double>(Double(point.x), Double(point.y), Double(point.z))
+        }
+        let p = modelNode.convertPosition(point, from: nil)
+        return SIMD3<Double>(Double(p.x), Double(p.y), Double(p.z))
+    }
+
+    /// The point the centre-distance mode measures from, in world coordinates.
+    ///
+    /// "中心" means the centre a machinist would quote: a circular edge's circle, or a
+    /// point on a cylindrical face's axis. A sphere reports its own centre through the
+    /// same axis accessor. Anything with neither — a plane, a straight edge, a vertex —
+    /// falls back to its own centroid rather than refusing, so the mode always answers.
+    /// `Shape.centerOfMass` is no use for that fallback: it is the *volume* centroid and
+    /// returns nil for every face, edge, wire and open shell.
+    private func center(of pick: Pick, shape: OCCTSwift.Shape) -> SCNVector3? {
+        switch pick.entity {
+        case .face(let i):
+            guard let face = shape.face(at: i) else { return nil }
+            if let axis = face.primaryAxis { return world(axis.origin) }
+            return face.surfaceInertia.centerOfMass.map { world($0) }
+
+        case .edge(let i):
+            guard let edge = shape.edge(at: i) else { return nil }
+            if let circle = edge.circleProperties { return world(circle.center) }
+            return edge.curveInertia.centerOfMass.map { world($0) }
+
+        case .vertex, .freePoint:
+            // A vertex is its own centre, and the tapped position is already the most
+            // accurate statement of where it is.
+            return pick.point
+        }
+    }
+
+    /// A point set dense enough to bracket the farthest pair on one entity.
+    ///
+    /// A face is gridded in its own UV space and an edge walked in parameter space. UV
+    /// space covers the *untrimmed* surface, so grid points can land inside a hole or
+    /// past an outer wire; the kernel's own classifier is what throws those out. If it
+    /// declines to classify any of them the unfiltered grid is used instead — a slightly
+    /// generous answer beats an empty one — but a face that classifies cleanly is
+    /// measured only over the part that actually exists.
+    private func extremePoints(of pick: Pick, shape: OCCTSwift.Shape) -> [SIMD3<Double>] {
+        switch pick.entity {
+        case .face(let i):
+            guard let face = shape.face(at: i), let bounds = face.uvBounds else { return [] }
+
+            let steps = 12
+            var onFace: [SIMD3<Double>] = []
+            var all: [SIMD3<Double>] = []
+            for u in 0...steps {
+                for v in 0...steps {
+                    let uu = bounds.uMin + (bounds.uMax - bounds.uMin) * Double(u) / Double(steps)
+                    let vv = bounds.vMin + (bounds.vMax - bounds.vMin) * Double(v) / Double(steps)
+                    guard let point = face.point(atU: uu, v: vv) else { continue }
+                    all.append(point)
+                    let classification = face.classify(u: uu, v: vv)
+                    if classification == .inside || classification == .onBoundary {
+                        onFace.append(point)
+                    }
+                }
+            }
+            return onFace.count >= 3 ? onFace : all
+
+        case .edge(let i):
+            guard let edge = shape.edge(at: i), let bounds = edge.parameterBounds else { return [] }
+
+            var points: [SIMD3<Double>] = []
+            let steps = 24
+            for k in 0...steps {
+                let t = bounds.first + (bounds.last - bounds.first) * Double(k) / Double(steps)
+                if let point = edge.point(at: t) { points.append(point) }
+            }
+            // The "面与圆心" half of this mode: a circular edge contributes its own
+            // centre as well as its rim, so a bore can be measured to a face from the
+            // middle of the hole and not only from its edge.
+            if let circle = edge.circleProperties { points.append(circle.center) }
+            return points
+
+        case .vertex, .freePoint:
+            return [kernelPoint(pick.point)]
+        }
     }
 
     static func circumcircle(_ p1: SCNVector3, _ p2: SCNVector3, _ p3: SCNVector3)

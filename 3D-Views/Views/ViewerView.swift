@@ -243,6 +243,16 @@ struct ViewerView: View {
                 if viewModel.measureType == .radius, viewModel.isComplete {
                     radiusToggle
                 }
+
+                // The three distances are not one reading stated three ways — each is a
+                // different computation — so this switch asks the model for a different
+                // number rather than only re-rendering the one it already has. It needs
+                // B-rep topology to have two entities to measure between, which is why
+                // the STL case is left out.
+                if (viewModel.measureType == .distance || viewModel.measureType == .linear),
+                   viewModel.isComplete, viewModel.usesEntityMeasurement {
+                    distanceToggle
+                }
             }
             .padding(.vertical, 5)
 
@@ -329,6 +339,41 @@ struct ViewerView: View {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
+    /// 中心距 / 最小距离 / 最大距离: three answers to "how far apart".
+    ///
+    /// Same capsule treatment as the radius toggle above, and for the same reason — a
+    /// full-height segmented control would be the tallest thing in a card that was
+    /// just shrunk. Three labels is the most that will still fit across it.
+    private var distanceToggle: some View {
+        HStack(spacing: 2) {
+            ForEach(DistanceMode.allCases) { mode in
+                distanceToggleSegment(mode)
+            }
+        }
+        .padding(2)
+        .background(Color(.tertiarySystemFill), in: Capsule())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("距离显示方式")
+    }
+
+    private func distanceToggleSegment(_ mode: DistanceMode) -> some View {
+        let selected = viewModel.distanceMode == mode
+        return Button {
+            withAnimation(.snappy(duration: 0.2)) { viewModel.distanceMode = mode }
+        } label: {
+            Text(mode.label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(selected ? .primary : .secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(selected ? Color(.systemBackground) : Color.clear, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(mode.label)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
     /// The vector between the two endpoints of the measurement.
     ///
     /// Prefers the kernel's own closest points: for two faces or two edges the
@@ -370,7 +415,10 @@ struct ViewerView: View {
 
     private var mainResultLabel: String {
         switch viewModel.measureType {
-        case .distance, .linear: return "距离"
+        case .distance, .linear:
+            // On a STEP model the label names which of the three distances is showing;
+            // an STL has no entities to measure between, so it keeps the plain reading.
+            return viewModel.usesEntityMeasurement ? viewModel.distanceMode.label : "距离"
         case .angle: return "角度"
         case .radius: return radiusShowsDiameter ? "直径" : "半径"
         case .area: return "面积"
