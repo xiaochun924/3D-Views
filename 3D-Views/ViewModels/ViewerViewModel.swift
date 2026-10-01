@@ -2254,21 +2254,6 @@ final class ViewerViewModel: ObservableObject {
         return SIMD3<Double>(Double(p.x), Double(p.y), Double(p.z))
     }
 
-    /// Whether `direction` describes the surface itself rather than the construction
-    /// frame the surface happens to be expressed in.
-    ///
-    /// `.sphere` is excluded on purpose: a sphere is symmetric about *every* axis through
-    /// its centre, so its `direction` is an arbitrary pole and comparing two of them would
-    /// invent a difference that is not in the geometry. `.extrusion`'s direction is the
-    /// sweep direction of the extrusion, equally not an axis of revolution — the kernel's
-    /// own documentation says so. Only these four carry a genuine rotation axis.
-    private static func isGenuineAxis(_ kind: OCCTSwift.ShapeAxis.Kind) -> Bool {
-        switch kind {
-        case .cylinder, .cone, .torus, .revolution: return true
-        case .sphere, .extrusion, .symmetry: return false
-        }
-    }
-
     /// What a picked entity contributes to a centre-distance measurement.
     ///
     /// A circular feature has to stay a *line* until both picks are known. Collapsing it
@@ -2278,6 +2263,11 @@ final class ViewerViewModel: ObservableObject {
     /// 0. FreeCAD keeps the same distinction — `Measurement::discAxisDistance` and
     /// `MeasureType::TwoCylinders` both feed `gp_Circ::Axis()` / `gp_Cylinder::Axis()`
     /// straight into `gp_Lin::Distance` rather than differencing locations.
+    ///
+    /// The geometry helpers live here rather than beside ``discCircle(of:)`` on the view
+    /// model because `ViewerViewModel` is main-actor isolated: a nonisolated context
+    /// cannot call into it, and this type is deliberately nonisolated so the arithmetic
+    /// stays testable and off the main actor.
     private enum CenterFeature {
         /// A circular face, a circular edge, a vertex or anything else that really does
         /// have one centre.
@@ -2289,7 +2279,7 @@ final class ViewerViewModel: ObservableObject {
         ///
         /// `pickedPoint` is the tapped position already converted into kernel coordinates
         /// — it is passed in rather than computed here because the conversion belongs to
-        /// the view model's transform, and this type is static.
+        /// the view model's transform, and this type is nonisolated.
         static func of(_ pick: Pick, shape: OCCTSwift.Shape,
                        at pickedPoint: SIMD3<Double>) -> CenterFeature? {
             switch pick.entity {
@@ -2299,7 +2289,7 @@ final class ViewerViewModel: ObservableObject {
                 // A disc first: a planar face whose boundary is one circle. Reading the
                 // axis rather than the centre is what lets a stack of concentric discs
                 // measure 0 against each other.
-                if face.isPlanar, let circle = ViewerViewModel.discCircle(of: face) {
+                if face.isPlanar, let circle = Self.discCircle(of: face) {
                     return .axis(origin: circle.center, direction: circle.axis)
                 }
 
@@ -2307,7 +2297,7 @@ final class ViewerViewModel: ObservableObject {
                 // the kinds where the axis is intrinsic: a sphere's `direction` is just
                 // an arbitrary construction-frame pole, and an extrusion's is its sweep
                 // direction, so both would be invented geometry rather than measured.
-                if let axis = face.primaryAxis, ViewerViewModel.isGenuineAxis(axis.kind) {
+                if let axis = face.primaryAxis, Self.isGenuineAxis(axis.kind) {
                     return .axis(origin: axis.origin, direction: axis.direction)
                 }
 
@@ -2336,6 +2326,60 @@ final class ViewerViewModel: ObservableObject {
                 // accurate statement of where it is.
                 return .point(pickedPoint)
             }
+        }
+
+        /// Whether `kind` describes the surface itself rather than the construction frame
+        /// the surface happens to be expressed in.
+        ///
+        /// `.sphere` is excluded on purpose: a sphere is symmetric about *every* axis
+        /// through its centre, so its `direction` is an arbitrary pole and comparing two
+        /// of them would invent a difference that is not in the geometry. `.extrusion`'s
+        /// direction is the sweep direction, equally not an axis of revolution. Only these
+        /// four carry a genuine rotation axis.
+        private static func isGenuineAxis(_ kind: OCCTSwift.ShapeAxis.Kind) -> Bool {
+            switch kind {
+            case .cylinder, .cone, .torus, .revolution: return true
+            case .sphere, .extrusion, .symmetry: return false
+            }
+        }
+
+        /// A face's boundary circle as the *axis* of that circle, or nil when the boundary
+        /// is not a single circle.
+        ///
+        /// The origin returned is the circle's centre and the direction its plane normal —
+        /// together `gp_Circ::Axis()`, the line FreeCAD's `getDiscAxis` builds and feeds to
+        /// `gp_Lin::Distance`. Reading the axis rather than just the centre is what makes
+        /// two stacked concentric discs measure 0 instead of their separation.
+        ///
+        /// Every boundary edge must be the *same* circle, which is what a disc looks like
+        /// after a boolean has cut it into arcs. Note that this alone does **not** exclude
+        /// a cylinder — a bore's two end rims are concentric, so their centres and normals
+        /// agree — and the caller's `face.isPlanar` test is what actually keeps a
+        /// cylindrical side wall out of this path. The end caps of a cylinder are planar,
+        /// so they are discs and belong here; the side wall is not, and takes the
+        /// surface-axis branch.
+        private static func discCircle(of face: OCCTSwift.Face)
+            -> (center: SIMD3<Double>, axis: SIMD3<Double>)? {
+            guard let edges = face.outerWire?.edges(), !edges.isEmpty else { return nil }
+
+            var centre: SIMD3<Double>?
+            var axis: SIMD3<Double>?
+            for edge in edges {
+                guard let circle = edge.circleProperties else { return nil }
+                if let centre, let axis {
+                    let drift = max(Self.length(circle.center - centre),
+                                    Self.length(circle.axis - axis))
+                    // Tolerance scaled to the model, so a large part is not held to a small
+                    // part's precision. 1e-6 mm on a 1 mm feature, 1e-3 mm on a 1 m one.
+                    let scale = max(Self.length(centre), 1)
+                    guard drift <= scale * 1e-6 else { return nil }
+                } else {
+                    centre = circle.center
+                    axis = circle.axis
+                }
+            }
+            guard let centre, let axis else { return nil }
+            return (centre, axis)
         }
 
         /// The distance between two centres, plus the witness point on each, in kernel
@@ -2408,48 +2452,6 @@ final class ViewerViewModel: ObservableObject {
         private static func length(_ v: SIMD3<Double>) -> Double {
             (v.x * v.x + v.y * v.y + v.z * v.z).squareRoot()
         }
-    }
-
-    /// A face's boundary circle as the *axis* of that circle, or nil when the boundary is
-    /// not a single circle.
-    ///
-    /// The origin returned is the circle's centre and the direction its plane normal —
-    /// together `gp_Circ::Axis()`, the line FreeCAD's `getDiscAxis` builds and feeds to
-    /// `gp_Lin::Distance`. Reading the axis rather than just the centre is what makes two
-    /// stacked concentric discs measure 0 instead of their separation.
-    ///
-    /// Every boundary edge must be the *same* circle, which is what a disc looks like
-    /// after a boolean has cut it into arcs. Note that this alone does **not** exclude a
-    /// cylinder — a bore's two end rims are concentric, so their centres and normals
-    /// agree — and the caller's `face.isPlanar` test is what actually keeps a cylindrical
-    /// side wall out of this path. The end caps of a cylinder are planar, so they are
-    /// discs and belong here; the side wall is not, and takes the surface-axis branch.
-    private static func discCircle(of face: OCCTSwift.Face)
-        -> (center: SIMD3<Double>, axis: SIMD3<Double>)? {
-        guard let edges = face.outerWire?.edges(), !edges.isEmpty else { return nil }
-
-        var centre: SIMD3<Double>?
-        var axis: SIMD3<Double>?
-        for edge in edges {
-            guard let circle = edge.circleProperties else { return nil }
-            if let centre, let axis {
-                let drift = max(Self.length(circle.center - centre),
-                                Self.length(circle.axis - axis))
-                // Tolerance scaled to the model, so a large part is not held to a small
-                // part's precision. 1e-6 mm on a 1 mm feature, 1e-3 mm on a 1 m one.
-                let scale = max(Self.length(centre), 1)
-                guard drift <= scale * 1e-6 else { return nil }
-            } else {
-                centre = circle.center
-                axis = circle.axis
-            }
-        }
-        guard let centre, let axis else { return nil }
-        return (centre, axis)
-    }
-
-    private static func length(_ v: SIMD3<Double>) -> Double {
-        (v.x * v.x + v.y * v.y + v.z * v.z).squareRoot()
     }
 
     /// A point set dense enough to bracket the farthest pair on one entity.
