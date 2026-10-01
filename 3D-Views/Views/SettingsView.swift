@@ -33,11 +33,17 @@ struct SettingsView: View {
             }
 
             Section {
-                Text("支持 STEP（.step、.stp）和 STL 文件。点击右上角按钮导入文件，或在「文件」App 中选择分享到本应用。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                NavigationLink {
+                    ImportLogView()
+                } label: {
+                    Label("导入诊断", systemImage: "list.bullet.rectangle")
+                }
             } header: {
                 Text("支持格式")
+            } footer: {
+                Text("支持 STEP（.step、.stp）和 STL 文件。点击右上角按钮导入文件，或在「文件」App 中选择分享到本应用。分享没反应时，导入诊断里能看到文件走到了哪一步。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("设置")

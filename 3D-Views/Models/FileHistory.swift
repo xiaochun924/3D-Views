@@ -125,6 +125,17 @@ final class FileHistory: ObservableObject {
         let bundleID = Bundle.main.bundleIdentifier ?? "?"
         lines.append("Bundle ID：\(bundleID)")
 
+        // When the installed binary was written. Side-loading is how this app is installed,
+        // and a stale build behaves exactly like a broken one — six rounds were run against
+        // devices whose build could not be identified from the app itself. The executable's
+        // timestamp changes on every rebuild, so it names the build well enough to tell
+        // "the new one is not on the device" from "it is, and still fails".
+        if let executable = Bundle.main.executableURL {
+            let written = (try? FileManager.default.attributesOfItem(atPath: executable.path))?[.modificationDate] as? Date
+            let text = written.map { stampFormatter.string(from: $0) } ?? "未知"
+            lines.append("构建于：\(text)")
+        }
+
         // The App Group is what the share extension and the app use to see each other, and
         // it is the one piece of this that the build cannot verify: the IPA is produced
         // with CODE_SIGNING_ALLOWED=NO, so the entitlement is absent from the package and
@@ -153,11 +164,78 @@ final class FileHistory: ObservableObject {
         return lines
     }
 
+    /// Empties the record. The log is meant to be read right after something failed, and a
+    /// twelve-line window fills up fast; without a way to clear it, a fresh attempt is
+    /// indistinguishable from an old one still sitting there.
+    func clearLog() {
+        handoverLog = []
+        UserDefaults.standard.removeObject(forKey: handoverLogKey)
+    }
+
     private static let stampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd HH:mm:ss"
         return formatter
     }()
+
+    /// Everything the diagnostics screen shows, as one block of text.
+    ///
+    /// The screen exists because this has to be read on a device that cannot be attached to
+    /// a debugger — so the fastest way to see it is to copy it out in one piece rather than
+    /// transcribe a dozen rows of a monospaced list by hand.
+    func diagnosticsReport() -> String {
+        var lines: [String] = []
+        lines.append("=== 3D-Views 导入诊断 ===")
+        lines.append("生成时间：\(Self.stampFormatter.string(from: Date()))")
+        lines.append("")
+        lines.append("--- 安装包声明 ---")
+        lines.append(contentsOf: Self.bundleFacts())
+        lines.append("")
+        lines.append("--- 导入记录（新→旧）---")
+        if handoverLog.isEmpty {
+            lines.append("（空）")
+        } else {
+            lines.append(contentsOf: handoverLog)
+        }
+        lines.append("")
+        lines.append("--- 目录实况 ---")
+        lines.append(contentsOf: Self.directoryFacts())
+        return lines.joined(separator: "\n")
+    }
+
+    /// What is actually sitting in the folders that matter, listed by hand rather than
+    /// inferred. The scan reports how many candidates it saw; this reports their names,
+    /// which is what tells "the file never arrived" apart from "it arrived under a name
+    /// the extension gate does not accept".
+    static func directoryFacts() -> [String] {
+        let manager = FileManager.default
+        var lines: [String] = []
+
+        func describe(_ label: String, _ url: URL?) {
+            guard let url else {
+                lines.append("\(label)：路径不可得")
+                return
+            }
+            guard let names = try? manager.contentsOfDirectory(atPath: url.path) else {
+                lines.append("\(label)：目录不存在")
+                lines.append("  \(url.path)")
+                return
+            }
+            lines.append("\(label)：\(names.count) 项")
+            lines.append("  \(url.path)")
+            for name in names.sorted().prefix(20) {
+                lines.append("    \(name)")
+            }
+        }
+
+        let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        describe("共享收件箱", AppGroup.inboxURL)
+        describe("Documents/Inbox", docs.appendingPathComponent("Inbox", isDirectory: true))
+        describe("Documents/Imported", docs.appendingPathComponent("Imported", isDirectory: true))
+        describe("Documents", docs)
+
+        return lines
+    }
 
     func addFile(sourceURL: URL) throws -> RecentFile {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

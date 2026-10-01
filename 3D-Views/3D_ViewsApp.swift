@@ -39,10 +39,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Which keys are present is the whole evidence, so they are listed rather than
+        // summarised. "No URL" on its own cannot distinguish a share that carried nothing
+        // from a share whose URL was routed to the scene instead — iOS only fills
+        // `launchOptions[.url]` when UIKit, not a scene, owns the launch.
+        let keys = (launchOptions ?? [:])
+            .keys
+            .map(\.rawValue)
+            .sorted()
+            .joined(separator: ",")
+        let keyText = keys.isEmpty ? "空" : keys
         if let url = launchOptions?[.url] as? URL {
-            FileHistory.shared.note("冷启动，launchOptions 带 URL：\(url.lastPathComponent)")
+            FileHistory.shared.note("冷启动，带 URL：\(url.lastPathComponent)｜键：\(keyText)")
         } else {
-            FileHistory.shared.note("冷启动，launchOptions 无 URL")
+            FileHistory.shared.note("冷启动，无 URL｜键：\(keyText)")
         }
         // A launch caused by 「拷贝到 3D Views」, and one caused by the share extension
         // waking us through `3dviews://`, both carry no file URL: in each the file is

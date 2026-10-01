@@ -9,18 +9,12 @@ struct HomeView: View {
     @StateObject private var history = FileHistory.shared
     @State private var navPath = NavigationPath()
     @State private var showSettings = false
+    @State private var showImportLog = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack(path: $navPath) {
             List {
-                // The diagnostic deliberately goes *above* the file list rather than
-                // below it. Below, it sat after the full-height empty state and was
-                // pushed off-screen — which read as "the panel is empty" and cost a
-                // round of diagnosis. On-screen unconditionally, it cannot be missed
-                // and it cannot be confused for a missing build.
-                diagnosticSection
-
                 if history.files.isEmpty {
                     ContentUnavailableView(
                         "暂无文件",
@@ -80,9 +74,23 @@ struct HomeView: View {
                         Image(systemName: "folder.badge.plus")
                     }
                 }
+                ToolbarItem(placement: .topBarLeading) {
+                    // Out of the list and behind a button of its own. Kept in the toolbar
+                    // rather than buried in Settings because it is needed at exactly the
+                    // moment something fails to arrive, which is on this screen.
+                    Button {
+                        showImportLog = true
+                    } label: {
+                        Image(systemName: "list.bullet.rectangle")
+                    }
+                    .accessibilityLabel("导入诊断")
+                }
             }
             .navigationDestination(for: RecentFile.self) { file in
                 ViewerView(file: file)
+            }
+            .navigationDestination(isPresented: $showImportLog) {
+                ImportLogView()
             }
             .sheet(isPresented: $showSettings) {
                 NavigationStack {
@@ -124,40 +132,6 @@ struct HomeView: View {
                 // point of keeping the failure around.
                 Text(reason)
             }
-        }
-    }
-
-    /// Temporary. Shows what the *installed* build declares and what the system has
-    /// actually told the app, because the report being chased — "the app comes forward
-    /// and nothing else happens" — looks the same whether the URL was never delivered,
-    /// was delivered to a hook that was never installed, or arrived and was rejected.
-    /// Two rounds were spent guessing between those; this is what replaces guessing.
-    /// Delete this section, and `FileHistory.handoverLog` / `bundleFacts()`, once the
-    /// external handover is confirmed working.
-    @ViewBuilder
-    private var diagnosticSection: some View {
-        Section {
-            if history.handoverLog.isEmpty {
-                Text("尚无记录")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(history.handoverLog.enumerated()), id: \.offset) { _, line in
-                    Text(line)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            ForEach(Array(FileHistory.bundleFacts().enumerated()), id: \.offset) { _, line in
-                Text(line)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-            }
-        } header: {
-            Text("导入诊断")
-        } footer: {
-            Text("上半部分是系统告知本 App 的记录，下半部分是当前安装包自己的声明。用于定位外部分享问题，定位完即删。")
-                .font(.system(size: 10))
         }
     }
 
