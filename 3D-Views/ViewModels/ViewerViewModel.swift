@@ -92,7 +92,7 @@ struct Pick: Identifiable {
 /// one number but a handful of them ("bore ⌀, depth, boss-to-boss") read off one view.
 ///
 /// The annotation node is owned by the item: it stays in the scene for as long as the
-/// item does, and `removeMeasurement` is the only thing that takes it down.
+/// item does, and `clearAllMeasurements` is what takes the whole set down.
 struct MeasurementItem: Identifiable {
     let id = UUID()
     let type: MeasureType
@@ -2154,23 +2154,13 @@ final class ViewerViewModel: ObservableObject {
         return (center, radius)
     }
 
-    // MARK: - Selection list
+    // MARK: - Pick list
 
-    /// Removes the most recently picked entity and recomputes.
+    /// Removes the most recently picked entity and recomputes. A mis-pick is always
+    /// one undo away, which is what let the dedicated selection panel go.
     func undoLastPoint() {
         guard !picks.isEmpty else { return }
         picks.removeLast()
-        computeResults()
-        updateMeasureVisuals(in: renderView)
-    }
-
-    /// Removes one entity from the selection list and recomputes.
-    ///
-    /// This is what makes a mis-pick recoverable without restarting the measurement:
-    /// the list names every pick, and each one can be dropped on its own.
-    func removePick(at index: Int) {
-        guard picks.indices.contains(index) else { return }
-        picks.remove(at: index)
         computeResults()
         updateMeasureVisuals(in: renderView)
     }
@@ -2232,20 +2222,6 @@ final class ViewerViewModel: ObservableObject {
         measureGroup = nil
 
         resetMeasureState()
-    }
-
-    /// Saves the finished measurement into the history without waiting for the next tap
-    /// to supersede it. The 「测量记录」 list is the visible outcome.
-    func saveCurrentMeasurement() {
-        guard isComplete, requiredPickCount > 0 else { return }
-        finalizeMeasurement()
-    }
-
-    /// Removes one finished measurement — its annotation with it.
-    func removeMeasurement(_ id: UUID) {
-        guard let index = measurements.firstIndex(where: { $0.id == id }) else { return }
-        measurements[index].node?.removeFromParentNode()
-        measurements.remove(at: index)
     }
 
     /// Removes every finished measurement at once.

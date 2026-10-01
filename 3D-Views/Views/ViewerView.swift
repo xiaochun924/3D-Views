@@ -62,17 +62,26 @@ struct ViewerView: View {
 
             // Kept up until the measurement has all the picks it needs, not just until
             // the first one: entity measurements often need two, and hiding the hint
-            // after one tap left the user with no idea what was still wanted.
+            // after one tap left the user with no idea what was still wanted. The
+            // tally underneath doubles as the selection status — which is why the old
+            // dedicated selection panel is gone. One capsule, nothing else floating.
             if viewModel.mode == .measure && !viewModel.isComplete {
                 VStack {
                     Spacer().frame(height: 60)
                     HStack {
                         Spacer()
-                        Text(instructionText)
-                            .font(.system(size: 13, weight: .medium))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .liquidGlass(in: Capsule())
+                        VStack(spacing: 4) {
+                            Text(instructionText)
+                                .font(.system(size: 13, weight: .medium))
+                            if !viewModel.picks.isEmpty {
+                                Text(pickProgressText)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .liquidGlass(in: Capsule())
                         Spacer()
                     }
                     Spacer()
@@ -94,14 +103,9 @@ struct ViewerView: View {
             VStack {
                 Spacer()
                 if viewModel.mode == .measure {
-                    // The history sits above the current selection: finished readings
-                    // first, the slate being built right now directly above the toolbar.
-                    if !viewModel.measurements.isEmpty {
-                        measurementsPanel
-                    }
-                    if !viewModel.picks.isEmpty {
-                        selectionPanel
-                    }
+                    // One compact bar is all the mode keeps pinned to the bottom: the
+                    // pick tally lives in the hint capsule, finished readings archive
+                    // onto the model, and their controls live in the orbit toolbar.
                     measureToolbar
                 } else {
                     mainToolbar
@@ -156,6 +160,16 @@ struct ViewerView: View {
         }
     }
 
+    /// "已选 2/3：面 3 · 边 2" — the in-progress tally under the instruction.
+    ///
+    /// Carried by the hint capsule instead of its own panel: the user needs to know
+    /// what is already picked and how many picks remain, but that is two lines of
+    /// text, not a list floating over the model.
+    private var pickProgressText: String {
+        let names = viewModel.picks.map { $0.entity.description }.joined(separator: " · ")
+        return "已选 \(viewModel.picks.count)/\(viewModel.requiredPickCount)：\(names)"
+    }
+
     private var resultPanel: some View {
         VStack(spacing: 0) {
             HStack {
@@ -180,15 +194,6 @@ struct ViewerView: View {
                             .foregroundColor(copiedToPasteboard ? .green : .blue)
                     }
                     .accessibilityLabel("复制测量结果")
-                }
-                // Saves the finished reading into 「测量记录」 without waiting for the
-                // next tap to supersede it. Distinct from the ×, which discards.
-                if viewModel.isComplete {
-                    Button { viewModel.saveCurrentMeasurement() } label: {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                    }
-                    .accessibilityLabel("存入测量记录")
                 }
                 Button { viewModel.clearMeasure() } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -223,9 +228,6 @@ struct ViewerView: View {
                         }
                     }
                 }
-                Text(mainResultLabel)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
                 Text(mainResultValue)
                     .font(.system(size: 26, weight: .bold, design: .monospaced))
                     .contentTransition(.numericText())
@@ -383,182 +385,33 @@ struct ViewerView: View {
         }
     }
 
-    /// The selection list: every entity taken for the current measurement, each one
-    /// removable on its own.
+    /// The measure-mode toolbar: one compact row.
     ///
-    /// Individual removal is the point. A distance between two faces regularly needs a
-    /// first pick that turns out to be the wrong face, and without this the only way
-    /// back was 「清空」 — throwing away the picks that were already right and starting
-    /// the measurement over.
-    private var selectionPanel: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "scope")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.blue)
-                Text("已选实体")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("\(viewModel.picks.count)/\(viewModel.requiredPickCount)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Button { viewModel.clearMeasure() } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "xmark.circle")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("清空")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.blue)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-
-            Divider()
-
-            // A measurement never holds more than the three picks its type asks for,
-            // so the list is bounded and needs no scrolling or height cap.
-            VStack(spacing: 0) {
-                ForEach(Array(viewModel.picks.enumerated()), id: \.element.id) { entry in
-                    selectionRow(index: entry.offset, pick: entry.element)
-                    if entry.offset != viewModel.picks.count - 1 {
-                        Divider().padding(.leading, 40)
-                    }
-                }
-            }
-        }
-        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .padding(.horizontal, 16)
-        .padding(.bottom, 6)
-    }
-
-    /// One row of the selection list: ordinal, the entity it resolved to, and the
-    /// control that drops just this pick.
-    private func selectionRow(index: Int, pick: Pick) -> some View {
-        HStack(spacing: 10) {
-            Text("\(index + 1)")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
-                .frame(width: 20, height: 20)
-                .background(Color(uiColor: pick.entity.markerColor), in: Circle())
-
-            Text(pick.entity.description)
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-
-            Spacer()
-
-            Button { viewModel.removePick(at: index) } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("移除 \(pick.entity.description)")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-    }
-
-    /// The finished-measurement list: one row per reading, each removable on its own.
-    ///
-    /// The newest first — the reading just taken is the one still being checked, so it
-    /// is the one that must be visible without scrolling.
-    private var measurementsPanel: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet.rectangle")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.blue)
-                Text("测量记录")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("\(viewModel.measurements.count)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Button { viewModel.clearAllMeasurements() } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("清空")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.blue)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-
-            Divider()
-
-            // Bounded so a long measuring session cannot push the toolbars off screen.
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
-                    ForEach(Array(viewModel.measurements.enumerated().reversed()),
-                            id: \.element.id) { entry in
-                        measurementRow(entry.element)
-                        if entry.offset != 0 {
-                            Divider().padding(.leading, 40)
-                        }
-                    }
-                }
-            }
-            .frame(maxHeight: 168)
-        }
-        .liquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .padding(.horizontal, 16)
-        .padding(.bottom, 6)
-    }
-
-    /// One row of the history: the measurement's type, its formatted reading, and the
-    /// control that removes it — annotation and all.
-    private func measurementRow(_ item: MeasurementItem) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: item.type.icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.blue)
-                .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.type.label)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                Text(item.valueText)
-                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
-            }
-
-            Spacer()
-
-            Button { viewModel.removeMeasurement(item.id) } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("删除该\(item.type.label)记录")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-    }
-
-    /// The measure-mode toolbar: a categorized two-row glass bar.
-    ///
-    /// Row one holds the measurement types, grouped the way a desktop CAD package
-    /// groups them — 距离 (minimum distance and point-to-point), 形状 (angle, radius
-    /// and the area of a picked face), 模型 (whole-solid volume and bounding box) —
-    /// so seven flat buttons stop reading as one undifferentiated strip. Row two
-    /// holds the tools that apply to any measurement: undo/exit, display mode,
-    /// unit, and the annotation show/hide toggle once a reading exists. The tool
-    /// row stays put while only the type row scrolls.
+    /// Exit/undo sits fixed on the left, the unit menu fixed on the right, and the
+    /// seven measurement types — grouped 距离 (distance kinds), 形状 (angle, radius,
+    /// area), 模型 (volume, bounding box) — scroll in between. Everything else this
+    /// mode once carried was folded away: the hint capsule carries the pick tally,
+    /// finished readings archive themselves onto the model, and display mode plus
+    /// the annotation controls live in the orbit toolbar. Fewer floating panels,
+    /// less model occlusion.
     private var measureToolbar: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 0) {
+            toolButton(icon: viewModel.picks.isEmpty ? "xmark" : "arrow.uturn.backward.circle",
+                       label: viewModel.picks.isEmpty ? "退出" : "撤销") {
+                if viewModel.picks.isEmpty {
+                    viewModel.toggleMeasureMode()
+                } else {
+                    viewModel.undoLastPoint()
+                }
+            }
+
+            toolRowDivider
+
             measureTypeRow
-            Rectangle()
-                .fill(Color.primary.opacity(0.1))
-                .frame(height: 1)
-            measureToolRow
+
+            toolRowDivider
+
+            unitMenu
         }
         .padding(.vertical, 5)
         .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -592,43 +445,14 @@ struct ViewerView: View {
         }
     }
 
-    private var measureToolRow: some View {
-        HStack(spacing: 0) {
-            // Backsteps one point at a time so a mis-tap never forces the whole
-            // measurement to be restarted; leaves measure mode once there is nothing
-            // left to take back.
-            toolButton(icon: viewModel.picks.isEmpty ? "xmark" : "arrow.uturn.backward.circle",
-                       label: viewModel.picks.isEmpty ? "退出" : "撤销") {
-                if viewModel.picks.isEmpty {
-                    viewModel.toggleMeasureMode()
-                } else {
-                    viewModel.undoLastPoint()
-                }
-            }
-
-            toolRowDivider
-            displayModeMenu(compact: true)
-            toolRowDivider
-
-            unitMenu
-
-            if !viewModel.measurements.isEmpty {
-                toolRowDivider
-                toolButton(icon: viewModel.annotationsVisible ? "eye" : "eye.slash", label: "标注") {
-                    viewModel.toggleAnnotations()
-                }
-            }
-        }
-        .padding(.horizontal, 4)
-    }
-
     private var toolRowDivider: some View {
         Rectangle()
             .fill(Color.primary.opacity(0.12))
             .frame(width: 1, height: 30)
     }
 
-    /// A labelled icon+text button that stretches to share the tool row evenly.
+    /// A labelled icon+text button at the toolbar's fixed edges — the scrolling
+    /// type row takes the middle, so these get a fixed width instead of a share.
     private func toolButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 3) {
@@ -638,8 +462,7 @@ struct ViewerView: View {
                     .font(.system(size: 10, weight: .medium))
             }
             .foregroundColor(.primary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
+            .frame(width: 54, height: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -659,8 +482,7 @@ struct ViewerView: View {
                     .font(.system(size: 10, weight: .medium))
             }
             .foregroundColor(.primary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
+            .frame(width: 54, height: 44)
             .contentShape(Rectangle())
         }
         .accessibilityLabel("单位")
@@ -698,15 +520,13 @@ struct ViewerView: View {
         .accessibilityLabel(type.label)
     }
 
-    /// Display-mode picker, shared by both toolbars.
+    /// Display-mode picker for the orbit toolbar.
     ///
-    /// It is offered while measuring too, not just in the orbit toolbar: seeing an internal
-    /// bore or rib is often the reason to reach for 透明 or 线框 in the first place, and
-    /// leaving measure mode to switch would clear the picks already taken.
-    ///
-    /// `compact` renders it to the measure toolbar's 44 pt tool row; otherwise it
-    /// renders as a regular toolbar item.
-    private func displayModeMenu(compact: Bool) -> some View {
+    /// It used to be offered while measuring too — seeing an internal bore is often
+    /// why one reaches for 透明 or 线框 — but that row is part of the clutter this
+    /// pass removes. The tradeoff: switching display mode mid-measurement drops the
+    /// picks in progress; a finished reading survives the switch either way.
+    private func displayModeMenu() -> some View {
         Menu {
             ForEach(DisplayMode.allCases) { mode in
                 Button {
@@ -716,26 +536,12 @@ struct ViewerView: View {
                 }
             }
         } label: {
-            if compact {
-                VStack(spacing: 3) {
-                    Image(systemName: viewModel.displayMode.icon)
-                        .font(.system(size: 17, weight: .medium))
-                    Text(viewModel.displayMode.label)
-                        .font(.system(size: 10, weight: .medium))
-                        .lineLimit(1)
-                }
-                .foregroundColor(.primary)
-                .frame(maxWidth: .infinity)
-                .frame(height: 44)
-                .contentShape(Rectangle())
-            } else {
-                VStack(spacing: 4) {
-                    Image(systemName: viewModel.displayMode.icon).font(.system(size: 20, weight: .medium))
-                    Text("显示").font(.system(size: 11, weight: .medium))
-                }
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity)
+            VStack(spacing: 4) {
+                Image(systemName: viewModel.displayMode.icon).font(.system(size: 20, weight: .medium))
+                Text("显示").font(.system(size: 11, weight: .medium))
             }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -776,7 +582,7 @@ struct ViewerView: View {
                 annotationsMenu
             }
 
-            displayModeMenu(compact: false)
+            displayModeMenu()
 
             Menu {
                 ForEach(ViewDirection.allCases) { direction in
