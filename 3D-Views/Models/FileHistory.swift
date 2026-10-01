@@ -153,6 +153,16 @@ final class FileHistory: ObservableObject {
 
         lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装")")
 
+        // Whether the extension has ever actually been brought up. "Not installed",
+        // "installed but never started" and "started but never finished" are three
+        // different faults, and a missing handoff record only rules out the third — this
+        // line is what separates the other two.
+        if let started = AppGroup.lastExtensionStart {
+            lines.append("扩展启动于：\(stampFormatter.string(from: started))")
+        } else {
+            lines.append("扩展启动于：从未")
+        }
+
         if let handoff = AppGroup.lastHandoff {
             let names = handoff.names.isEmpty ? "无" : handoff.names.joined(separator: ",")
             let failures = handoff.failures.isEmpty ? "" : "｜失败 \(handoff.failures.count) 个"
@@ -338,7 +348,7 @@ final class FileHistory: ObservableObject {
     /// Returns what it imported, newest scan first, and is safe to call on every launch
     /// and every return to the foreground: every half is idempotent by construction.
     @discardableResult
-    func importFromSandbox(verbose: Bool = true) -> [RecentFile] {
+    func importFromSandbox(verbose: Bool = true, reason: String? = nil) -> [RecentFile] {
         let manager = FileManager.default
         let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var imported: [RecentFile] = []
@@ -398,9 +408,17 @@ final class FileHistory: ObservableObject {
         // *succeeded* — so "the scan ran and found nothing", "the scan never ran" and
         // "the new build was never installed" all looked identical, and whichever one
         // was assumed drove the next wrong change. One line now tells them apart.
-        if verbose {
+        // Also speaks on a quiet pass when it actually found something. The sweep's later
+        // retries are exactly where a file that landed after launch turns up, and an
+        // import happening there must not be the one event the log omits.
+        if verbose || !imported.isEmpty {
             let sharedText = sharedCount < 0 ? "容器不可用" : "\(sharedCount) 项"
-            note("扫描：共享 \(sharedText)｜Inbox \(inboxNames.count) 项｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
+            // Which pass this was. Several scans run within a second of each other —
+            // launch, return to the foreground, the sweep's retries, this screen opening —
+            // and without the reason they are identical rows that cannot be told apart,
+            // which is how a real handover gets misread as a refresh.
+            let origin = reason.map { "（\($0)）" } ?? ""
+            note("扫描\(origin)：共享 \(sharedText)｜Inbox \(inboxNames.count) 项｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
         }
 
         if !imported.isEmpty {
@@ -425,13 +443,16 @@ final class FileHistory: ObservableObject {
     /// arrived perfectly well. It is also what makes the share extension work without
     /// the app ever being handed a URL.
     func scheduleInboxSweep(reason: String) {
-        importFromSandbox()
+        importFromSandbox(reason: reason)
         sweepTask?.cancel()
         sweepTask = Task { [weak self] in
             for delay in [300, 1000, 2500] {
                 try? await Task.sleep(for: .milliseconds(delay))
                 if Task.isCancelled { return }
-                self?.importFromSandbox(verbose: false)
+                // Quiet unless something turns up. Three retries per activation would
+                // otherwise bury the one line that matters, and the retries are exactly
+                // where a late-arriving file shows itself.
+                self?.importFromSandbox(verbose: false, reason: reason)
             }
         }
     }

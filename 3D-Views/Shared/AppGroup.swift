@@ -112,6 +112,26 @@ enum AppGroup {
         return names.count
     }
 
+    // MARK: - Extension liveness
+
+    private static let extensionStartKey = "SharedExtensionStartedAt"
+
+    /// Written by the share extension the moment it is up, before it has looked at a
+    /// single attachment.
+    ///
+    /// A missing handoff record cannot tell "iOS never launched the extension at all"
+    /// from "iOS launched it and it died before it could record anything" — and those
+    /// two need completely different fixes. This is the earliest line the extension is
+    /// able to leave, so the two cases stop looking the same from the app's side.
+    static func recordExtensionStart() {
+        UserDefaults(suiteName: identifier)?.set(Date(), forKey: extensionStartKey)
+    }
+
+    /// When the share extension last came up, or nil if it never has.
+    static var lastExtensionStart: Date? {
+        UserDefaults(suiteName: identifier)?.object(forKey: extensionStartKey) as? Date
+    }
+
     // MARK: - Helpers
 
     /// Strips the path separators and the traversal a share sheet's file name could

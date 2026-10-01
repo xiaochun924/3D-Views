@@ -28,6 +28,13 @@ final class ShareViewController: UIViewController {
     private var hasStarted = false
 
     override func viewDidLoad() {
+        // Left before anything else, including the label. `NSExtensionPrincipalClass`
+        // names this class as a plain Objective-C string, and if that lookup ever fails
+        // the extension dies without running a line of this file — which looks exactly
+        // like the extension never having been launched. This timestamp is what tells
+        // those two apart from the app's side.
+        AppGroup.recordExtensionStart()
+
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 

@@ -25,6 +25,9 @@ targets:
           - 3D-Views-Share/**
           - 3D-Views.entitlements
           - 3D-Views-Share.entitlements
+          # 工程定义本身不是资源。path: . 会把整个目录收进来，上一版就把它原样
+          # 打进了已发布的 .app —— 解包可见 6553 字节的 project.yml 躺在根目录。
+          - project.yml
     dependencies:
       - package: OCCTSwift
       - target: 3D-Views-Share
@@ -58,7 +61,15 @@ targets:
         CFBundleDisplayName: 3D Views
         CFBundleDevelopmentRegion: zh_CN
         UIFileSharingEnabled: true
-        LSSupportsOpeningDocumentsInPlace: true
+        # 本项目最关键的一处开关。true 表示「本 App 有能力原地打开文档」，iOS 于是只递
+        # 一个安全作用域 URL 过来，**不往 Documents/Inbox 拷任何东西**。真机诊断里
+        # 「Documents/Inbox：目录不存在」正是这么来的：不是拷得慢，而是按设计就不会拷。
+        # 偏偏那条 URL 通路在本项目上七轮都没被观察到真正交付过（scene 生命周期下它
+        # 走 connectionOptions.urlContexts，而去碰那个入口会让应用启动即爆栈）。
+        # 改成 false 后行为翻转：iOS 先把文件拷进 Documents/Inbox，再启动 App。即使 URL
+        # 依旧递不到，importFromSandbox() 每次激活都会扫描并把文件捡走 —— 一条不依赖
+        # URL 的保底通道。
+        LSSupportsOpeningDocumentsInPlace: false
         # 分享扩展把文件放进 App Group 之后，用这个 scheme 尝试把主 App 拉到前台。
         # 分享扩展没有被赋予「打开宿主 App」的正式能力，所以这只是尽力而为；真正
         # 保证交接完成的是主 App 每次激活时扫描共享收件箱。
