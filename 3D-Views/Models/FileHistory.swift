@@ -244,7 +244,60 @@ final class FileHistory: ObservableObject {
         describe("Documents/Imported", docs.appendingPathComponent("Imported", isDirectory: true))
         describe("Documents", docs)
 
+        // The container-wide sweep. Every round so far has assumed the file lands in one
+        // of the four folders above; if iOS hands it over some other way it would be
+        // invisible here and we would keep "fixing" the wrong layer. Walk the container
+        // and name any model file sitting outside those folders, whatever its depth.
+        let container = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .deletingLastPathComponent()   // …/Library
+            .deletingLastPathComponent()   // …（容器根）
+        lines.append("")
+        lines.append("--- 容器全域扫描（\(container.path)）---")
+        let strays = Self.strayModelFiles(in: container)
+        if strays.isEmpty {
+            lines.append("未发现散落的模型文件")
+        } else {
+            for stray in strays.prefix(30) {
+                lines.append("  \(stray)")
+            }
+        }
+
         return lines
+    }
+
+    /// Model-extension files anywhere under the container, minus the folders the scan
+    /// already sweeps and minus the app's own `Imported` copies (which are the *result*
+    /// of a successful import, not evidence of a delivery we missed).
+    private static func strayModelFiles(in container: URL, depth: Int = 0) -> [String] {
+        guard depth < 4 else { return [] }
+        let manager = FileManager.default
+        let containerPath = container.standardizedFileURL.path
+        guard let entries = try? manager.contentsOfDirectory(
+            at: container,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var found: [String] = []
+        for entry in entries {
+            let path = entry.standardizedFileURL.path
+            let relative = path.hasPrefix(containerPath)
+                ? String(path.dropFirst(containerPath.count))
+                : path
+            // `Imported` holds the *results* of successful imports, so reporting them
+            // would drown the one signal that matters: a file somewhere we never look.
+            if relative.hasPrefix("/Documents/Imported") { continue }
+
+            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDirectory {
+                // `Library/Preferences` is plists only; skipping it saves depth.
+                if relative == "/Library/Preferences" { continue }
+                found.append(contentsOf: Self.strayModelFiles(in: entry, depth: depth + 1))
+            } else if Self.supportedExtensions.contains(entry.pathExtension.lowercased()) {
+                found.append(relative)
+            }
+        }
+        return found
     }
 
     func addFile(sourceURL: URL) throws -> RecentFile {

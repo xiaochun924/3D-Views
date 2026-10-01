@@ -78,9 +78,14 @@ targets:
             CFBundleURLSchemes:
               - 3dviews
         CFBundleDocumentTypes:
+          # LSHandlerRank 是 Alternate 而不是 Default，这一条是照抄在同一台设备上
+          # 真正跑通过导入的 BatteryInsight。Default 声明的是「这个类型默认归我」，
+          # 系统于是按文档归属关系处理，走 UIDocument / 原地打开那一套；Alternate
+          # 声明的是「我也能处理，但默认不是我」，系统走的是「拷贝一份再唤起目标
+          # App」的路径 —— 而我们的 App 每次激活都会扫描沙箱，接得住这条路径。
           - CFBundleTypeName: STEP CAD File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Default
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - step
               - stp
@@ -88,7 +93,7 @@ targets:
               - com.xiaochun.step
           - CFBundleTypeName: STL Mesh
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Default
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - stl
             LSItemContentTypes:
