@@ -53,7 +53,9 @@ struct SceneView: UIViewRepresentable {
         // iOS defaults this to `.none` (macOS defaults to 4x), so without an explicit
         // setting every edge on every iPhone and iPad is badly aliased.
         scnView.antialiasingMode = .multisampling4X
-        scnView.backgroundColor = UIColor(red: 0.91, green: 0.92, blue: 0.94, alpha: 1.0)
+        // Replaced per trait in `updateUIView`. The literal below is only the value the
+        // very first frame renders with, before the environment is available.
+        scnView.backgroundColor = Self.viewportBackground(for: .light)
         // Without this the view can render at 1× on a 3× retina screen and be scaled up,
         // which is the single biggest cause of a "blurry / unclear" model on iOS — every
         // edge becomes a soft smear regardless of AA or mesh quality. UIView's default
@@ -136,6 +138,14 @@ struct SceneView: UIViewRepresentable {
     }
 
     func updateUIView(_ scnView: SCNView, context: Context) {
+        // Resolved from the environment rather than from a dynamic `UIColor` because
+        // SceneKit does not re-resolve a dynamic colour once it has been handed the
+        // background: the viewport would keep the light value after the system switched
+        // to dark until something else forced a redraw. Reading the environment here
+        // makes SwiftUI call back on every appearance change, which is exactly the
+        // signal needed.
+        scnView.backgroundColor = Self.viewportBackground(for: context.environment.colorScheme)
+
         if scnView.scene !== scene {
             scnView.scene = scene
             if let scene { onSceneAssigned?(scnView, scene) }
@@ -152,6 +162,22 @@ struct SceneView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
+    }
+
+    /// The viewport's own backdrop, one value per appearance.
+    ///
+    /// Kept here rather than in the scene's background so the very first frame — before
+    /// any geometry or environment exists — already matches the surrounding chrome. The
+    /// light value is the original slate the viewer was designed against; the dark one
+    /// is a near-black with a touch of blue, so a light-grey part still separates from
+    /// it while the chrome above stays legible.
+    static func viewportBackground(for scheme: ColorScheme) -> UIColor {
+        switch scheme {
+        case .dark:
+            return UIColor(red: 0.09, green: 0.10, blue: 0.12, alpha: 1.0)
+        default:
+            return UIColor(red: 0.91, green: 0.92, blue: 0.94, alpha: 1.0)
+        }
     }
 
     @MainActor
