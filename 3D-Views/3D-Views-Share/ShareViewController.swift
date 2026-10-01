@@ -56,6 +56,20 @@ final class ShareViewController: UIViewController {
     // MARK: - Handover
 
     private func handOverEverything() async {
+        // Checked first and reported out loud. The container's existence is decided when
+        // the app is signed, not when it is built, and this IPA ships unsigned — so a
+        // signing tool that drops the App Group leaves the extension with nowhere to put
+        // anything. That failure used to look identical to success: "正在导入…" for a
+        // second, then the sheet closes and nothing has happened anywhere. Saying it here
+        // is the only place the user can see it, since the app has nothing to look at.
+        guard AppGroup.isAvailable else {
+            AppGroup.recordHandoff(names: [], failures: ["共享容器不可用"])
+            statusLabel.text = "无法导入：共享容器不可用\n当前安装包的签名里没有 \(AppGroup.identifier)"
+            try? await Task.sleep(for: .seconds(2.2))
+            extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+            return
+        }
+
         let items = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
         let providers = items.flatMap { $0.attachments ?? [] }
 

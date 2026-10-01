@@ -19,7 +19,7 @@ struct HomeView: View {
                     ContentUnavailableView(
                         "暂无文件",
                         systemImage: "cube.transparent",
-                        description: Text("点击右上角按钮导入 STEP 或 STL 文件。")
+                        description: Text("点击左上角按钮导入 STEP 或 STL 文件。\n也可以把文件拷进「文件」App →「我的 iPhone」→「3D Views」，回到本应用会自动导入。")
                     )
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)

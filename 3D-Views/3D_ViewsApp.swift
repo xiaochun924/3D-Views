@@ -73,6 +73,39 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
+    /// The URL door that a scene-based launch actually uses, and the one this project
+    /// never looked behind.
+    ///
+    /// Once `Info.plist` carries a `UIApplicationSceneManifest`, iOS stops filling
+    /// `launchOptions[.url]` on a cold launch — it hands the URL to the *scene* being
+    /// connected instead, as `connectionOptions.urlContexts`. So "cold launch, no URL in
+    /// launchOptions" is exactly what a successful document handover looks like on this
+    /// lifecycle, and reading it as evidence of a dropped URL is how five rounds were
+    /// spent editing declarations that were never consulted.
+    ///
+    /// This is the earliest place the app can see those options. Returning the session's
+    /// own configuration hands the scene straight back to SwiftUI untouched — the point
+    /// here is to observe, not to take over the scene, and `onOpenURL` still receives
+    /// whatever it would have received anyway. A second sighting of the same URL is
+    /// absorbed by `FileHistory.receiveExternalFile`'s de-duplication window.
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let urls = options.urlContexts.map(\.url)
+        let activities = options.userActivities.count
+        if urls.isEmpty {
+            FileHistory.shared.note("连接场景：无 URL（userActivity \(activities) 个，role \(connectingSceneSession.role.rawValue)）")
+        } else {
+            for url in urls {
+                FileHistory.shared.note("连接场景：URL \(url.lastPathComponent)")
+                FileHistory.shared.handleIncomingURL(url, source: "connectionOptions")
+            }
+        }
+        return connectingSceneSession.configuration
+    }
+
     /// A return to the foreground is the moment the share extension's handover becomes
     /// visible, and it is the only hook that runs for a launch the app slept through.
     /// `HomeView` watches `scenePhase` too, but a cold launch can mount the view already
