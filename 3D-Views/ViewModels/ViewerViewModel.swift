@@ -1558,6 +1558,74 @@ final class ViewerViewModel: ObservableObject {
         applyCamera()
     }
 
+    // MARK: - Auto rotation
+
+    /// One tick per frame. The rotation is integrated from the clock rather than
+    /// assuming each tick is exactly this far apart, so a dropped frame skips a step
+    /// of the turn instead of slowing the whole thing down.
+    private static let autoRotationInterval: TimeInterval = 1.0 / 60.0
+
+    /// Radians per second. A full turn in about fifteen seconds: quick enough that the
+    /// far side of a part comes round without the user waiting, slow enough to read a
+    /// feature as it passes. Faster than this and the part reads as a spinning blur
+    /// rather than as a turning object.
+    private static let autoRotationRadiansPerSecond: Double = 2 * .pi / 15
+
+    private var autoRotationTimer: Timer?
+    private var lastAutoRotationTick: TimeInterval = 0
+
+    /// Turns the part continuously about the origin, for hands-free viewing.
+    ///
+    /// This advances the camera's azimuth rather than rotating the model node. The two
+    /// are the same motion on screen — `buildScene` recentres every model on the origin
+    /// through `modelRoot`, so orbiting the camera about the target *is* spinning the
+    /// part about its own centre. Orbiting is the one that stays correct: the picking
+    /// data (`edgeWorldPolylines`, `vertexWorld`, the face overlay cache, and the world
+    /// positions baked into the measurement annotations) is all computed once against
+    /// the model node's world transform at load. Actually rotating `modelRoot` would
+    /// leave every one of those frozen at the old angle, so taps, snaps and labels
+    /// would silently drift out of register with the geometry they describe by however
+    /// far the part had turned.
+    ///
+    /// Idempotent, so callers can hand it the current setting on every appearance
+    /// change without tracking whether it is already running.
+    func setAutoRotation(_ enabled: Bool) {
+        guard enabled else {
+            autoRotationTimer?.invalidate()
+            autoRotationTimer = nil
+            return
+        }
+        guard autoRotationTimer == nil else { return }
+
+        lastAutoRotationTick = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: Self.autoRotationInterval, repeats: true) { [weak self] _ in
+            // The run loop delivers this on the main thread; `assumeIsolated` is what
+            // tells the compiler that, since the block itself is not isolated.
+            MainActor.assumeIsolated {
+                self?.advanceAutoRotation()
+            }
+        }
+        // Added in `.common` rather than through `scheduledTimer`, which installs in
+        // `.default`: the run loop suspends that mode while a gesture is being tracked,
+        // so the rotation would stall under the user's finger and then jump.
+        RunLoop.main.add(timer, forMode: .common)
+        autoRotationTimer = timer
+    }
+
+    /// One tick of the auto-rotation.
+    private func advanceAutoRotation() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = now - lastAutoRotationTick
+        lastAutoRotationTick = now
+        // A delta this large means the app was suspended and has just come back, or the
+        // timer was blocked behind something expensive. Integrating it would snap the
+        // part through a big part of a turn in a single frame, so the frame is dropped
+        // and the clock reset instead.
+        guard elapsed > 0, elapsed < 0.25 else { return }
+        cameraAzimuth -= Float(elapsed * Self.autoRotationRadiansPerSecond)
+        applyCamera()
+    }
+
     func resetView() {
         cameraAzimuth = 0
         cameraElevation = 0.18

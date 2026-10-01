@@ -13,6 +13,10 @@ struct ViewerView: View {
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showSettings = false
     @State private var copiedToPasteboard = false
+    /// The same key `SettingsView` writes, so toggling the switch takes effect on the
+    /// part already open rather than only on the next one.
+    @AppStorage("autoRotate") private var autoRotate = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -128,6 +132,23 @@ struct ViewerView: View {
         }
         .task {
             await viewModel.loadFile(url: file.fileURL)
+        }
+        .onAppear {
+            viewModel.setAutoRotation(autoRotate && scenePhase == .active)
+        }
+        .onDisappear {
+            // Leaving the viewer must stop the timer: it would otherwise keep turning a
+            // part nobody is looking at, and a repeating timer holds a strong reference
+            // to its block until it is invalidated.
+            viewModel.setAutoRotation(false)
+        }
+        .onChange(of: autoRotate) { _, isOn in
+            viewModel.setAutoRotation(isOn && scenePhase == .active)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Covers the app being backgrounded, where the timer would otherwise keep
+            // ticking against a renderer that is no longer drawing.
+            viewModel.setAutoRotation(autoRotate && phase == .active)
         }
         .sheet(isPresented: $showSettings) {
             // `SettingsView` supplies its own title and "完成" button, so it needs a
