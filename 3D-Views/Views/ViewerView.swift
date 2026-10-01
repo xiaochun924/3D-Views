@@ -5,12 +5,14 @@
 
 import SwiftUI
 import SceneKit
+import UIKit
 import os
 
 struct ViewerView: View {
     let file: RecentFile
     @StateObject private var viewModel = ViewerViewModel()
     @State private var showSettings = false
+    @State private var copiedToPasteboard = false
 
     var body: some View {
         ZStack {
@@ -162,6 +164,23 @@ struct ViewerView: View {
                 Text(viewModel.measureType.label)
                     .font(.system(size: 15, weight: .semibold))
                 Spacer()
+                // Puts the reading on the clipboard — the most common thing to do
+                // with a measured number is paste it into a drawing note or a chat.
+                // The glyph flips to a checkmark for a beat so the tap has feedback.
+                if viewModel.isComplete {
+                    Button {
+                        UIPasteboard.general.string = resultSummary
+                        copiedToPasteboard = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
+                            copiedToPasteboard = false
+                        }
+                    } label: {
+                        Image(systemName: copiedToPasteboard ? "checkmark" : "doc.on.doc")
+                            .foregroundColor(copiedToPasteboard ? .green : .blue)
+                    }
+                    .accessibilityLabel("复制测量结果")
+                }
                 // Saves the finished reading into 「测量记录」 without waiting for the
                 // next tap to supersede it. Distinct from the ×, which discards.
                 if viewModel.isComplete {
@@ -182,14 +201,39 @@ struct ViewerView: View {
 
             Divider()
 
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
+                // What the number belongs to. A distance between two faces is a
+                // different fact from the same number between two edges, and the
+                // chips carry the exact entities — color-matched to their markers.
+                if !viewModel.picks.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(Array(viewModel.picks.enumerated()), id: \.element.id) { entry in
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(Color(uiColor: entry.element.entity.markerColor))
+                                    .frame(width: 7, height: 7)
+                                Text(entry.element.entity.description)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color(.tertiarySystemFill), in: Capsule())
+                        }
+                    }
+                }
                 Text(mainResultLabel)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.secondary)
                 Text(mainResultValue)
-                    .font(.system(size: 22, weight: .bold, design: .monospaced))
+                    .font(.system(size: 26, weight: .bold, design: .monospaced))
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.25), value: mainResultValue)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
 
             if (viewModel.measureType == .distance || viewModel.measureType == .linear),
                let delta = deltaVector {
@@ -229,19 +273,22 @@ struct ViewerView: View {
 
             if let message = viewModel.measureMessage {
                 Divider()
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 11))
                     Text(message)
-                        .font(.system(size: 11))
-                    Spacer()
+                        .font(.system(size: 12, weight: .medium))
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
                 }
-                .foregroundColor(.secondary)
+                .foregroundColor(.orange)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
             }
         }
         .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // Wide tablets get a centered card, not a reading stretched across the screen.
+        .frame(maxWidth: 440)
         .padding(.horizontal, 24)
     }
 
@@ -258,6 +305,27 @@ struct ViewerView: View {
         let a = viewModel.picks[0].point
         let b = viewModel.picks[1].point
         return SCNVector3(b.x - a.x, b.y - a.y, b.z - a.z)
+    }
+
+    /// The clipboard form: the labeled reading plus whatever breakdown the panel
+    /// shows underneath, so a pasted value carries its meaning with it.
+    private var resultSummary: String {
+        var lines = ["\(viewModel.measureType.label)：\(mainResultValue)"]
+        if (viewModel.measureType == .distance || viewModel.measureType == .linear),
+           let delta = deltaVector {
+            lines.append("ΔX \(viewModel.displayUnit.format(delta.x))")
+            lines.append("ΔY \(viewModel.displayUnit.format(delta.y))")
+            lines.append("ΔZ \(viewModel.displayUnit.format(delta.z))")
+        }
+        if viewModel.measureType == .radius, let r = viewModel.radiusResult {
+            lines.append("直径：\(viewModel.displayUnit.format(r * 2))")
+        }
+        if viewModel.measureType == .boundingBox, let e = viewModel.boundingBoxExtents {
+            lines.append("长 X \(viewModel.displayUnit.format(e.x))")
+            lines.append("宽 Y \(viewModel.displayUnit.format(e.y))")
+            lines.append("高 Z \(viewModel.displayUnit.format(e.z))")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private var mainResultLabel: String {

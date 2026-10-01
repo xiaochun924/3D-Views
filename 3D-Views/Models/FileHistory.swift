@@ -23,6 +23,10 @@ final class FileHistory: ObservableObject {
 
     @Published var files: [RecentFile] = []
 
+    /// The file the system just handed the app (share sheet 「导入」/ open-in),
+    /// awaiting navigation. `HomeView` consumes it and pushes the viewer.
+    @Published var pendingOpen: RecentFile?
+
     private let userDefaultsKey = "RecentFiles"
 
     private init() {
@@ -47,6 +51,27 @@ final class FileHistory: ObservableObject {
         files.insert(entry, at: 0)
         if files.count > 20 { files = Array(files.prefix(20)) }
         save()
+        return entry
+    }
+
+    /// Receives a file handed over from outside the app — the share sheet's
+    /// 「导入到"3D Views"」 or a document browser open-in. Nothing here runs until the
+    /// URL is copied into our own sandbox: the system may back the URL with a
+    /// security-scoped document, and reading it outside the access scope throws.
+    /// Inbox copies report no scope, so the calls are harmless no-ops there.
+    ///
+    /// Only the formats the viewer understands are accepted — the app is registered
+    /// for STEP/STL, but the share sheet can still offer it for neighbouring types.
+    @discardableResult
+    func receiveExternalFile(at url: URL) -> RecentFile? {
+        let ext = url.pathExtension.lowercased()
+        guard ext == "step" || ext == "stp" || ext == "stl" else { return nil }
+
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        let entry = addFile(sourceURL: url)
+        pendingOpen = entry
         return entry
     }
 

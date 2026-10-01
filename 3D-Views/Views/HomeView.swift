@@ -81,6 +81,14 @@ struct HomeView: View {
                     SettingsView()
                 }
             }
+            .onReceive(history.$pendingOpen) { entry in
+                // onReceive, not onChange: @Published replays the current value on
+                // subscribe, so a file handed over during a cold launch — before any
+                // observer existed — still reaches the navigation stack.
+                guard let entry else { return }
+                navPath.append(entry)
+                history.pendingOpen = nil
+            }
         }
     }
 
