@@ -13,6 +13,13 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $navPath) {
             List {
+                // The diagnostic deliberately goes *above* the file list rather than
+                // below it. Below, it sat after the full-height empty state and was
+                // pushed off-screen — which read as "the panel is empty" and cost a
+                // round of diagnosis. On-screen unconditionally, it cannot be missed
+                // and it cannot be confused for a missing build.
+                diagnosticSection
+
                 if history.files.isEmpty {
                     ContentUnavailableView(
                         "暂无文件",
@@ -55,7 +62,6 @@ struct HomeView: View {
                         }
                     }
                 }
-                diagnosticSection
             }
             .navigationTitle("3D 看图")
             .toolbar {
@@ -124,13 +130,13 @@ struct HomeView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(history.handoverLog, id: \.self) { line in
+                ForEach(Array(history.handoverLog.enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
-            ForEach(FileHistory.bundleFacts(), id: \.self) { line in
+            ForEach(Array(FileHistory.bundleFacts().enumerated()), id: \.offset) { _, line in
                 Text(line)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.tertiary)

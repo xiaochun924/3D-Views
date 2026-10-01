@@ -176,19 +176,23 @@ final class FileHistory: ObservableObject {
 
         guard Self.looksLikeCADFile(url) else {
             importFailure = "只能打开 STEP、STP 或 STL 文件。"
+            note("  拒绝：类型不支持（扩展名「\(url.pathExtension)」）")
             return nil
         }
 
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        note("  安全作用域：\(scoped ? "已获得" : "未提供")")
 
         do {
             let entry = try addFile(sourceURL: url)
             importFailure = nil
             pendingOpen = entry
+            note("  已导入：\(entry.fileName)")
             return entry
         } catch {
             importFailure = "导入失败：\(error.localizedDescription)"
+            note("  导入失败：\(error.localizedDescription)")
             return nil
         }
     }
