@@ -1470,9 +1470,18 @@ final class ViewerViewModel: ObservableObject {
     ///
     /// Offsets are given in the camera's own frame — left/right, up/down, behind — and so
     /// are rotated into the model's frame by the camera's current orientation. The lights
-    /// therefore come from the upper left of the screen no matter how the part is turned,
-    /// which is what keeps one side lit and the other in shadow from every angle; that
-    /// gradient across the surface is what makes an untextured part readable.
+    /// therefore keep the same place on screen no matter how the part is turned, which is
+    /// what keeps one side lit and the other in shadow from every angle; that gradient
+    /// across the surface is what makes an untextured part readable.
+    ///
+    /// The key sits close to straight on — its `z` dominates both the sideways and the
+    /// upward term — so the face looking at the viewer is the lit one, and the tilt that
+    /// is left is only enough to keep a top face and a side face telling each other apart.
+    /// Lighting it from further off to the upper left, as an earlier build did, put the
+    /// highlight on a face the user was not looking at and left the front of the part
+    /// the dimmest thing on screen. Pushing all the way to dead-on `(0, 0, 1)` is the
+    /// other failure: with no angle left there is no shading gradient, and the part
+    /// flattens into a silhouette — the thing the environment comment above warns about.
     private func updateLights(relativeTo camNode: SCNNode) {
         guard let scene else { return }
 
@@ -1489,8 +1498,8 @@ final class ViewerViewModel: ObservableObject {
             node.look(at: cameraTarget)
         }
 
-        place("keyLight", local: SIMD3<Float>(-0.45, 0.62, 0.64))
-        place("fillLight", local: SIMD3<Float>(0.60, 0.10, 0.55))
+        place("keyLight", local: SIMD3<Float>(-0.22, 0.30, 1.00))
+        place("fillLight", local: SIMD3<Float>(0.38, 0.08, 0.85))
     }
 
     /// Distance at which the whole part fits the viewport, with a margin.
