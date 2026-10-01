@@ -153,6 +153,29 @@ final class FileHistory: ObservableObject {
 
         lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装")")
 
+        // Whether the signing tool signed the nested pieces, not just the outer app.
+        //
+        // The CI package is built with `CODE_SIGNING_ALLOWED=NO`, so every `_CodeSignature`
+        // in it is the work of whatever signed it for the device. A signed main bundle
+        // with an unsigned `.appex` is the one failure that is indistinguishable from
+        // "the extension is installed but the system never starts it": iOS refuses to
+        // load an extension whose signature it cannot verify, and tells the app nothing.
+        // Reading the seal back is the only way to tell those two apart from in here.
+        func sealState(of url: URL) -> String {
+            let seal = url.appendingPathComponent("_CodeSignature/CodeResources")
+            guard FileManager.default.fileExists(atPath: seal.path) else { return "无" }
+            let size = (try? FileManager.default.attributesOfItem(atPath: seal.path))?[.size] as? Int ?? 0
+            return "有（\(size) 字节）"
+        }
+
+        lines.append("主包签名：\(sealState(of: Bundle.main.bundleURL))")
+        if let plugins = Bundle.main.builtInPlugInsURL {
+            let appex = plugins.appendingPathComponent("3D-Views-Share.appex")
+            lines.append("扩展签名：\(sealState(of: appex))")
+        } else {
+            lines.append("扩展签名：扩展目录不可得")
+        }
+
         // Whether the extension has ever actually been brought up. "Not installed",
         // "installed but never started" and "started but never finished" are three
         // different faults, and a missing handoff record only rules out the third — this

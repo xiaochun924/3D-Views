@@ -177,16 +177,24 @@ final class ShareViewController: UIViewController {
 
     /// Best-effort pull of the host app to the foreground.
     ///
-    /// Share extensions are given no supported way to do this, and on most iOS
-    /// versions the responder walk below finds nothing to call. That is precisely why
-    /// nothing depends on it: the file is already sitting in the App Group inbox, and
-    /// the app drains that inbox on launch and on every activation regardless.
+    /// Two attempts, because neither is dependable on its own and the second costs
+    /// nothing when the first works. `NSExtensionContext.open(_:completionHandler:)` is
+    /// public API and is the sanctioned route out of an extension; the documentation only
+    /// promises it for Today widgets, and whether a share extension is allowed to use it
+    /// varies by version, so it is tried first and the responder walk is kept behind it.
+    ///
+    /// Nothing depends on either succeeding: the file is already sitting in the App Group
+    /// inbox, and the app drains that inbox on launch and on every activation regardless.
+    /// Opening the URL only saves the user a manual switch back.
     ///
     /// The class name is matched as a string rather than with `as? UIApplication`
     /// because `UIApplication.shared` is marked unavailable in app extensions and the
     /// intent here is narrow enough not to need the type.
     private func wakeUpHostApp() {
         guard let url = URL(string: "\(AppGroup.wakeUpScheme)://import") else { return }
+
+        extensionContext?.open(url, completionHandler: nil)
+
         let selector = NSSelectorFromString("openURL:")
         var responder: UIResponder? = self
 
