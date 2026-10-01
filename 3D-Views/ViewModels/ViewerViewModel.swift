@@ -1446,7 +1446,7 @@ final class ViewerViewModel: ObservableObject {
         let forward = -backward
 
         let position = SIMD3<Float>(cameraTarget.x, cameraTarget.y, cameraTarget.z) + backward * d
-        camNode.simdPosition = SCNVector3(position.x, position.y, position.z)
+        camNode.simdPosition = position
 
         // SceneKit cameras look down their local -Z, so the basis columns are
         // screen-right, screen-up, and backward.
