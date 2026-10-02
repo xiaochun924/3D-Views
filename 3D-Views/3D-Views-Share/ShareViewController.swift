@@ -210,5 +210,6 @@ final class ShareViewController: UIViewController {
             }
             responder = current.next
         }
+        return false
     }
 }
