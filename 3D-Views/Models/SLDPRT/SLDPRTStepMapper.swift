@@ -103,7 +103,9 @@ internal final class XtStepMapper: @unchecked Sendable {
         for face in chain(deref(shell,"face"),"next") where seen.insert(face.index).inserted { faces.append(try convertFace(face, false, &lo, &hi)) }
         for face in chain(deref(shell,"front_face"),"next_front") where seen.insert(face.index).inserted { warn("front_face", "front_face: shell uses a face from its front side (flipped on output)"); faces.append(try convertFace(face, true, &lo, &hi)) }
         guard !faces.isEmpty else { throw SLDPRTConvertError(code:"unsupported_topology", message:"shell #\(shell.index) has no faces (acorn/wire shell)") }
-        return (w.add("CLOSED_SHELL('',(\(faces.map{"#\($0)"}.joined(separator:",")))")), lo[0] < hi[0] ? dist(lo,hi) : 0)
+        let shellID = w.add("CLOSED_SHELL('',(\(faces.map { "#\($0)" }.joined(separator: ","))))")
+        let size = lo[0] < hi[0] ? dist(lo, hi) : 0
+        return (shellID, size)
     }
 
     internal func convertFace(_ face: XTNode, _ flip: Bool, _ lo: inout [Double], _ hi: inout [Double]) throws -> Int {
@@ -116,7 +118,10 @@ internal final class XtStepMapper: @unchecked Sendable {
             if let v = deref(fins[0],"vertex"), deref(fins[0],"edge") == nil { specs.append((w.add("VERTEX_LOOP('',#\(try vertex(v,&lo,&hi)))"),0,true)); continue }
             var oes:[Int]=[]; var a=[Double](repeating:.infinity,count:3), b=[Double](repeating:-.infinity,count:3)
             for fin in fins { guard let edge=deref(fin,"edge") else { throw SLDPRTConvertError(code:"unsupported_topology",message:"mixed isolated/ordinary fins in loop id \(int(loop,"node_id"))") }; let (ec,sv,ev)=try edgeCurve(edge,&lo,&hi); var o=str(fin,"sense")=="+"; if flip{o.toggle()}; oes.append(w.add("ORIENTED_EDGE('',*,*,#\(ec),\(o ? ".T.":".F."))")); for id in [sv,ev] { if let p=vertexPos[id] { for k in 0..<3 { a[k]=min(a[k],p[k]); b[k]=max(b[k],p[k]) } } } }
-            if flip { oes.reverse() }; specs.append((w.add("EDGE_LOOP('',(\(oes.map{"#\($0)"}.joined(separator:",")))")), a[0] < b[0] ? dist(a,b) : 0, false))
+            if flip { oes.reverse() }
+            let loopID = w.add("EDGE_LOOP('',(\(oes.map { "#\($0)" }.joined(separator: ","))))")
+            let size = a[0] < b[0] ? dist(a, b) : 0
+            specs.append((loopID, size, false))
         }
         let outer = specs.indices.max { specs[$0].1 < specs[$1].1 } ?? 0
         let bounds = specs.enumerated().map { i,s in w.add("\(i == outer ? "FACE_OUTER_BOUND" : "FACE_BOUND")('',#\(s.0),.T.)") }
@@ -135,7 +140,10 @@ internal final class XtStepMapper: @unchecked Sendable {
     internal func edgeCurve(_ edge: XTNode, _ lo: inout [Double], _ hi: inout [Double]) throws -> (Int,Int,Int) {
         if let x=edgeIDs[edge.index]{return x}; let fin=deref(edge,"halfedge"), other=deref(fin,"other"), end=deref(fin,"vertex"), start=deref(other,"vertex"); var c=deref(edge,"curve"); var tolerant=false
         if c == nil { tolerant=true; c=deref(fin,"curve") ?? deref(other,"curve"); guard c != nil else{throw SLDPRTConvertError(code:"unsupported_topology",message:"edge id \(int(edge,"node_id")) has neither a curve nor fin curves")}; warn("tolerant_edge","tolerant_edge: tolerant edges rebuilt from their fin SP-curves") }
-        let ps=vec(deref(start,"point"),"pvec"), pe=vec(deref(end,"point"),"pvec"); let (cid,var sense,ev)=try curve(c!,ps,pe)
+        let ps = vec(deref(start, "point"), "pvec")
+        let pe = vec(deref(end, "point"), "pvec")
+        let (cid, initialSense, ev) = try curve(c!, ps, pe)
+        var sense = initialSense
         let sv:Int, evID:Int, si:Int, ei:Int
         if let s=start,let e=end { si=s.index;ei=e.index;sv=try vertex(s,&lo,&hi);evID=try vertex(e,&lo,&hi); if tolerant { let a=try ev(0),b=try ev(1); if dist(a,ps!)+dist(b,pe!) > dist(a,pe!)+dist(b,ps!){sense.toggle()} } }
         else { let p=try ev(0); sv=try syntheticVertex(edge.index,p,&lo,&hi); evID=sv; si=-1_000_000-edge.index; ei=si }
