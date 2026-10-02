@@ -229,8 +229,7 @@ targets:
           NSExtensionAttributes:
             NSExtensionActivationRule:
               NSExtensionActivationSupportsFileWithMaxCount: 20
-              # 「文件」App 分享文档时给的是 public.url / public.file-url，
-              # 只声明文件类型并不够，这一项才是把它放进应用行的关键。
+              # Files may expose a document as public.url / public.file-url.
               NSExtensionActivationSupportsWebURLWithMaxCount: 1
               NSExtensionActivationSupportsImageWithMaxCount: 0
               NSExtensionActivationSupportsMovieWithMaxCount: 0

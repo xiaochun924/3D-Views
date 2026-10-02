@@ -94,16 +94,10 @@ final class ShareViewController: UIViewController {
         AppGroup.recordHandoff(names: deposited, failures: failures)
         statusLabel.text = message(deposited: deposited, failures: failures)
 
-        // Start the host-app handoff as soon as the inbox copy is complete. Keeping the
-        // extension alive while the status message is displayed makes the request race
-        // with the share sheet's dismissal instead of giving SpringBoard a head start.
-        let opened = await wakeUpHostApp()
-        if opened {
-            // Give SpringBoard a short window to attach the host scene before the
-            // extension tears itself down. The shared inbox remains the durable
-            // handoff if the host is cold or the scene is still mounting.
-            try? await Task.sleep(for: .milliseconds(350))
-        }
+        // The App Group copy is the durable handoff. The extension context's returned
+        // items belong to the source app, not to this app's document-open lifecycle.
+        // Ask SpringBoard to foreground the registered host URL after the copy completes.
+        await wakeUpHostApp()
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
 
@@ -187,28 +181,16 @@ final class ShareViewController: UIViewController {
     /// already in the App Group inbox, so a failed wake-up is still recoverable on the next
     /// app activation; it only affects whether the user is taken there automatically.
     private func wakeUpHostApp() async -> Bool {
-        guard let url = URL(string: "\(AppGroup.wakeUpScheme)://import") else { return false }
+        guard let url = URL(string: "\(AppGroup.wakeUpScheme)://import"),
+              let context = extensionContext else { return false }
 
-        guard let context = extensionContext else { return false }
-        let opened = await withCheckedContinuation { continuation in
+        // Share extensions must ask their extension context to open the containing app.
+        // The callback is the handoff boundary; only finish the extension after iOS has
+        // accepted the request so SpringBoard can attach the host scene.
+        return await withCheckedContinuation { continuation in
             context.open(url) { didOpen in
                 continuation.resume(returning: didOpen)
             }
         }
-        if opened { return true }
-
-        // Some iOS versions reject openURL from a share extension. Keep the legacy
-        // responder fallback, but run it only after the sanctioned API reports failure.
-        let selector = NSSelectorFromString("openURL:")
-        var responder: UIResponder? = self
-        while let current = responder {
-            let className = NSStringFromClass(type(of: current))
-            if className.hasSuffix("Application"), current.responds(to: selector) {
-                current.perform(selector, with: url)
-                return true
-            }
-            responder = current.next
-        }
-        return false
     }
 }
