@@ -98,7 +98,7 @@ final class ShareViewController: UIViewController {
         // "nothing happened", which is the exact confusion this extension exists to end.
         try? await Task.sleep(for: .seconds(1.1))
 
-        wakeUpHostApp()
+        await wakeUpHostApp()
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
 
@@ -175,29 +175,27 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Waking the app
 
-    /// Best-effort pull of the host app to the foreground.
+    /// Pulls the host app to the foreground before the extension is dismissed.
     ///
-    /// Two attempts, because neither is dependable on its own and the second costs
-    /// nothing when the first works. `NSExtensionContext.open(_:completionHandler:)` is
-    /// public API and is the sanctioned route out of an extension; the documentation only
-    /// promises it for Today widgets, and whether a share extension is allowed to use it
-    /// varies by version, so it is tried first and the responder walk is kept behind it.
-    ///
-    /// Nothing depends on either succeeding: the file is already sitting in the App Group
-    /// inbox, and the app drains that inbox on launch and on every activation regardless.
-    /// Opening the URL only saves the user a manual switch back.
-    ///
-    /// The class name is matched as a string rather than with `as? UIApplication`
-    /// because `UIApplication.shared` is marked unavailable in app extensions and the
-    /// intent here is narrow enough not to need the type.
-    private func wakeUpHostApp() {
+    /// The completion callback matters: ending a share extension immediately after calling
+    /// `open` can tear down the extension before SpringBoard handles the URL. The file is
+    /// already in the App Group inbox, so a failed wake-up is still recoverable on the next
+    /// app activation; it only affects whether the user is taken there automatically.
+    private func wakeUpHostApp() async {
         guard let url = URL(string: "\(AppGroup.wakeUpScheme)://import") else { return }
 
-        extensionContext?.open(url, completionHandler: nil)
+        guard let context = extensionContext else { return }
+        let opened = await withCheckedContinuation { continuation in
+            context.open(url) { didOpen in
+                continuation.resume(returning: didOpen)
+            }
+        }
+        if opened { return }
 
+        // Some iOS versions reject openURL from a share extension. Keep the legacy
+        // responder fallback, but run it only after the sanctioned API reports failure.
         let selector = NSSelectorFromString("openURL:")
         var responder: UIResponder? = self
-
         while let current = responder {
             let className = NSStringFromClass(type(of: current))
             if className.hasSuffix("Application"), current.responds(to: selector) {
