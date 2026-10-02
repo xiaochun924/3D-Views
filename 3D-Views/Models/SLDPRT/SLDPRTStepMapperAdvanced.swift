@@ -24,7 +24,10 @@ extension XtStepMapper {
         let vc = (0..<ns.nU).allSatisfy { i in dist(ns.ctrl[i][0], ns.ctrl[i][ns.nV - 1]) < 1e-9 }
         let closed = "\(uc ? ".T." : ".F."),\(vc ? ".T." : ".F.")"
         if let weights = ns.weights {
-            let wg = "(\(weights.map { "(\(try $0.map(fmt).joined(separator: ",")))" }.joined(separator: ",")))"
+            let weightRows = try weights.map { row in
+                "(\(try row.map { try fmt($0) }.joined(separator: ",")))"
+            }.joined(separator: ",")
+            let wg = "(\(weightRows))"
             return w.add("(BOUNDED_SURFACE()B_SPLINE_SURFACE(\(ns.p),\(ns.q),(\(rows)),.UNSPECIFIED.,\(closed),.F.)B_SPLINE_SURFACE_WITH_KNOTS((\(um)),(\(vm)),(\(uk)),(\(vk)),.UNSPECIFIED.)GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(\(wg))REPRESENTATION_ITEM('')SURFACE())")
         }
         return w.add("B_SPLINE_SURFACE_WITH_KNOTS('',\(ns.p),\(ns.q),(\(rows)),.UNSPECIFIED.,\(closed),.F.,(\(um)),(\(vm)),(\(uk)),(\(vk)),.UNSPECIFIED.)")
