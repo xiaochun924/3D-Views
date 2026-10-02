@@ -94,7 +94,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          IPA=HomeInventory-unsigned.ipa
+          IPA=3D-Views.ipa
           RELEASE_TAG="unsigned-ipa"
           gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$RELEASE_TAG" \
