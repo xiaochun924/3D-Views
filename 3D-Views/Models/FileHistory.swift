@@ -62,31 +62,33 @@ final class FileHistory: ObservableObject {
     /// The formats the viewer can actually open, in one place because three gates consult
     /// it: the handover from another app, the sandbox scan, and the rejection message.
     ///
-    /// Every entry here has a reader in the kernel, which is the only thing that makes it
-    /// honest to list: `Shape.loadSTEP`, `readSTL`, `loadIGES`, `loadOBJ` and `loadBREP`.
-    /// IGES and OBJ are the two that matter in practice — they are what a SolidWorks or
-    /// Fusion user can "save as" without owning anything else, and both were sitting
-    /// unused in the kernel while the app accepted only STEP and STL.
+    /// Every entry here has a real reader behind it, which is the only thing that makes it
+    /// honest to list. Five of them are the kernel's own: `Shape.loadSTEP`, `readSTL`,
+    /// `loadIGES`, `loadOBJ` and `loadBREP`. `sldprt` is different in kind — OpenCASCADE
+    /// has never had a SolidWorks reader, so the file is first turned into STEP text by
+    /// the bundled port of sldprt2step (`Models/SLDPRT/`) and only then handed to
+    /// `Shape.loadSTEP` like any other STEP file. It still ends up as real B-rep
+    /// topology, so face/edge/vertex measurement keeps working.
     static let supportedExtensions: Set<String> = [
         "step", "stp",
         "stl",
         "iges", "igs",
         "obj",
-        "brep"
+        "brep",
+        "sldprt"
     ]
 
-    /// The formats a CAD user is most likely to try and that this viewer cannot open,
-    /// mapped to the advice worth showing. Kept apart from `supportedExtensions` because
-    /// the useful part is the message, not the gate.
+    /// The formats a CAD user is most likely to try and that this viewer still cannot
+    /// open, mapped to the advice worth showing. Kept apart from `supportedExtensions`
+    /// because the useful part is the message, not the gate.
     ///
-    /// SolidWorks' native format is the one that brings people here. It is a private
-    /// binary container with no published specification and no open-source reader, and
-    /// OpenCASCADE — the kernel this app is built on — has never had one either, so the
-    /// refusal is the whole product surface available: there is no version of this that
-    /// ends in geometry. Saying so plainly, and naming the two exports that do work, is
-    /// better than the silence the gate used to produce.
+    /// `.sldprt` used to head this list. It no longer does: the app now carries a port of
+    /// sldprt2step that pulls the embedded Parasolid B-rep out of the container itself, so
+    /// a SolidWorks part opens like anything else. The assembly and drawing containers are
+    /// a different problem — they reference other files and hold no single self-contained
+    /// B-rep — and Parasolid's own `.x_t`/`.x_b` transmits are still unsupported, so the
+    /// advice below still earns its place.
     static let knownUnsupportedFormats: [String: String] = [
-        "sldprt": "SolidWorks 零件",
         "sldasm": "SolidWorks 装配体",
         "slddrw": "SolidWorks 工程图",
         "x_t": "Parasolid",

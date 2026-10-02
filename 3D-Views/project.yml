@@ -98,9 +98,9 @@ targets:
               - stl
             LSItemContentTypes:
               - com.xiaochun.stl
-          # IGES 是 SolidWorks / Fusion 用户不额外花钱就能导出的通用格式，也是这次
-          # 「增加 SW 支持」真正落地的那一半 —— 原生 .sldprt 私有且无开源实现，
-          # 内核读不了，只能靠这两个出口。
+          # IGES 是 SolidWorks / Fusion 用户不额外花钱就能导出的通用格式。它和下面的
+          # 原生 .sldprt 各管一段：IGES 是「另存为」那条路，.sldprt 是直接把文件拖进
+          # 来那条路（App 自己把容器里内嵌的 Parasolid B-rep 转成 STEP）。
           - CFBundleTypeName: IGES CAD File
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
@@ -124,6 +124,16 @@ targets:
               - brep
             LSItemContentTypes:
               - com.xiaochun.brep
+          # SolidWorks 零件。原生 .sldprt 是私有容器，OpenCASCADE 读不了，但 App 自带
+          # sldprt2step 的 Swift 移植（Models/SLDPRT/）：先从容器里取出内嵌的 Parasolid
+          # XT B-rep，转成 STEP 文本，再交给 loadSTEP —— 面/边/顶点量测能力完整保留。
+          - CFBundleTypeName: SolidWorks Part
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            CFBundleTypeExtensions:
+              - sldprt
+            LSItemContentTypes:
+              - com.xiaochun.sldprt
           - CFBundleTypeName: Any Data File
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
@@ -168,6 +178,13 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - brep
+          - UTTypeIdentifier: com.xiaochun.sldprt
+            UTTypeDescription: SolidWorks Part
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - sldprt
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews

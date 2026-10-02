@@ -545,6 +545,7 @@ final class ViewerViewModel: ObservableObject {
         case iges
         case obj
         case brep
+        case sldprt
 
         /// True for the formats the kernel hands back as topology, false for the ones
         /// that are only ever a triangle soup.
@@ -555,7 +556,7 @@ final class ViewerViewModel: ObservableObject {
         /// mode silently does nothing.
         var isBrep: Bool {
             switch self {
-            case .step, .iges, .brep: return true
+            case .step, .iges, .brep, .sldprt: return true
             case .stl, .obj: return false
             }
         }
@@ -567,6 +568,7 @@ final class ViewerViewModel: ObservableObject {
             case .iges: return "IGES"
             case .obj: return "OBJ"
             case .brep: return "BREP"
+            case .sldprt: return "SolidWorks Part"
             }
         }
 
@@ -582,6 +584,7 @@ final class ViewerViewModel: ObservableObject {
             case "iges", "igs": return .iges
             case "obj": return .obj
             case "brep": return .brep
+            case "sldprt": return .sldprt
             default: return nil
             }
         }
@@ -626,6 +629,10 @@ final class ViewerViewModel: ObservableObject {
             switch format {
             case .step:
                 loadedShape = try OCCTSwift.Shape.loadSTEP(from: url)
+            case .sldprt:
+                let converted = try SLDPRTConverter.convert(url: url)
+                defer { try? FileManager.default.removeItem(at: converted.stepURL) }
+                loadedShape = try OCCTSwift.Shape.loadSTEP(from: converted.stepURL)
             case .stl:
                 guard let loaded = OCCTSwift.Shape.readSTL(from: url.path) else {
                     loadError = "STL 文件读取失败。"
