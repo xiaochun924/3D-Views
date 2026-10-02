@@ -94,10 +94,9 @@ final class ShareViewController: UIViewController {
         AppGroup.recordHandoff(names: deposited, failures: failures)
         statusLabel.text = message(deposited: deposited, failures: failures)
 
-        // Let the message land before the sheet closes; a silent dismissal reads as
-        // "nothing happened", which is the exact confusion this extension exists to end.
-        try? await Task.sleep(for: .seconds(1.1))
-
+        // Start the host-app handoff as soon as the inbox copy is complete. Keeping the
+        // extension alive while the status message is displayed makes the request race
+        // with the share sheet's dismissal instead of giving SpringBoard a head start.
         let opened = await wakeUpHostApp()
         if opened {
             // Give SpringBoard a short window to attach the host scene before the
