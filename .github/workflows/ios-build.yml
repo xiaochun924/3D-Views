@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build HomeInventory
+    name: 3D-Views
     runs-on: macos-latest
     permissions:
       contents: write
