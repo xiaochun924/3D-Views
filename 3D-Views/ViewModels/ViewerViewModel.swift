@@ -3221,6 +3221,8 @@ final class ViewerViewModel: ObservableObject {
 
         let group = SCNNode()
         group.name = "measure_group"
+        // Measurement annotations stay visible as an inspection overlay.
+        group.renderingOrder = 1000
 
         for (i, pick) in picks.enumerated() {
             addMarker(at: pick.point, entity: pick.entity, index: i,
@@ -3268,6 +3270,7 @@ final class ViewerViewModel: ObservableObject {
             let cn = SCNNode(geometry: centerSphere)
             cn.position = center
             cn.name = "measure_dot"
+            cn.renderingOrder = 1002
             group.addChildNode(cn)
 
             addCylinderLine(from: center, to: picks[0].point,
@@ -3296,6 +3299,9 @@ final class ViewerViewModel: ObservableObject {
                                             labelAnchor.y + markerRadius * 2.5,
                                             labelAnchor.z)
             labelNode.name = "measure_label"
+            labelNode.renderingOrder = 1003
+            text.firstMaterial?.readsFromDepthBuffer = false
+            text.firstMaterial?.writesToDepthBuffer = false
             let billboard = SCNBillboardConstraint()
             billboard.freeAxes = .all
             labelNode.constraints = [billboard]
@@ -3332,10 +3338,13 @@ final class ViewerViewModel: ObservableObject {
         mat.diffuse.contents = color
         mat.emission.contents = color
         mat.lightingModel = .constant
+        mat.readsFromDepthBuffer = false
+        mat.writesToDepthBuffer = false
         geometry.materials = [mat]
         let marker = SCNNode(geometry: geometry)
         marker.position = point
         marker.name = "measure_dot"
+        marker.renderingOrder = 1002
         group.addChildNode(marker)
 
         guard showTag else { return }
@@ -3361,6 +3370,7 @@ final class ViewerViewModel: ObservableObject {
             (tMin.x + tMax.x) / 2, (tMin.y + tMax.y) / 2, (tMin.z + tMax.z) / 2)
         textNode.position = SCNVector3(point.x, point.y + markerRadius * 2.2, point.z)
         textNode.name = "measure_num"
+        textNode.renderingOrder = 1003
         let billboard = SCNBillboardConstraint()
         billboard.freeAxes = .all
         textNode.constraints = [billboard]
@@ -3377,6 +3387,8 @@ final class ViewerViewModel: ObservableObject {
         let cylMat = SCNMaterial()
         cylMat.diffuse.contents = color
         cylMat.lightingModel = .constant
+        cylMat.readsFromDepthBuffer = false
+        cylMat.writesToDepthBuffer = false
         cylinder.materials = [cylMat]
         let cylNode = SCNNode(geometry: cylinder)
         cylNode.name = "measure_line"
@@ -3445,6 +3457,9 @@ final class ViewerViewModel: ObservableObject {
             (tMin.x + tMax.x) / 2, (tMin.y + tMax.y) / 2, (tMin.z + tMax.z) / 2)
         node.position = SCNVector3(point.x, point.y + Float(height) * 0.6, point.z)
         node.name = "measure_label"
+        node.renderingOrder = 1003
+        text.firstMaterial?.readsFromDepthBuffer = false
+        text.firstMaterial?.writesToDepthBuffer = false
         let billboard = SCNBillboardConstraint()
         billboard.freeAxes = .all
         node.constraints = [billboard]
