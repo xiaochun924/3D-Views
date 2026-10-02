@@ -116,6 +116,3 @@ jobs:
             --title "3D-Views" \
             --notes "自签版本" \
             "$IPA"
-
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
