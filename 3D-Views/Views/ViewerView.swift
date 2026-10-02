@@ -314,7 +314,7 @@ struct ViewerView: View {
         }
         .liquidGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         // Wide tablets get a centered card, not a reading stretched across the screen.
-        .frame(maxWidth: 260)
+        .frame(maxWidth: 400)
         .padding(.horizontal, 12)
     }
 
