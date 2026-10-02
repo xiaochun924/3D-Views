@@ -1989,13 +1989,8 @@ final class ViewerViewModel: ObservableObject {
 
         switch snapMode {
         case .automatic:
-            // CAD-style priority: the most specific entity wins.
-            if let vertex = nearestVertex(to: screenPoint, near: surfacePoint, in: view) {
-                return Pick(point: vertex.position, entity: .vertex(vertex.index))
-            }
-            if let edge = nearestEdge(to: screenPoint, near: surfacePoint, in: view) {
-                return Pick(point: edge.point, entity: .edge(edge.edgeIndex))
-            }
+            // Surface-first priority: a normal tap selects the face; edge and vertex
+            // snapping only take over when the user explicitly chooses those modes.
             return Pick(point: surfacePoint, entity: surfaceEntity ?? .freePoint)
 
         case .face:
