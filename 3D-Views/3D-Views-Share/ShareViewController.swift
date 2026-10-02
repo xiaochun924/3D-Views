@@ -206,7 +206,7 @@ final class ShareViewController: UIViewController {
             let className = NSStringFromClass(type(of: current))
             if className.hasSuffix("Application"), current.responds(to: selector) {
                 current.perform(selector, with: url)
-                return
+                return true
             }
             responder = current.next
         }
