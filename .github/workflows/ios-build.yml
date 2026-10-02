@@ -41,10 +41,11 @@ jobs:
           xcodegen --version
 
       - name: 生成 Xcode 工程
-        run: |
-          xcodegen generate
+        working-directory: 3D-Views
+        run: xcodegen generate
 
       - name: 编译
+        working-directory: 3D-Views
         run: |
           set -o pipefail
           xcodebuild \
@@ -63,13 +64,14 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build_log.txt
+          name: build-log-${{ github.run_number }}
+          path: 3D-Views/build_log.txt
           if-no-files-found: warn
           retention-days: 7
 
       - name: 上报编译错误到 Issue（失败时，公开可见，免登录查看）
         if: failure()
+        working-directory: 3D-Views
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -79,18 +81,24 @@ jobs:
           gh issue create --title "CI 编译失败 $(date -u +%m-%dT%H:%MZ)" --body-file body.md || true
 
       - name: 打包 IPA
+        if: success()
+        working-directory: 3D-Views
         run: |
+          set -euxo pipefail
           APP=$(find build -type d -name "*.app" | head -1)
           if [ -z "$APP" ]; then
-            echo "未找到 .app 产物"; exit 1
+            echo "未找到 .app 产物"
+            exit 1
           fi
           echo "产物: $APP"
-          rm -rf Payload && mkdir -p Payload
+          rm -rf Payload
+          mkdir -p Payload
           cp -r "$APP" Payload/
-          zip -qr 3D-Views.ipa Payload
-          ls -lh 3D-Views.ipa
+          zip -qr ../3D-Views.ipa Payload
+          ls -lh ../3D-Views.ipa
 
       - name: 发布 IPA 到 Release
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -103,9 +111,10 @@ jobs:
             "$IPA"
 
       - name: 上传 IPA
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: 3D-Views-ipa
+          name: 3D-Views-ipa-${{ github.run_number }}
           path: 3D-Views.ipa
           if-no-files-found: error
           retention-days: 30
