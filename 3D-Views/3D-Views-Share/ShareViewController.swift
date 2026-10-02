@@ -98,7 +98,13 @@ final class ShareViewController: UIViewController {
         // "nothing happened", which is the exact confusion this extension exists to end.
         try? await Task.sleep(for: .seconds(1.1))
 
-        await wakeUpHostApp()
+        let opened = await wakeUpHostApp()
+        if opened {
+            // Give SpringBoard a short window to attach the host scene before the
+            // extension tears itself down. The shared inbox remains the durable
+            // handoff if the host is cold or the scene is still mounting.
+            try? await Task.sleep(for: .milliseconds(350))
+        }
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
 
@@ -181,16 +187,16 @@ final class ShareViewController: UIViewController {
     /// `open` can tear down the extension before SpringBoard handles the URL. The file is
     /// already in the App Group inbox, so a failed wake-up is still recoverable on the next
     /// app activation; it only affects whether the user is taken there automatically.
-    private func wakeUpHostApp() async {
-        guard let url = URL(string: "\(AppGroup.wakeUpScheme)://import") else { return }
+    private func wakeUpHostApp() async -> Bool {
+        guard let url = URL(string: "\(AppGroup.wakeUpScheme)://import") else { return false }
 
-        guard let context = extensionContext else { return }
+        guard let context = extensionContext else { return false }
         let opened = await withCheckedContinuation { continuation in
             context.open(url) { didOpen in
                 continuation.resume(returning: didOpen)
             }
         }
-        if opened { return }
+        if opened { return true }
 
         // Some iOS versions reject openURL from a share extension. Keep the legacy
         // responder fallback, but run it only after the sanctioned API reports failure.
