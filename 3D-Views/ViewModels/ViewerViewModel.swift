@@ -1324,7 +1324,7 @@ final class ViewerViewModel: ObservableObject {
             let outlineAnchor = SCNNode()
             outlineAnchor.name = "outlineAnchor"
             outlineAnchor.position = center
-            outlineAnchor.scale = SCNVector3(1.01, 1.01, 1.01)
+            outlineAnchor.scale = SCNVector3(1.005, 1.005, 1.005)
 
             let outlineNode = SCNNode(geometry: outlineGeometry)
             outlineNode.name = "outline"
