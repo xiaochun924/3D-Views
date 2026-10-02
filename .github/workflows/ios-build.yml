@@ -103,20 +103,19 @@ jobs:
           path: 3D-Views-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
+          
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "${{ matrix.project }}"
+          IPA="../${{ matrix.project }}-unsigned.ipa"
+          RELEASE_TAG="unsigned-ipa"
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$RELEASE_TAG" \
+            --title "3D-Views" \
+            --notes "自签版本" \
+            "$IPA"
 
-      - name: Publish unsigned IPA release
-        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: unsigned-ipa
-          name: 3D-Views unsigned IPA
-          body: |
-            自动构建的未签名 iOS IPA。
-
-            Commit: ${{ github.sha }}
-            Run: ${{ github.run_number }}
-          files: 3D-Views-unsigned.ipa
-          overwrite_files: true
-          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
