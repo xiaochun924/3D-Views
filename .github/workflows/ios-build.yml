@@ -1,81 +1,81 @@
-name: 3D-Views
+name: 3D-Views Debug Build
+
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   build:
-    name: Build ${{ matrix.project }}
+    name: Build 3D-Views
     runs-on: macos-latest
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        project: [3D-Views]
-        scheme: [3D-Views]
+    timeout-minutes: 30
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v4
-      - name: 查看 Xcode 与 iOS SDK 版本
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Show toolchain
         run: |
+          set -euxo pipefail
           xcodebuild -version
-          xcodebuild -showsdks | grep -i "ios" || true
-      - name: 安装 XcodeGen
+          xcodebuild -showsdks | grep -i ios || true
+      - name: Install XcodeGen
         run: |
-          if ! command -v xcodegen >/dev/null 2>&1; then
-            brew install xcodegen
-          fi
+          set -euxo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi
           xcodegen --version
-      - name: 生成 Xcode 工程
-        run: |
-          cd "${{ matrix.project }}"
-          xcodegen generate
-      - name: 编译
+      - name: Generate Xcode project
+        working-directory: 3D-Views
+        run: xcodegen generate
+      - name: Build and capture diagnostics
+        working-directory: 3D-Views
+        shell: bash
         run: |
           set -o pipefail
-          cd "${{ matrix.project }}"
-          xcodebuild \
-            -project "${{ matrix.project }}.xcodeproj" \
-            -scheme "${{ matrix.scheme }}" \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -configuration Release \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_IDENTITY="" \
-            clean build
-      - name: 打包 IPA
+          rm -rf build build.log build.xcresult
+          xcodebuild -project 3D-Views.xcodeproj -scheme 3D-Views -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -derivedDataPath build -resultBundlePath build.xcresult CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGNING_IDENTITY='' clean build 2>&1 | tee build.log
+      - name: Print compiler diagnostics on failure
+        if: failure()
+        working-directory: 3D-Views
         run: |
-          cd "${{ matrix.project }}"
-          APP=$(find build -type d -name "*.app" | head -1)
-          if [ -z "$APP" ]; then
-            echo "未找到 .app 产物"; exit 1
-          fi
-          echo "产物: $APP"
-          rm -rf Payload && mkdir -p Payload
-          cp -r "$APP" Payload/
-          zip -qr "../${{ matrix.project }}-unsigned.ipa" Payload
-          ls -lh "../${{ matrix.project }}-unsigned.ipa"
-      - name: 发布
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cd "${{ matrix.project }}"
-          IPA="../${{ matrix.project }}-unsigned.ipa"
-          RELEASE_TAG="unsigned-ipa"
-          gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$RELEASE_TAG" \
-            --title "3D-Views" \
-            --notes "自签版本" \
-            "$IPA"
-      - name: 上传 IPA
+          echo '===== Swift/compiler diagnostics ====='
+          grep -En 'error:|warning:|fatal error:|BUILD FAILED|BUILD SUCCEEDED' build.log || true
+          echo '===== Last 300 log lines ====='
+          tail -n 300 build.log || true
+      - name: Upload build diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.project }}-unsigned-ipa
-          path: ${{ matrix.project }}-unsigned.ipa
+          name: ios-build-diagnostics-${{ github.run_number }}
+          path: |
+            3D-Views/build.log
+            3D-Views/build.xcresult
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Package unsigned IPA
+        if: success()
+        working-directory: 3D-Views
+        run: |
+          set -euxo pipefail
+          APP=$(find build -type d -name '*.app' | head -1)
+          test -n "$APP"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qr ../3D-Views-unsigned.ipa Payload
+      - name: Upload unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3D-Views-unsigned-ipa-${{ github.run_number }}
+          path: 3D-Views-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
