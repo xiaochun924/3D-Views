@@ -534,11 +534,38 @@ struct ViewerView: View {
             toolRowDivider
 
             displayModeMenu(compact: true)
+
+            toolRowDivider
+
+            snapModeMenu
         }
         .padding(.vertical, 5)
         .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    private var snapModeMenu: some View {
+        Menu {
+            ForEach(SnapMode.allCases) { mode in
+                Button {
+                    viewModel.snapMode = mode
+                } label: {
+                    Label(mode.label, systemImage: mode.icon)
+                }
+            }
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: viewModel.snapMode.icon)
+                    .font(.system(size: 17, weight: .medium))
+                Text(viewModel.snapMode.label)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundColor(.primary)
+            .frame(width: 54, height: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("捕捉模式")
     }
 
     private var measureTypeRow: some View {

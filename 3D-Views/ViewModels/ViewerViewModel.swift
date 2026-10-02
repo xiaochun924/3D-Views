@@ -15,6 +15,33 @@ enum InteractionMode: Equatable {
     case measure
 }
 
+enum SnapMode: String, CaseIterable, Identifiable {
+    case automatic
+    case face
+    case edge
+    case vertex
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .automatic: return "自动"
+        case .face: return "面"
+        case .edge: return "线"
+        case .vertex: return "点"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .automatic: return "wand.and.stars"
+        case .face: return "square.fill"
+        case .edge: return "line.diagonal"
+        case .vertex: return "circle.fill"
+        }
+    }
+}
+
 /// A picked topological entity.
 ///
 /// Measuring *entities* rather than raw points is what every mainstream CAD package
@@ -314,6 +341,18 @@ final class ViewerViewModel: ObservableObject {
     @Published var mode: InteractionMode = .orbit
     @Published var measureType: MeasureType = .distance
     @Published var displayUnit: DisplayUnit = .millimeter
+
+    /// Controls which topological entity a measurement tap should prefer.
+    /// Automatic keeps the CAD-style vertex > edge > face priority.
+    @Published var snapMode: SnapMode = .automatic {
+        didSet {
+            guard oldValue != snapMode else { return }
+            picks = []
+            clearPreview()
+            computeResults()
+            updateMeasureVisuals(in: renderView)
+        }
+    }
 
     /// How the model is drawn. Applied to the live scene on every change rather than
     /// baked in at load, so switching modes costs nothing and never re-tessellates.
@@ -1948,15 +1987,32 @@ final class ViewerViewModel: ObservableObject {
 
         guard let surfacePoint else { return nil }
 
-        // Vertex first, then edge: the more specific entity wins when both are within
-        // reach, which is the order every CAD cursor resolves a corner.
-        if let vertex = nearestVertex(to: screenPoint, near: surfacePoint, in: view) {
+        switch snapMode {
+        case .automatic:
+            // CAD-style priority: the most specific entity wins.
+            if let vertex = nearestVertex(to: screenPoint, near: surfacePoint, in: view) {
+                return Pick(point: vertex.position, entity: .vertex(vertex.index))
+            }
+            if let edge = nearestEdge(to: screenPoint, near: surfacePoint, in: view) {
+                return Pick(point: edge.point, entity: .edge(edge.edgeIndex))
+            }
+            return Pick(point: surfacePoint, entity: surfaceEntity ?? .freePoint)
+
+        case .face:
+            return Pick(point: surfacePoint, entity: surfaceEntity ?? .freePoint)
+
+        case .edge:
+            guard let edge = nearestEdge(to: screenPoint, near: surfacePoint, in: view) else {
+                return nil
+            }
+            return Pick(point: edge.point, entity: .edge(edge.edgeIndex))
+
+        case .vertex:
+            guard let vertex = nearestVertex(to: screenPoint, near: surfacePoint, in: view) else {
+                return nil
+            }
             return Pick(point: vertex.position, entity: .vertex(vertex.index))
         }
-        if let edge = nearestEdge(to: screenPoint, near: surfacePoint, in: view) {
-            return Pick(point: edge.point, entity: .edge(edge.edgeIndex))
-        }
-        return Pick(point: surfacePoint, entity: surfaceEntity ?? .freePoint)
     }
 
     /// Casts the pick ray against the kernel shape, returning the nearest hit point in
