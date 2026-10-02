@@ -146,7 +146,7 @@ internal final class XtStepMapper: @unchecked Sendable {
         var sense = initialSense
         let sv:Int, evID:Int, si:Int, ei:Int
         if let s=start,let e=end { si=s.index;ei=e.index;sv=try vertex(s,&lo,&hi);evID=try vertex(e,&lo,&hi); if tolerant { let a=try ev(0),b=try ev(1); if dist(a,ps!)+dist(b,pe!) > dist(a,pe!)+dist(b,ps!){sense.toggle()} } }
-        else { let p=try ev(0); sv=try syntheticVertex(edge.index,p,&lo,&hi); evID=sv; si=-1_000_000-edge.index; ei=si }
+        else { let p=try ev(0); sv=try syntheticVertex(edge.index,p,&lo,&hi); evID=sv; si = -1_000_000 - edge.index; ei = si }
         let id=w.add("EDGE_CURVE('',#\(sv),#\(evID),#\(cid),\(sense ? ".T.":".F."))"); let r=(id,si,ei); edgeIDs[edge.index]=r; return r
     }
 
@@ -329,8 +329,11 @@ internal final class XtStepMapper: @unchecked Sendable {
             let sectionID = try curve(section, nil, nil).0, sweep = try unit(sweepValue), directionID = try w.direction(sweep), vectorID = w.add("VECTOR('',#\(directionID),1.)")
             let sid = w.add("SURFACE_OF_LINEAR_EXTRUSION('',#\(sectionID),#\(vectorID))")
             let evaluator = try curveParamEvaluator(section)
-            let ev: Surface? = evaluator.flatMap { item in
-                try? SweptSurface(section: { t in (try? item.0(t).0) ?? [0, 0, 0] }, t0: item.1, t1: item.2, sweep: sweep)
+            let ev: Surface?
+            if let item = evaluator {
+                ev = try? SweptSurface(section: { t in (try? item.0(t)) ?? ([0, 0, 0], [0, 0, 0]) }, t0: item.1, t1: item.2, sweep: sweep)
+            } else {
+                ev = nil
             }
             info = SurfaceInfo(stepID: sid, match: true, ev: ev)
         case 68:
@@ -338,8 +341,11 @@ internal final class XtStepMapper: @unchecked Sendable {
             let profileID = try curve(profile, nil, nil).0, axis = try unit(axisValue), pointID = try w.point(base), directionID = try w.direction(axis)
             let placementID = w.add("AXIS1_PLACEMENT('',#\(pointID),#\(directionID))"), sid = w.add("SURFACE_OF_REVOLUTION('',#\(profileID),#\(placementID))")
             let evaluator = try curveParamEvaluator(profile)
-            let ev: Surface? = evaluator.flatMap { item in
-                try? SpunSurface(profile: { t in (try? item.0(t).0) ?? [0, 0, 0] }, t0: item.1, t1: item.2, base: base, axis: axis)
+            let ev: Surface?
+            if let item = evaluator {
+                ev = try? SpunSurface(profile: { t in (try? item.0(t)) ?? ([0, 0, 0], [0, 0, 0]) }, t0: item.1, t1: item.2, base: base, axis: axis)
+            } else {
+                ev = nil
             }
             info = SurfaceInfo(stepID: sid, match: true, ev: ev)
         case 60:

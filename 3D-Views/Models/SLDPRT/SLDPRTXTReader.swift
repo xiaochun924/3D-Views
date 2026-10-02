@@ -259,7 +259,7 @@ final class XTReader: @unchecked Sendable {
 
     func need(_ k: Int) throws {
         if pos + k > n {
-            throw SLXtError("truncated stream at offset \(pos) (need \(k) bytes)")
+            throw SLXtError(message: "truncated stream at offset \(pos) (need \(k) bytes)")
         }
     }
 
@@ -388,7 +388,7 @@ private func xtReadSchemaInfo(_ r: XTReader, _ ntype: Int, _ xt: XTFile) throws 
     let base = XTSchema.base[ntype]
     if first == 0xFF {
         guard let base = base else {
-            throw SLXtError("node type \(ntype) (\(tname)) flagged identical to base schema but unknown")
+            throw SLXtError(message: "node type \(ntype) (\(tname)) flagged identical to base schema but unknown")
         }
         xt.schemaLog.append("\(tname): base")
         return base
@@ -410,14 +410,14 @@ private func xtReadSchemaInfo(_ r: XTReader, _ ntype: Int, _ xt: XTFile) throws 
             }
             if op == 0x43 {                     // 'C'
                 if bi >= base.count {
-                    throw SLXtError("\(tname): edit script copies past end of base layout")
+                    throw SLXtError(message: "\(tname): edit script copies past end of base layout")
                 }
                 out.append(base[bi])
                 bi += 1
                 ops.append("C")
             } else if op == 0x44 {              // 'D'
                 if bi >= base.count {
-                    throw SLXtError("\(tname): edit script deletes past end of base layout")
+                    throw SLXtError(message: "\(tname): edit script deletes past end of base layout")
                 }
                 ops.append("D(\(base[bi].name))")
                 bi += 1
@@ -429,14 +429,14 @@ private func xtReadSchemaInfo(_ r: XTReader, _ ntype: Int, _ xt: XTFile) throws 
                 let opChar = Character(UnicodeScalar(UInt8(op)))
                 ops.append("\(opChar)(\(fld.name):\(fld.kind)\(suffix))")
             } else {
-                throw SLXtError("\(tname): bad edit op 0x\(xtHex2(op)) at offset \(r.pos - 1)")
+                throw SLXtError(message: "\(tname): bad edit op 0x\(xtHex2(op)) at offset \(r.pos - 1)")
             }
         }
         if bi < base.count {
             ops.append("implicit-drop(\(base[bi...].map { $0.name }.joined(separator: ",")))")
         }
         if out.count != nfields {
-            throw SLXtError("\(tname): edit script yields \(out.count) fields, header says \(nfields) (\(ops.joined(separator: " ")))")
+            throw SLXtError(message: "\(tname): edit script yields \(out.count) fields, header says \(nfields) (\(ops.joined(separator: " ")))")
         }
         xt.schemaLog.append("\(tname): \(ops.joined(separator: " ")) -> \(out.map { $0.name })")
         return out
@@ -552,7 +552,7 @@ private func xtReadValue(_ r: XTReader, _ fld: XTField, _ count: Int) throws -> 
         }
         return .ints(out)
     }
-    throw SLXtError("unknown field kind '\(k)' for field \(fld.name)")
+    throw SLXtError(message: "unknown field kind '\(k)' for field \(fld.name)")
 }
 
 // MARK: - 顶层入口
@@ -562,11 +562,11 @@ func readXT(_ buf: SLBytes) throws -> XTFile {
     let r = XTReader(buf)
     let magic = try r.raw(2)
     if magic != [0x50, 0x53] {              // b"PS"
-        throw SLXtError("not a binary XT stream (no PS flag)")
+        throw SLXtError(message: "not a binary XT stream (no PS flag)")
     }
     let flag = try r.raw(2)
     if flag != [0x00, 0x00] {               // b"\x00\x00"
-        throw SLXtError("unsupported XT binary flavour (flag \(flag)); only neutral binary is supported")
+        throw SLXtError(message: "unsupported XT binary flavour (flag \(flag)); only neutral binary is supported")
     }
     let xt = XTFile()
     let mlen = try r.i16()
@@ -592,14 +592,14 @@ func readXT(_ buf: SLBytes) throws -> XTFile {
         xt.baseSchema = Int(parts[3]) ?? 0
         _ = try r.u16()                     // 最大节点类型数
         if xt.baseSchema != 13006 {
-            throw SLXtError("unsupported base schema \(xt.baseSchema) (only SCH_13006 embedding is supported)")
+            throw SLXtError(message: "unsupported base schema \(xt.baseSchema) (only SCH_13006 embedding is supported)")
         }
     } else {
-        throw SLXtError("XT stream without embedded schema (\(xt.schemaID)) is not supported")
+        throw SLXtError(message: "XT stream without embedded schema (\(xt.schemaID)) is not supported")
     }
     let usfld = try r.i32()
     if usfld != 0 {
-        throw SLXtError("XT user fields (USFLD_SIZE=\(usfld)) are not supported")
+        throw SLXtError(message: "XT user fields (USFLD_SIZE=\(usfld)) are not supported")
     }
 
     var first = true
@@ -608,7 +608,7 @@ func readXT(_ buf: SLBytes) throws -> XTFile {
         if ntype == 1 {
             let term = try r.u16()
             if term != 1 {
-                throw SLXtError("bad terminator at offset \(r.pos - 4)")
+                throw SLXtError(message: "bad terminator at offset \(r.pos - 4)")
             }
             break
         }
@@ -623,7 +623,7 @@ func readXT(_ buf: SLBytes) throws -> XTFile {
         if XTSchema.isVariable(layout) {
             count = try r.i32()
             if count < 0 {
-                throw SLXtError("negative variable length at offset \(r.pos - 4)")
+                throw SLXtError(message: "negative variable length at offset \(r.pos - 4)")
             }
         }
         let idx = try r.posint()
@@ -633,12 +633,12 @@ func readXT(_ buf: SLBytes) throws -> XTFile {
                 fields[fld.name] = try xtReadValue(r, fld, fld.n == XTSchema.VAR ? count : fld.n)
             }
         } catch let exc as SLXtError {
-            throw SLXtError("while reading \(XTSchema.nodeNames[ntype] ?? String(ntype)) #\(idx): \(exc.message)")
+            throw SLXtError(message: "while reading \(XTSchema.nodeNames[ntype] ?? String(ntype)) #\(idx): \(exc.message)")
         } catch {
             throw error
         }
         if xt.nodes[idx] != nil {
-            throw SLXtError("duplicate node index \(idx)")
+            throw SLXtError(message: "duplicate node index \(idx)")
         }
         xt.nodes[idx] = XTNode(index: idx, type: ntype, f: fields)
         if first {

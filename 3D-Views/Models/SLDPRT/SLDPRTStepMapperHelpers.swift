@@ -100,7 +100,7 @@ internal func curvePointDistance(_ nc: NurbsCurve, _ p: Vec) -> Double {
     return f(golden(f, max(nc.t0, t - h), min(nc.t1, t + h)))
 }
 
-internal final class CurveSupport: Surface {
+internal final class CurveSupport: Surface, @unchecked Sendable {
     let curve: NurbsCurve
     private var lastPoint: Vec?
     private var samples: [(Double, Vec)]?
@@ -158,8 +158,12 @@ internal func normaliseCurveKnots(_ nc: NurbsCurve) throws -> NurbsCurve {
 
 internal func normaliseSurfaceKnots(_ ns: NurbsSurface) throws -> NurbsSurface {
     let du = ns.u1 - ns.u0, dv = ns.v1 - ns.v0
-    let lu = (0..<ns.nV).reduce(0.0) { $0 + polylineLen((0..<ns.nU).map { ns.ctrl[$0][$1] }) } / Double(max(1, ns.nV)) * SCALE
-    let lv = (0..<ns.nU).reduce(0.0) { $0 + polylineLen(ns.ctrl[$1]) } / Double(max(1, ns.nU)) * SCALE
+    let lu = (0..<ns.nV).reduce(0.0) { total, column in
+        total + polylineLen((0..<ns.nU).map { row in ns.ctrl[row][column] })
+    } / Double(max(1, ns.nV)) * SCALE
+    let lv = (0..<ns.nU).reduce(0.0) { total, row in
+        total + polylineLen(ns.ctrl[row])
+    } / Double(max(1, ns.nU)) * SCALE
     var fu = du > 0 && lu > 0 ? lu / du : 1, fv = dv > 0 && lv > 0 ? lv / dv : 1
     if 0.5...2 ~= fu { fu = 1 }; if 0.5...2 ~= fv { fv = 1 }
     if fu == 1 && fv == 1 { return ns }
@@ -182,7 +186,7 @@ internal func carefulProject(_ ev: Surface, _ p: Vec) throws -> Vec {
     let uv = try ev.project(p); return try ev.eval(u: uv.0, v: uv.1)
 }
 
-internal final class OffsetEval: Surface {
+internal final class OffsetEval: Surface, @unchecked Sendable {
     let base: Surface, offset: Double
     init(base: Surface, offset: Double) { self.base = base; self.offset = offset; super.init() }
     override func eval(u: Double, v: Double) throws -> Vec { add(try base.eval(u: u, v: v), mul(try base.normal(u: u, v: v), offset)) }

@@ -16,7 +16,7 @@ extension XtStepMapper {
             return (mult.map(String.init).joined(separator: ","), try distinct.map(fmt).joined(separator: ","))
         }
         let rows = try ns.ctrl.map { row in
-            "(\(try row.map { "#\(w.point($0))" }.joined(separator: ",")))"
+            "(\(try row.map { point in "#\(try w.point(point))" }.joined(separator: ",")))"
         }.joined(separator: ",")
         let (um, uk) = try knotData(ns.uKnots)
         let (vm, vk) = try knotData(ns.vKnots)
