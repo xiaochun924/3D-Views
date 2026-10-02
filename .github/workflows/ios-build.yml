@@ -1,55 +1,53 @@
-name: 3D-Views Debug Build
+name: 3D-Views
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
-permissions:
-  contents: write
-  actions: write
+concurrency:
+  group: 3D-Views
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: Build 3D-Views
+    name: 3D-Views
     runs-on: macos-latest
-    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
 
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Select Xcode
+      - name: 选 Xcode 26.6
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '26.6'
 
-      - name: Show toolchain
+      - name: 查看 Xcode
         run: |
-          set -euxo pipefail
           xcodebuild -version
-          xcodebuild -showsdks | grep -i ios || true
+          xcodebuild -showsdks | grep -i "ios" || true
 
-      - name: Install XcodeGen
+      - name: 安装 XcodeGen
         run: |
-          set -euxo pipefail
           if ! command -v xcodegen >/dev/null 2>&1; then
             brew install xcodegen
           fi
           xcodegen --version
 
-      - name: Generate Xcode project
+      - name: 生成 Xcode 工程
         working-directory: 3D-Views
         run: xcodegen generate
 
-      - name: Build and capture diagnostics
+      - name: 编译
         working-directory: 3D-Views
-        shell: bash
         run: |
           set -o pipefail
-          rm -rf build build.log build.xcresult
           xcodebuild \
             -project 3D-Views.xcodeproj \
             -scheme 3D-Views \
@@ -57,66 +55,65 @@ jobs:
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -derivedDataPath build \
-            -resultBundlePath build.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_IDENTITY='' \
-            clean build 2>&1 | tee build.log
+            CODE_SIGN_IDENTITY="" \
+            clean build 2>&1 | tee build_log.txt
 
-      - name: Print compiler diagnostics on failure
+      - name: 上传编译日志（失败时自动归档，便于诊断）
         if: failure()
-        working-directory: 3D-Views
-        run: |
-          echo '===== Swift/compiler diagnostics ====='
-          grep -En 'error:|warning:|fatal error:|BUILD FAILED|BUILD SUCCEEDED' build.log || true
-          echo '===== Last 300 log lines ====='
-          tail -n 300 build.log || true
-
-      - name: Upload build diagnostics
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-build-diagnostics-${{ github.run_number }}
-          path: |
-            3D-Views/build.log
-            3D-Views/build.xcresult
+          name: build-log-${{ github.run_number }}
+          path: 3D-Views/build_log.txt
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
-      - name: Package unsigned IPA
+      - name: 上报编译错误到 Issue（失败时，公开可见，免登录查看）
+        if: failure()
+        working-directory: 3D-Views
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "## 编译失败日志（build_log.txt 末尾 100 行）" > body.md
+          echo "" >> body.md
+          tail -n 100 build_log.txt >> body.md 2>/dev/null || echo "（无日志文件）" >> body.md
+          gh issue create --title "CI 编译失败 $(date -u +%m-%dT%H:%MZ)" --body-file body.md || true
+
+      - name: 打包 IPA
         if: success()
         working-directory: 3D-Views
         run: |
           set -euxo pipefail
-          APP=$(find build -type d -name '*.app' | head -1)
-          test -n "$APP"
-          rm -rf Payload
-          mkdir Payload
-          cp -R "$APP" Payload/
-          zip -qr ../3D-Views-unsigned.ipa Payload
+          APP=$(find build -type d -name "*.app" | head -1)
+          if [ -z "$APP" ]; then
+            echo "未找到 .app 产物"
+            exit 1
+          fi
+          echo "产物: $APP"
+          rm -rf Payload && mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -qr ../3D-Views.ipa Payload
+          ls -lh ../3D-Views.ipa
 
-      - name: Upload unsigned IPA artifact
+      - name: 发布 IPA 到 Release
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IPA=3D-Views.ipa
+          RELEASE_TAG="unsigned-ipa"
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$RELEASE_TAG" \
+            --title "3D-Views" \
+            --notes "自签版本" \
+            "$IPA"
+
+      - name: 上传 IPA
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: 3D-Views-unsigned-ipa-${{ github.run_number }}
-          path: 3D-Views-unsigned.ipa
+          name: 3D-Views-ipa-${{ github.run_number }}
+          path: 3D-Views.ipa
           if-no-files-found: error
           retention-days: 30
-
-      - name: Publish unsigned IPA release
-        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: unsigned-ipa
-          name: 3D-Views unsigned IPA
-          body: |
-            自动构建的未签名 iOS IPA。
-
-            Commit: ${{ github.sha }}
-            Run: ${{ github.run_number }}
-          files: 3D-Views-unsigned.ipa
-          overwrite_files: true
-          make_latest: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
