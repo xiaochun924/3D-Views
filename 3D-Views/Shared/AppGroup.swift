@@ -26,6 +26,10 @@ enum AppGroup {
     /// Registered by the app target under `CFBundleURLTypes`.
     static let wakeUpScheme = "3dviews"
 
+    /// The containing-app URL requested by the Share Extension.
+    /// Construct it once here so both targets use the exact same value.
+    static let wakeUpURL = URL(string: "3dviews://import")!
+
     private static let inboxFolderName = "Inbox"
     private static let handoffAtKey = "SharedHandoffAt"
     private static let handoffNamesKey = "SharedHandoffNames"

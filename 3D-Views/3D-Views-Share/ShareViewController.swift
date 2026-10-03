@@ -107,7 +107,7 @@ final class ShareViewController: UIViewController {
 
         AppGroup.recordHandoff(names: deposited, failures: failures)
         statusLabel.text = message(deposited: deposited, failures: failures)
-        hostURL = URL(string: "\(AppGroup.wakeUpScheme)://import")
+        hostURL = AppGroup.wakeUpURL
 
         // Apple documents completion as the operation that dismisses the extension. Keep the
         // extension alive after the copy so the user can explicitly request the host handoff.
