@@ -90,14 +90,26 @@ targets:
             CFBundleURLSchemes:
               - 3dviews
         CFBundleDocumentTypes:
-          # LSHandlerRank 是 Alternate 而不是 Default，这一条是照抄在同一台设备上
-          # 真正跑通过导入的 BatteryInsight。Default 声明的是「这个类型默认归我」，
-          # 系统于是按文档归属关系处理，走 UIDocument / 原地打开那一套；Alternate
-          # 声明的是「我也能处理，但默认不是我」，系统走的是「拷贝一份再唤起目标
-          # App」的路径 —— 而我们的 App 每次激活都会扫描沙箱，接得住这条路径。
+          # LSHandlerRank 全部改为 None，这是被真机实测逼出来的结论。
+          #
+          # Alternate 的语义是「我也能处理这个类型，但默认不是我」。系统据此把本 App
+          # 视为该类型的**归属候选**，于是在分享时启用「文档打开」路径 —— 启动 App、
+          # 把 URL 交给 scene 的 connectionOptions.urlContexts，**不往 Documents/Inbox
+          # 拷任何东西**。而本 App 没有接管 scene（自定义 SceneDelegate 会让应用启动
+          # 即爆栈，见 3D_ViewsApp.swift 里的记录），那个入口无人接收，URL 就此丢失。
+          # 表现就是「App 跳转了，文件没进来」。
+          #
+          # 同一台设备上的对照实验给出了决定性证据：分享一个 .ipa —— 系统里没有任何
+          # App 声明它，于是按通用类型处理，**拷进了 Documents/Inbox**，扫描直接看到；
+          # 分享 .step —— 因为本 App 声明了 com.xiaochun.step，改走文档打开路径，
+          # Documents/Inbox 里什么都没有。差别不在拷贝机制（同一个 App 上它明明是通的），
+          # 而在这个「有主」声明把文件引到了另一条路上。
+          #
+          # None 让系统不再把该类型判为「有主」，从而回到与 .ipa 相同的通用投递行为：
+          # 拷贝到 Documents/Inbox，再不依赖 URL 地被本 App 每次激活时扫到。
           - CFBundleTypeName: STEP CAD File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: None
             CFBundleTypeExtensions:
               - step
               - stp
@@ -105,7 +117,7 @@ targets:
               - com.xiaochun.step
           - CFBundleTypeName: STL Mesh
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: None
             CFBundleTypeExtensions:
               - stl
             LSItemContentTypes:
@@ -115,7 +127,7 @@ targets:
           # 来那条路（App 自己把容器里内嵌的 Parasolid B-rep 转成 STEP）。
           - CFBundleTypeName: IGES CAD File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: None
             CFBundleTypeExtensions:
               - iges
               - igs
@@ -123,7 +135,7 @@ targets:
               - com.xiaochun.iges
           - CFBundleTypeName: OBJ Mesh
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: None
             CFBundleTypeExtensions:
               - obj
             LSItemContentTypes:
@@ -131,7 +143,7 @@ targets:
           # BREP 没有第二拼写：OCCT 自己的扩展名就这一个。
           - CFBundleTypeName: OCCT BREP File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: None
             CFBundleTypeExtensions:
               - brep
             LSItemContentTypes:
@@ -141,7 +153,7 @@ targets:
           # XT B-rep，转成 STEP 文本，再交给 loadSTEP —— 面/边/顶点量测能力完整保留。
           - CFBundleTypeName: SolidWorks Part
             CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
+            LSHandlerRank: None
             CFBundleTypeExtensions:
               - sldprt
             LSItemContentTypes:
