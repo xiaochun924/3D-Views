@@ -73,26 +73,25 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
-    // Deliberately NOT implementing `application(_:configurationForConnecting:options:)`.
+    // `application(_:configurationForConnecting:options:)` is NOT implemented, and the
+    // `SceneDelegate` that replaced SwiftUI's own scene delegate has been removed with it.
     //
-    // It is the one hook that can see a cold-launch URL on a scene lifecycle — iOS hands
-    // it over as `connectionOptions.urlContexts`, not as `launchOptions[.url]`, which is
-    // exactly the blind spot this project spent six rounds inside. It was added, built,
-    // and crashed on launch (`72fdde7`, crash `3D-Views-2026-10-01-162946.ips`):
+    // It was re-added to catch a cold-launch URL arriving as `connectionOptions.urlContexts`
+    // — the blind spot this project spent six rounds inside. On the device the result was
+    // the opposite of a fix: tapping 「打开 3D Views」 in the share extension made the sheet
+    // disappear with no foreground app at all. The recorded crash from the earlier attempt
+    // at this same hook (`72fdde7`, `3D-Views-2026-10-01-162946.ips`) is the same failure:
     //
     //     Thread stack size exceeded due to excessive recursion
     //     AppSceneDelegate.responds(to:)  ← repeating, self-recursive
     //     @objc AppSceneDelegate.responds(to:)
     //
-    // `AppSceneDelegate` is SwiftUI's own scene delegate. Implementing this method makes
-    // UIKit take the returned configuration instead of the one SwiftUI builds for itself,
-    // and the delegate's `responds(to:)` then recurses into itself until the main thread
-    // runs off its stack. Returning `connectingSceneSession.configuration` — the session's
-    // own, apparently the safest possible answer — is enough to trigger it.
+    // Handing UIKit our own configuration takes the scene away from SwiftUI, and the app
+    // then dies during launch. iOS does not surface that to the user: the extension's
+    // `open` request is simply abandoned, which looks exactly like a URL that never fired.
     //
-    // A crash on launch costs the user far more than a missing log line costs us, so this
-    // door stays shut. URL evidence comes from `onOpenURL` and
-    // `application(_:open:options:)`, both of which stay wired below.
+    // Both URL doors that do work stay wired: `application(_:open:options:)` above and
+    // `.onOpenURL` on the window group.
 
     /// A return to the foreground is the moment the share extension's handover becomes
     /// visible, and it is the only hook that runs for a launch the app slept through.
@@ -100,43 +99,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// `.active`, so `onChange` has no change to report; this notification has no such gap.
     func applicationDidBecomeActive(_ application: UIApplication) {
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
-    }
-
-    /// Receives custom-scheme URLs during scene connection, including cold launch.
-    /// SwiftUI's onOpenURL does not reliably cover this delivery path.
-    func application(
-        _ application: UIApplication,
-        configurationForConnecting connectingSceneSession: UISceneSession,
-        options: UIScene.ConnectionOptions
-    ) -> UISceneConfiguration {
-        let configuration = UISceneConfiguration(
-            name: "Default Configuration",
-            sessionRole: connectingSceneSession.role
-        )
-        configuration.delegateClass = SceneDelegate.self
-        return configuration
-    }
-}
-
-@MainActor
-final class SceneDelegate: NSObject, UIWindowSceneDelegate {
-    func scene(
-        _ scene: UIScene,
-        willConnectTo session: UISceneSession,
-        options connectionOptions: UIScene.ConnectionOptions
-    ) {
-        handle(connectionOptions.urlContexts, source: "SceneDelegate 冷启动")
-    }
-
-    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-        handle(URLContexts, source: "SceneDelegate")
-    }
-
-    private func handle(_ contexts: Set<UIOpenURLContext>, source: String) {
-        for context in contexts {
-            FileHistory.shared.handleIncomingURL(context.url, source: source)
-        }
-        FileHistory.shared.scheduleInboxSweep(reason: source)
     }
 }
 
