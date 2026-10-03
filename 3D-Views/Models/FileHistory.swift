@@ -175,7 +175,14 @@ final class FileHistory: ObservableObject {
             lines.append("App Group：不可用（签名未带 \(AppGroup.identifier)）")
         }
 
-        lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装")")
+        // The extension is deliberately not embedded any more, so "未安装" is the expected
+        // reading and must not be mistaken for a fault. Saying which of the two it is here
+        // keeps the diagnostic page honest: the same line, two opposite meanings.
+        //
+        // This is only ever shown, never acted on. The document-open path below does not
+        // consult it, so a missing .appex changes what the reader should conclude — not
+        // what the app does.
+        lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装（按当前方案，正常）")")
 
         // Whether the signing tool signed the nested pieces, not just the outer app.
         //
@@ -193,29 +200,32 @@ final class FileHistory: ObservableObject {
         }
 
         lines.append("主包签名：\(sealState(of: Bundle.main.bundleURL))")
-        if let plugins = Bundle.main.builtInPlugInsURL {
-            let appex = plugins.appendingPathComponent("3D-Views-Share.appex")
-            lines.append("扩展签名：\(sealState(of: appex))")
-        } else {
-            lines.append("扩展签名：扩展目录不可得")
-        }
+        // Kept even though nothing embeds an .appex right now: this is the line that would
+        // tell a reader whether a *restored* extension was signed by whatever self-signing
+        // tool installed the build. `无` here is now the normal reading, not evidence of a
+        // bad signature — which is exactly why the header says what to expect.
+        lines.append("扩展签名：\(sealState(of: Bundle.main.bundleURL.appendingPathComponent("PlugIns/3D-Views-Share.appex")))")
 
         // Whether the extension has ever actually been brought up. "Not installed",
         // "installed but never started" and "started but never finished" are three
         // different faults, and a missing handoff record only rules out the third — this
         // line is what separates the other two.
         //
-        // This is the line that now carries the whole diagnosis, because the share
-        // extension is the only import path left. If a share produces no import and this
-        // timestamp has not moved, the extension process never ran and nothing downstream
-        // can be at fault. If it has moved, the extension ran and the file is either in
-        // the inbox below or was rejected by the format whitelist while being copied.
+        // While no .appex is embedded this line should read 从未 and stay there; a moving
+        // timestamp would mean a build that still carries an extension. It is kept because
+        // restoring the extension is a two-line change (see project.yml), and these two
+        // lines are what would make that restoration diagnosable.
+        //
+        // The document-open path is not read here at all: it is diagnosed by the launch
+        // lines in the log, which record the URL, the source, and `launchOptions`' key list.
         if let started = AppGroup.lastExtensionStart {
             lines.append("扩展启动于：\(stampFormatter.string(from: started))")
         } else {
             lines.append("扩展启动于：从未")
         }
 
+        // A record left by the extension, so it goes quiet along with it. Kept for the same
+        // reason as the line above.
         if let handoff = AppGroup.lastHandoff {
             let names = handoff.names.isEmpty ? "无" : handoff.names.joined(separator: ",")
             let failures = handoff.failures.isEmpty ? "" : "｜失败 \(handoff.failures.count) 个"
@@ -448,6 +458,10 @@ final class FileHistory: ObservableObject {
 
     /// Files the system parked in our own sandbox instead of handing the app a URL.
     ///
+    /// A handover hands over a URL; a sweep looks for what was left behind. Both are live
+    /// now, and they are independent: a file can arrive by either, so a silent URL log does
+    /// not mean nothing arrived, and a file waiting here does not mean a URL went missing.
+    ///
     /// Three different routes bring a file in from outside, and only the first delivers a
     /// URL: the document handovers above, a copy iOS drops in `Documents/Inbox`, and a
     /// copy placed in `Documents` itself — that folder is browsable in Files under
@@ -471,8 +485,11 @@ final class FileHistory: ObservableObject {
         var fingerprints = sandboxScanFingerprints
         var gainedFingerprint = false
 
-        // The App Group inbox first, because it is the only route that asks nothing of
-        // the system: the share extension did the copy itself, and this just picks it up.
+        // The App Group inbox first. Nothing embeds a share extension at the moment, so this
+        // loop normally finds nothing — it is kept because the extension is a two-line
+        // change away from coming back (see project.yml), and this is the half that picks up
+        // after it. When it *is* live it is the route that asks nothing of the system: the
+        // extension did the copy itself, and this just picks it up.
         var sharedCount = -1
         if let shared = AppGroup.ensureInbox() {
             let names = (try? manager.contentsOfDirectory(atPath: shared.path)) ?? []
@@ -581,14 +598,14 @@ final class FileHistory: ObservableObject {
 
     /// Looks for a handover now, then again a few times over the next few seconds.
     ///
-    /// The retries are the part that matters. A launch caused by opening a document runs
-    /// `didFinishLaunching` *before* iOS has finished copying the file into
-    /// `Documents/Inbox`, so a single scan at that moment can legitimately see an empty
-    /// folder — and the `scenePhase` observer in `HomeView` does not reliably cover it,
-    /// because on a cold launch the view can mount already `.active`, leaving `onChange`
-    /// with no change to report. Between them, those two are enough to miss a file that
-    /// arrived perfectly well. It is also what makes the share extension work without
-    /// the app ever being handed a URL.
+    /// The retries are the part that matters, and they matter for both live routes. A launch
+    /// caused by opening a document runs `didFinishLaunching` *before* iOS has finished
+    /// copying the file into `Documents/Inbox`, so a single scan at that moment can
+    /// legitimately see an empty folder — and the `scenePhase` observer in `HomeView` does
+    /// not reliably cover it, because on a cold launch the view can mount already `.active`,
+    /// leaving `onChange` with no change to report. Between them, those two are enough to
+    /// miss a file that arrived perfectly well. The same retries are what made the share
+    /// extension work without the app ever being handed a URL.
     func scheduleInboxSweep(reason: String) {
         importFromSandbox(reason: reason)
         sweepTask?.cancel()
@@ -606,16 +623,29 @@ final class FileHistory: ObservableObject {
 
     /// The single entry point for a URL from outside the app.
     ///
-    /// Only one door is left: the system handing over a file URL. The app used to register
-    /// `3dviews://` for the share extension to call, and `CFBundleDocumentTypes` for the
-    /// Files app's 「打开方式」 path — both were removed after neither ever delivered
-    /// anything on the device. So there is no scheme to special-case here any more, and
-    /// no URL that names no file can arrive.
+    /// Two doors now lead here and both are live again:
+    ///
+    /// - `application(_:open:options:)` on `AppDelegate`, and
+    /// - `scene(_:openURLContexts:)` / `connectionOptions.urlContexts` on `SceneDelegate`.
+    ///
+    /// The second is the one that matters for the document-open path: when iOS starts the
+    /// app to open a document, the URL arrives in the scene's connection options, not in
+    /// `launchOptions`. That distinction is what made this path look dead for three rounds
+    /// of measurements — there was no scene to receive it. `receiveExternalFile` recognises
+    /// a file it has already taken, so both doors being knocked on is harmless.
+    ///
+    /// There is still no `3dviews://` scheme to special-case: it existed only to serve
+    /// `extensionContext.open`, which a share extension is not allowed to use.
     func handleIncomingURL(_ url: URL, source: String) {
         receiveExternalFile(at: url, source: source)
     }
 
     /// How many files the share extension has left waiting. Shown in `SettingsView`.
+    ///
+    /// Normally 0 now that nothing embeds an extension. The number is still read from the
+    /// App Group rather than assumed to be 0, because the group container survives an app
+    /// update: a build with the extension restored will find whatever is still sitting
+    /// there, and a hardcoded 0 would hide it.
     func sharedInboxFileCount() -> Int {
         AppGroup.pendingFileCount()
     }
@@ -623,6 +653,10 @@ final class FileHistory: ObservableObject {
     /// Whether the installed bundle actually carries the share extension. Read from the
     /// built product rather than the source tree: a side-loaded build need not be the one
     /// in the repository, and a missing `.appex` changes what the failure means.
+    ///
+    /// Only ever shown, never acted on — no import path branches on this. With the
+    /// extension removed from the bundle it should read `false`; `true` would mean the
+    /// installed build is not the one this source tree describes.
     static var shareExtensionInstalled: Bool {
         guard let plugins = Bundle.main.builtInPlugInsURL,
               let names = try? FileManager.default.contentsOfDirectory(atPath: plugins.path)

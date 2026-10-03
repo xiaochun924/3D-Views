@@ -33,9 +33,13 @@
 //  from a share sheet or an "Open in" list, *iOS* launches it and delivers the URL to the
 //  scene. The app is already in the foreground by the time the URL arrives.
 //
-//  The share extension stays. Both paths run side by side and neither one depends on the
-//  other: the extension still deposits into the App Group inbox (no URL involved), and
-//  this file adds the path where the URL is handed to us directly.
+//  The share extension has since been removed from the bundle (user's call: copy 全能签
+//  outright, and it carries no `.appex` at all). So this file is now the *only* import
+//  path, and the document-open route below is the whole mechanism — nothing runs beside it
+//  any more. The extension's source and target are still in the repository and can be
+//  re-embedded with a two-line change to `project.yml`; until then the App Group inbox it
+//  used to fill will simply stay empty, and the diagnostics page says so rather than
+//  reporting it as a fault.
 
 import SwiftUI
 import UIKit

@@ -30,29 +30,42 @@ targets:
           - project.yml
     dependencies:
       - package: OCCTSwift
-      # 分享扩展重新被嵌入。这是用户明确要求回到的方案（原话：还要通过原先分享扩展
-      # 导入方案），也是本文件里所有其他尝试都失败之后唯一还剩下的路。
+      # 分享扩展**已从包里移除**（用户明确要求：完全照搬全能签的方案）。
       #
-      # 中间试过的三条路，各自的结局都记录在这里，免得第四次再走一遍：
+      # 全能签（signall.nuosike.sign，实测其 Info.plist）包里根本没有任何 .appex，
+      # 也没有 PlugIns 目录。它出现在「共享」与「打开方式」里靠的是
+      # CFBundleDocumentTypes，靠系统把它作为文档处理程序启动来接手文件 —— 全程
+      # 没有一个扩展参与，也就没有「拉起宿主」这个动作需要被满足。
       #
-      # 1) 不嵌入扩展、靠系统文档打开路径（BatteryInsight 的做法）。真机实测三组
-      #    配置全是「App 跳转了、文件没进来」：Alternate+false 不拷也不递 URL；
-      #    None+false 能把文件拷进 Documents/Inbox（用一个系统里无人声明的 .ipa
-      #    验证过），代价是「文件」App 的「打开方式」列表里从此看不到本 App；
-      #    Alternate+true 不拷、URL 也没到过 application(_:open:options:) 或
-      #    .onOpenURL 任何一处。结论：本 App 没有接管 scene（自定义 SceneDelegate
-      #    会让应用启动即爆栈），而文档打开路径的 URL 恰好只走 scene 的
-      #    connectionOptions.urlContexts，那条路在本项目上是死的。
+      # 这里只摘掉嵌入（`- target: 3D-Views-Share`），**target 定义与源码全部保留**
+      # （见文件末尾），所以这是可逆的：把那两行加回来就能恢复，不必重写任何代码。
       #
-      # 2) 因此重新走扩展：扩展自己把文件拷进 App Group 共享收件箱，主 App 每次
-      #    激活扫描那个收件箱。**整条链路不依赖任何 URL 投递**，这正是它比文档打开
-      #    路径可靠的地方 —— 文件是扩展亲手放的，不是系统答应给的。
+      # 移除的直接影响：打出来的包里不再有 .appex，「共享」面板里那一行不再由扩展
+      # 提供。但文档声明仍在（下面 info.properties 里的 CFBundleDocumentTypes），
+      # 系统仍会把本 App 列进「共享」与「打开方式」——只是它以文档处理程序的身份被
+      # 启动，而不是以扩展的身份被加载。
       #
-      # 3) 扩展里那个「打开 3D Views」按钮仍然保留，但它只是加速手段：点它能拉起
-      #    主 App 就立即看到导入结果，拉不起来（系统拒绝 extensionContext.open）也
-      #    没关系 —— 用户手动切回 App 同样会扫到文件。按钮不再是导入的前提。
-      - target: 3D-Views-Share
-        embed: true
+      # 历史上试过的三条路，结局仍记录在这里，免得第四次再走一遍：
+      #
+      # 1) 文档打开路径（2026-10 之前试过）。真机实测三组配置全是「App 跳转了、
+      #    文件没进来」：Alternate+false 不拷也不递 URL；None+false 能把文件拷进
+      #    Documents/Inbox（用一个系统里无人声明的 .ipa 验证过），代价是「文件」
+      #    App 的「打开方式」列表里从此看不到本 App（用户原话「打开方式没有
+      #    3dviews了」）；Alternate+true 不拷、URL 也没到过
+      #    application(_:open:options:) 或 .onOpenURL 任何一处。
+      #    **但那三组失败的共同原因是第三根支柱缺席**：本 App 当时没有接管 scene，
+      #    而文档打开路径的 URL 恰好只走 scene 的 connectionOptions.urlContexts。
+      #    没有 SceneDelegate 时那条路确实是死的；现在 SceneDelegate 有了
+      #    （3D_ViewsApp.swift），所以那三组读数不再能预言这次的结果 —— 这次
+      #    是首次带着 scene 去走这条路，验证状态为零。
+      #
+      # 2) 分享扩展：扩展自己把文件拷进 App Group 共享收件箱，主 App 每次激活扫描
+      #    那个收件箱。**整条链路不依赖任何 URL 投递**，是至今唯一真机验证过能导入
+      #    的路径（诊断读数：.step 成功导入）。已按用户要求移除嵌入，源码保留。
+      #
+      # 3) 扩展里那个「打开 3D Views」按钮：一直只是加速手段，点它能拉起主 App 就
+      #    立即看到结果，拉不起来（系统拒绝 extensionContext.open，Apple 文档写明
+      #    分享扩展不在支持该方法之列）也没关系。随扩展一起不再参与。
     # App Group 是主 App 与分享扩展唯一能互相看见的地方。注意：IPA 以
     # CODE_SIGNING_ALLOWED=NO 构建，这份 entitlement 不会进包，必须由自签工具
     # 在签名时补上；否则 containerURL(forSecurityApplicationGroupIdentifier:)
@@ -204,9 +217,12 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         DEVELOPMENT_TEAM: ""
 
-  # 分享扩展的定义。**它现在被主 App 嵌入了**（见上方 dependencies），打出来的包里
-  # 会有 .appex，「共享 → 到 3D Views」那一行随之回来 —— 那是本方案唯一能让文件
-  # 真正落到 App 手里的入口，其余三条路都在真机上走过并且都失败了。
+  # 分享扩展的定义。**它不再被主 App 嵌入**（见上方 dependencies —— 那一行已按用户
+  # 要求摘掉），所以打出来的包里没有 .appex。这里把整个 target 原样留着，是为了让移除
+  # 可逆：把 dependencies 里那两行加回来就能恢复，不必重写任何代码或配置。
+  #
+  # 之所以留着而不删：这条路径是至今唯一真机验证过能导入的（诊断读数显示 .step 成功
+  # 导入过），而顶上那条文档打开路径是零验证的新路。留着这个 target，退路就一直在。
   3D-Views-Share:
     type: app-extension
     platform: iOS

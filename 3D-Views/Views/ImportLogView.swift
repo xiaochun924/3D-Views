@@ -35,7 +35,7 @@ struct ImportLogView: View {
                     }
                 }
                 LabeledContent("收件箱待取", value: "\(history.sharedInboxFileCount()) 个")
-                LabeledContent("分享扩展", value: FileHistory.shareExtensionInstalled ? "已安装" : "未安装")
+                LabeledContent("分享扩展", value: FileHistory.shareExtensionInstalled ? "已安装" : "未安装（正常）")
             } header: {
                 Text("交接状态")
             } footer: {
@@ -75,7 +75,7 @@ struct ImportLogView: View {
             }
 
             Section {
-                Text("分享扩展是否装上、共享容器是否可用，决定了分享面板点进来之后文件能不能交到本应用手里。全部复制下来即可用于定位。")
+                Text("当前方案不用扩展：文件由系统按「文档打开」交给本应用，所以「分享扩展：未安装」是预期结果，不是故障。App Group 与收件箱那两行仍会显示，它们在恢复扩展后才会再次有内容。全部复制下来即可用于定位。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
