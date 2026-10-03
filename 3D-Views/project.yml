@@ -260,9 +260,21 @@ targets:
         CFBundleDisplayName: 3D Views
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
-          # 与 ShareViewController.swift 里的 @objc(ShareViewController) 对应；
-          # 用 Swift 的 mangled 名字在这里是找不到类的。
-          NSExtensionPrincipalClass: ShareViewController
+          # Apple 文档要求 Swift 扩展在这里写**模块限定名**：$(PRODUCT_MODULE_NAME).类名。
+          # 本 target 的 PRODUCT_NAME 是 3D-Views-Share（见下方 settings），Xcode 由此
+          # 生成的模块名会把非标识符字符换成下划线，即 3D_Views_Share。
+          #
+          # 这里原本只写 `ShareViewController`（配合源码里的 @objc(ShareViewController)），
+          # 真机实测的结果是：分享菜单里那一行**在**，.appex 在包里、签名也在（诊断页
+          # 「分享扩展：已安装／扩展签名：有」两行都有值），但**进程一次都没启动过** ——
+          # 「扩展启动于」这个时间戳停在旧值不动，而它正是 viewDidLoad 的第一行
+          # （ShareViewController.swift:38 的 AppGroup.recordExtensionStart()）写下的。
+          # 也就是说扩展在跑到那一行之前就死了，最可能就是系统在这里找不到类。
+          #
+          # 模块限定名不依赖 Swift 的 Objective-C 名字注册时机，所以它既能命中这个类，
+          # 又不受冷启动顺序影响。@objc(ShareViewController) 保留：它让类同时也能以
+          # 不带模块前缀的名字被找到，两条路都留着。
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
           NSExtensionAttributes:
             NSExtensionActivationRule:
               NSExtensionActivationSupportsFileWithMaxCount: 20
