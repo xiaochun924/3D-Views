@@ -1,6 +1,17 @@
 # 3D Views — 交接文档
 
-> 生成于 HEAD `8c34cb4`（`main`）。所有结论都标注了来源：**实测**=在本机或真机上量过并有数据；**推断**=基于实测的推论，未直接验证。
+> 生成于 HEAD `8c34cb4`（`main`）。**实测**=量过且有数据；**推断**=基于实测的推论，未直接验证。
+
+---
+
+## 〇、硬性规则（优先级最高）
+
+- **语言**：所有回复一律中文（长期有效）。
+- **技术栈**：iOS 开发用 Swift 6.2；优先 Apple 官方套件（SwiftUI、SwiftData、Observation、NavigationStack、App Intents 等），不造轮子、不引第三方替代；确实无法满足时先说明原因并征得确认。
+- **方向确认流程（不得跳步）**：提想法 → 需求识别 → GitHub 调研相似实现 → 列候选方案 → **等用户明确确认方向** → 再动手写代码。
+- **禁止死循环**：同一操作重复（相同工具+相同或近似参数）、或推理原地打转，累计达 **10 次**即自动终止——停止重试，总结已尝试内容与失败原因，向用户报告并等待指示。
+- **思维原则**：① 执行前先检查前提，核对有无错误前提/逻辑跳跃/信息缺失；② 独立判断，不一味迎合，区分事实、预测、主观观点；③ 核实来源，涉及数字、人物、结论不凭印象断言；④ 发现用户说得不对直接指出，说明依据与风险；⑤ 主动提醒用户可能忽略的变量、成本、偏差。
+- **协作约定**：重要决策、新约定、新项目追加到本文件对应章节；只记持久信息，不记过程流水账；保持短小可扫读。
 
 ---
 
@@ -10,13 +21,17 @@
 |---|---|
 | 仓库 | `C:\Users\14548\Documents\GitHub\3D-Views` |
 | 分支 / HEAD | `main` / `8c34cb4 Keep only the share extension as the import path` |
-| 未提交改动 | `M .github/workflows/ios-build.yml`（见第五节） |
+| 工作区 | **干净**，无未提交改动 |
 | 支持格式 | `step` `stp` `stl` `iges` `igs` `obj` `brep` `sldprt` |
 | 明确不支持 | `sldasm` `slddrw` `x_t` `x_b` `jt` |
 
-**唯一保留的导入链路**：分享扩展 → 拷进 App Group 收件箱 → 主 App 每次激活扫描导入。
+**定位**：iOS CAD 查看器，SwiftUI + SceneKit，经 `OCCTSwift` 桥接 OpenCASCADE。带 SolidWorks 风格测量功能。
 
-**整条链路不依赖任何 URL 投递**——文件是扩展亲手放进共享容器的。这是它比系统文档打开路径可靠的地方（实测）。
+**唯一保留的导入链路**：分享扩展 → 拷进 App Group 收件箱 → 主 App 每次激活扫描导入。整条链路**不依赖任何 URL 投递**——文件是扩展亲手放进共享容器的，这是它比系统文档打开路径可靠的地方（实测）。
+
+### 关于 `.github/workflows/ios-build.yml`
+
+**以用户文件夹里的为准，不要推送**（用户明确要求，长期有效）。当前工作区版本已含打包加固步骤（上报编译错误到 Issue、打包 IPA、发布 IPA 到 Release、上传 IPA），与 HEAD 一致。
 
 ---
 
@@ -160,21 +175,27 @@ uoTempAssemblySHDData_c
 
 | 项 | 状态 |
 |---|---|
-| `.github/workflows/ios-build.yml` 打包加固 | **未提交**。推送凭据缺 `workflow` scope，`git push` 会被拒：`refusing to allow an OAuth App to create or update workflow ... without workflow scope` |
-| `8c34cb4` 真机验证 | **未回报**（见下） |
+| `8c34cb4` 真机验证 | **未回报** |
+| 推送凭据缺 `workflow` scope | 已不适用：**用户要求不要推送** |
 
-### 待办
+### 待办（按优先级）
 
-1. **真机验证 `8c34cb4`**（唯一判据：诊断页 `扩展启动于`）
+1. **测量功能重构**（用户痛点：测量「一点也不好用」、显示「不清晰」）
+   - 已产出调研报告 [3dviews-research-report.md](3dviews-research-report.md)，核心结论：
+     - 主流 CAD 工具（Onshape / Fusion 360 / SOLIDWORKS / Shapr3D）测量**全部是基于实体**（边/面/顶点/圆柱/圆）的拾取，点拾取只是辅助层；本项目「孤立点收集候选数组、逐个点击」的模型**与所有主流产品相反**，需重构为实体拾取
+     - **预选高亮（hover / dynamic highlighting）与选中高亮是两个独立状态**，必须分开实现（OCCT 的 `GetHilightPresentation` vs `GetSelectPresentation`）
+     - 移动端特有问题：手指遮挡目标（详见报告）
+   - 下一步：实体拾取 + 预选高亮 + 测量 HUD——**动手前仍需走方向确认流程**
+2. **`8c34cb4` 真机验证**（唯一判据：诊断页 `扩展启动于`）
    - 分享一个 `.STEP`，弹窗应显示 `已导入 xxx.STEP` / `打开 3D Views 查看` / `完成`
    - 进「导入诊断」看 **`扩展启动于`**：**时间变新** = 扩展跑起来了；**仍是旧值** = 扩展进程未启动，方向转 `NSExtensionPrincipalClass` / 签名
    - `ae49100`（模块限定类名 `$(PRODUCT_MODULE_NAME).ShareViewController`）骑在同批构建里，一次验证两件事
-2. **`.sldasm` 原生读几何**（用户已明确要求）
-3. **`.sldasm` 拒绝提示改写**（确定收益，与路线选择无关）
+3. **`.sldasm` 原生读几何**（用户已明确要求）
+4. **`.sldasm` 拒绝提示改写**（确定收益，与路线选择无关）
    - 当前提示在 `3D-Views/ViewModels/ViewerViewModel.swift:648-649`：
      > 暂不支持 SolidWorks 装配体（.sldasm）原生格式。请在原软件里另存为 STEP 或 IGES 后再打开。
    - 问题：**没提本 App 其实支持 `.sldprt`**，也没提装配体可以**另存为零件**
-4. **`.easm` / HSF 支持**（暂缓，用户说「先做 `.sldasm`」）
+5. **`.easm` / HSF 支持**（暂缓，用户说「先做 `.sldasm`」）
 
 ---
 
@@ -242,7 +263,7 @@ uoTempAssemblySHDData_c
 ### 已知噪声（无害，别当故障）
 
 - 每次提交都有 `warning: in the working copy of '...', LF will be replaced by CRLF the next time Git touches it`
-- `git push` 进度写 stderr，PowerShell 报 `NativeCommandError`，但**推送成功**
+- `git push` 进度写 stderr，PowerShell 报 `NativeCommandError`，但**推送成功**（当前已不推送）
 
 ### 本机 Python
 
@@ -268,6 +289,10 @@ C:\Users\14548\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.
 
 → 读仓库用 `github_*` 工具（host 侧直连），**不要用 shell 里的 `curl`/`gh`/`git`** 去访问 GitHub（沙箱常破坏 TLS/代理）。
 
+### 用户偏好
+
+- **不要推送**：`ios-build.yml` 以用户文件夹里的为准，不要 `git push`。
+
 ---
 
 ## 九、踩坑记录（别重犯）
@@ -279,4 +304,4 @@ C:\Users\14548\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.
 2. **不要推测「用户测的是旧版本」。** 用户已明确纠正：「我每次测试都是按照最新构建的来的 不要推测版本问题了」。
 3. **`.appex` 不会被 `find -name "*.app"` 匹配**（glob 是尾部锚定的）——这个理论已实证证伪。
 4. **`~` 前缀在 `knownUnsupportedFormats` 里查不到**：iOS 给的临时文件路径可能带 `~` 或大写，`coordinate`/`coordination` 类小动作会漏。
-
+5. **文档数字要与代码现状对账。** 本次核对发现 `3D-Views/Views/HomeView.swift:22` 实际文案是「支持 STEP、IGES、STL、OBJ、BREP。」——**漏了 sldprt**，与第五节待办 8 的描述一致。改文档时不要照抄旧结论，回到源文件核。

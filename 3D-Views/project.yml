@@ -68,8 +68,19 @@ targets:
         UILaunchScreen:
           UIColorName: ""
           UIImageRespectsSafeAreaInsets: false
+        # 本 App 现在**自己拥有 scene**（3D_ViewsApp.swift 是 UIKit 生命周期，@main 是
+        # AppDelegate，SceneDelegate 由 application(_:configurationForConnecting:options:)
+        # 装上）。这一段只是那份配置的静态回声，让系统在 App 启动前就知道本 App 有 scene；
+        # 声明里不带 delegate 名，因为真正的 delegate 类由代码给出 —— XcodeGen 每次重新
+        # 生成 Info.plist，写死类名反而多一处会漂移的地方。
+        #
+        # 必须与下面 UISceneConfigurations 的 sessionRole 一致：两边都是
+        # UIWindowSceneSessionRoleApplication。
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -84,26 +95,99 @@ targets:
         # 让用户在「文件」App 里能看到 App 自己的目录（Documents），手动放文件进去。
         # 这与分享扩展无关，是另一条完全独立、并且一直可用的入口。
         UIFileSharingEnabled: true
-        # 以下三段声明全部删除，因为它们的导入模式在真机上从未成功过一次，
-        # 保留只会让系统在投递文件时有更多机会走错路：
+        # 文档打开路径回来了，而且是照着一个已知能用的样本抄的：全能签（signall.nuosike.sign，
+        # 实测其 Info.plist）。它的模型是三条一起用：
         #
-        # 1) CFBundleURLTypes（3dviews://）—— 分享扩展曾用它尝试把主 App 拉到前台，
-        #    但 extensionContext.open 的回调在真机上始终是 didOpen == false，
-        #    Safari 也打不开这个 scheme。分享扩展现在不尝试启动主 App 了。
+        # 1) CFBundleDocumentTypes —— 让本 App 出现在「共享」与「打开方式」列表里；
+        # 2) LSSupportsOpeningDocumentsInPlace —— 就地打开，系统不做拷贝；
+        # 3) UISceneDelegateClassName / 代码里的 SceneDelegate —— 接住系统递来的 URL。
         #
-        # 2) CFBundleDocumentTypes（6 条）——「文件」App 的「打开方式」路径。三种配置
-        #    都在真机上量过：Alternate+false 不拷贝也不递 URL；None+false 会拷贝但
-        #    App 从「打开方式」列表里消失（用户原话「打开方式没有 3dviews了」）；
-        #    Alternate+true 既不拷也不递。系统那条路只把 URL 递到 scene 的
-        #    connectionOptions.urlContexts，而本 App 没有接管 scene，所以它走不通。
+        # 当年三次失败的是第 3 条缺席：本 App 没有接管 scene，而文档打开路径的 URL 恰好只走
+        # scene 的 connectionOptions.urlContexts，所以文件永远递不进来。三条里缺一条，另外两条
+        # 都白搭，这也是当时误判成「文档打开路径走不通」的原因。
         #
-        # 3) UTExportedTypeDeclarations —— 上面那 6 条声明引用的自定义类型。没有文档
-        #    类型声明后它们没有任何作用。App 认识的格式由运行时的扩展名白名单决定
-        #    （Models/FileHistory.swift:101 的 supportedExtension(of:)），与 Info.plist
-        #    无关，所以删掉不影响能导入哪些文件。
+        # LSHandlerRank 用 Owner 而不是当年测过的那两个值（Alternate 会「App 跳转了、文件没进来」，
+        # None 会让本 App 从「打开方式」里消失，用户原话「打开方式没有 3dviews了」）。Owner 是
+        # 全能签在绝大多数条目上用的值，本项目从未测过。
         #
-        # 唯一保留的导入路径是分享扩展：它把文件拷进 App Group 共享收件箱，主 App 每次
-        # 激活时扫描收件箱完成导入（Models/FileHistory.swift:470 的 importFromSandbox）。
+        # 扩展名白名单仍由运行时决定（Models/FileHistory.swift:101 的 supportedExtension(of:)），
+        # 与 Info.plist 无关；这里声明的是「本 App 愿意接手哪类文件」，不是「本 App 能读懂什么」。
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: 3D 模型
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - public.data
+              - public.content
+          - CFBundleTypeName: STEP
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.step
+          - CFBundleTypeName: IGES
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.iges
+          - CFBundleTypeName: STL
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.stl
+          - CFBundleTypeName: OBJ
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.obj
+          - CFBundleTypeName: BREP
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.brep
+        # 上面引用的自定义类型。每条都 conform 到一个系统既有类型，否则 iOS 会在
+        # 「打开方式」里忽略它（全能签的 9 条声明全部是这个写法）。
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.xiaochun.step
+            UTTypeDescription: STEP 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - step
+                - stp
+          - UTTypeIdentifier: com.xiaochun.iges
+            UTTypeDescription: IGES 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - iges
+                - igs
+          - UTTypeIdentifier: com.xiaochun.stl
+            UTTypeDescription: STL 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - stl
+          - UTTypeIdentifier: com.xiaochun.obj
+            UTTypeDescription: OBJ 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - obj
+          - UTTypeIdentifier: com.xiaochun.brep
+            UTTypeDescription: BREP 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - brep
+        # 唯一**没有**恢复的一段是 CFBundleURLTypes（3dviews://）。跳转不再需要它：文档打开
+        # 路径由系统启动本 App 并直接把 URL 递到 scene，中间没有「拉起」这个动作，也就用不上
+        # scheme。旧 scheme 是配合 extensionContext.open 用的，而那个 API 在分享扩展里不被
+        # 支持（Apple 文档原文见 3D_ViewsApp.swift 的注释），恢复它只会把一条死路重新接上。
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews
