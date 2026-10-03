@@ -27,7 +27,6 @@ final class ShareViewController: UIViewController {
     private let statusLabel = UILabel()
     private let openButton = UIButton(type: .system)
     private var hasStarted = false
-    private var hostURL: URL?
     private var handoffFinished = false
 
     override func viewDidLoad() {
@@ -85,9 +84,10 @@ final class ShareViewController: UIViewController {
         // is the only place the user can see it, since the app has nothing to look at.
         guard AppGroup.isAvailable else {
             AppGroup.recordHandoff(names: [], failures: ["共享容器不可用"])
-            statusLabel.text = "无法导入：共享容器不可用\n当前安装包的签名里没有 \(AppGroup.identifier)"
-            try? await Task.sleep(for: .seconds(2.2))
-            extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+            await MainActor.run { [weak self] in
+                self?.statusLabel.text = "无法导入：共享容器不可用\n当前安装包的签名里没有 \(AppGroup.identifier)"
+                self?.openButton.isHidden = true
+            }
             return
         }
 
@@ -106,15 +106,19 @@ final class ShareViewController: UIViewController {
         }
 
         AppGroup.recordHandoff(names: deposited, failures: failures)
-        statusLabel.text = message(deposited: deposited, failures: failures)
-        hostURL = AppGroup.wakeUpURL
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            self.statusLabel.text = self.message(deposited: deposited, failures: failures)
+            self.openButton.isHidden = deposited.isEmpty
+            self.openButton.isEnabled = !deposited.isEmpty
+        }
 
-        // Apple documents completion as the operation that dismisses the extension. Keep the
-        // extension alive after the copy so the user can explicitly request the host handoff.
+        // Keep the extension alive after a successful copy. The user can now see and tap the
+        // button, which lets us distinguish an iOS URL-handoff rejection from a dead extension.
         if deposited.isEmpty {
-            completeExtension()
-        } else {
-            openButton.isHidden = false
+            await MainActor.run { [weak self] in
+                self?.completeExtension()
+            }
         }
     }
 
