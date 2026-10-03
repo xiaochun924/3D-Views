@@ -192,12 +192,21 @@ final class ShareViewController: UIViewController {
     // MARK: - Waking the app
 
     @objc private func openHostApp() {
-        guard !handoffFinished, let url = hostURL, let context = extensionContext else { return }
+        guard !handoffFinished else { return }
+        guard let url = hostURL ?? URL(string: "\(AppGroup.wakeUpScheme)://import") else {
+            statusLabel.text = "无法生成 3D Views 打开地址"
+            return
+        }
+        guard let context = extensionContext else {
+            statusLabel.text = "分享扩展已结束，请返回后重新分享"
+            return
+        }
+
         openButton.isEnabled = false
         statusLabel.text = "正在打开 3D Views…"
 
-        // The user action is the reliable point at which an extension may request its
-        // containing app. Complete only after UIKit reports that the request was accepted.
+        // The extension context is Apple's supported handoff API. Keep the extension alive
+        // until its completion callback, because completing first can discard the request.
         context.open(url) { [weak self] didOpen in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -205,7 +214,7 @@ final class ShareViewController: UIViewController {
                     self.completeExtension()
                 } else {
                     self.openButton.isEnabled = true
-                    self.statusLabel.text = "无法自动打开 3D Views，请再次点击"
+                    self.statusLabel.text = "系统未能打开 3D Views，请关闭后重试"
                 }
             }
         }
