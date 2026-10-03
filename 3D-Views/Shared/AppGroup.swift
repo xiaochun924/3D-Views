@@ -46,7 +46,13 @@ enum AppGroup {
     /// built per call, the caller decides what to do when it is `nil`, and a failure is a
     /// line of text the user can read rather than the end of the process.
     static var wakeUpURL: URL? {
-        URL(string: wakeUpURLText)
+        // `NSURL(string:)` and `URL(string:)` are separate initializers with separate
+        // parsers — `URL` is the Swift value type, `NSURL` the Objective-C one it bridges
+        // from, and a failure in one says nothing about the other. On the device this was
+        // observed returning `nil` for a string whose length and code points were verified
+        // to be exactly `3dviews://import`, so the Swift parser is not trustworthy here and
+        // the bridged path is worth one build before giving up on a URL entirely.
+        NSURL(string: wakeUpURLText) as URL?
     }
 
     /// The exact string `wakeUpURL` feeds to `URL(string:)`, exposed so a construction
