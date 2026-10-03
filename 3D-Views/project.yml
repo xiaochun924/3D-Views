@@ -146,17 +146,26 @@ targets:
               - sldprt
             LSItemContentTypes:
               - com.xiaochun.sldprt
-          - CFBundleTypeName: Any Data File
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            LSItemContentTypes:
-              - public.data
-              - public.content
+          # 「Any Data File → public.data」这一条被删掉了，它很可能正是那条让投递
+          # 静默失败的声明。`public.data` 是 UTI 树的根，所有文件都是它；声明它，
+          # 等于让本 App 对系统说「任何文件我都能打开」。系统在决定把一个文件投给
+          # 哪个 App 时（尤其是「拷贝到 Documents/Inbox 再启动」这条路径），面对
+          # 一个声称通吃一切的候选会失去判定依据，结果是启动 App、却不交付任何东西
+          # —— 真机表现正是「跳转成功、Documents/Inbox 不存在、URL 也没送达」。
+          # 上面六个具体格式已完整覆盖此查看器认识的类型，兜底声明没有存在必要。
         UTExportedTypeDeclarations:
+          # conformsTo 从 public.data 改成分得清的具体基础类型。public.data 是 UTI
+          # 树的根，所有文件都符合它；一个只声明「我是任意数据」的类型，在系统眼里
+          # 和别的文件没有任何区别，也就没有理由被优先投递给本 App。BatteryInsight
+          # 那条真机跑通的声明用的是 public.plain-text（具体类型），不是根类型 ——
+          # 这次照它改。
+          # STEP / IGES / OBJ / BREP 都是纯文本格式（ISO 10303、ASME Y14.26M 等），
+          # 归 public.text；STL 分 ASCII 与二进制两版、SLDPRT 是私有二进制容器，
+          # 二者只能归 public.data。
           - UTTypeIdentifier: com.xiaochun.step
             UTTypeDescription: STEP CAD File
             UTTypeConformsTo:
-              - public.data
+              - public.text
             UTTypeTagSpecification:
               public.filename-extension:
                 - step
@@ -171,7 +180,7 @@ targets:
           - UTTypeIdentifier: com.xiaochun.iges
             UTTypeDescription: IGES CAD File
             UTTypeConformsTo:
-              - public.data
+              - public.text
             UTTypeTagSpecification:
               public.filename-extension:
                 - iges
@@ -179,14 +188,14 @@ targets:
           - UTTypeIdentifier: com.xiaochun.obj
             UTTypeDescription: OBJ Mesh
             UTTypeConformsTo:
-              - public.data
+              - public.text
             UTTypeTagSpecification:
               public.filename-extension:
                 - obj
           - UTTypeIdentifier: com.xiaochun.brep
             UTTypeDescription: OCCT BREP File
             UTTypeConformsTo:
-              - public.data
+              - public.text
             UTTypeTagSpecification:
               public.filename-extension:
                 - brep

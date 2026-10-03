@@ -482,7 +482,20 @@ final class FileHistory: ObservableObject {
             sharedCount = names.count
             for name in names.sorted() {
                 let source = shared.appendingPathComponent(name)
-                guard Self.supportedExtension(of: source) != nil else { continue }
+                guard Self.supportedExtension(of: source) != nil else {
+                    // A file the viewer cannot open used to be skipped and left where it
+                    // was — which made the shared inbox permanently un-drainable. The
+                    // sweep reports its size, so one unsupported file turns 「收件箱待取」
+                    // into a number that never falls to zero, and every later handover
+                    // reads as a failure against that stale count. Moving it aside keeps
+                    // the inbox honest: the file is still there if it is ever wanted, but
+                    // it no longer stands in the way of the ones that can be imported.
+                    let parked = shared.appendingPathComponent("Unsupported", isDirectory: true)
+                    try? manager.createDirectory(at: parked, withIntermediateDirectories: true)
+                    try? manager.moveItem(at: source, to: parked.appendingPathComponent(name))
+                    note("  收件箱移出（格式不支持）：\(name)")
+                    continue
+                }
                 if let entry = importSandboxCopy(at: source, removeSource: true) {
                     imported.append(entry)
                 }
