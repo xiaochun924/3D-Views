@@ -193,14 +193,15 @@ final class ShareViewController: UIViewController {
 
     @objc private func openHostApp() {
         guard !handoffFinished else { return }
-        guard let url = hostURL ?? URL(string: "\(AppGroup.wakeUpScheme)://import") else {
-            statusLabel.text = "无法生成 3D Views 打开地址"
-            return
-        }
         guard let context = extensionContext else {
             statusLabel.text = "分享扩展已结束，请返回后重新分享"
             return
         }
+
+        // `AppGroup.wakeUpURL` is a non-optional constant, so there is no "could not build
+        // the address" case to report. A guard here would be unreachable code that showed a
+        // diagnostic the build could never actually produce.
+        let url = AppGroup.wakeUpURL
 
         openButton.isEnabled = false
         statusLabel.text = "正在打开 3D Views…"
