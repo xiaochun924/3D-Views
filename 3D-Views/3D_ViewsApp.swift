@@ -83,6 +83,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // to be found, not handed over. `scheduleInboxSweep` looks now and again a few
         // seconds later, because at this instant iOS may not have finished copying the
         // file in yet — a single scan here can see an empty folder and be right about it.
+        FileHistory.shared.consumePendingShareImportIfNeeded(reason: "冷启动")
         FileHistory.shared.scheduleInboxSweep(reason: "冷启动")
         return true
     }
@@ -120,6 +121,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     /// A return to the foreground is when the share extension's handover becomes visible,
     /// and it is the only hook that runs for a launch the app slept through.
     func applicationDidBecomeActive(_ application: UIApplication) {
+        FileHistory.shared.consumePendingShareImportIfNeeded(reason: "回到前台")
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
     }
 }
@@ -157,9 +159,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         handle(URLContexts, source: "SceneDelegate")
     }
 
+    /// 全能签在 scene 回到前台时再次消费分享桥接；这里同样处理，覆盖 AppDelegate
+    /// 通知与 SwiftUI scene 状态没有可靠变化的冷启动/恢复场景。
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        FileHistory.shared.consumePendingShareImportIfNeeded(reason: "scene 回前台")
+        FileHistory.shared.scheduleInboxSweep(reason: "scene 回前台")
+    }
+
     /// Also the hook that catches a handover while the app is already running, which is
     /// every share that comes back to a warm app.
     func sceneDidBecomeActive(_ scene: UIScene) {
+        FileHistory.shared.consumePendingShareImportIfNeeded(reason: "回到前台")
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
     }
 

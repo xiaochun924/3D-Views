@@ -36,24 +36,17 @@ targets:
       - path: Base.lproj
     dependencies:
       - package: OCCTSwift
-      # 分享扩展**已从包里移除**（用户明确要求：完全照搬全能签的方案）。
+      # 分享接收页是全能签两阶段导入模型的第一阶段：先在分享界面接收文件，
+      # 再由主 App 在 scene 激活时消费 App Group 收件箱。
+      - target: 3D-Views-Share
+      # 当前已恢复嵌入分享扩展：分享页面负责接收文件并写入 App Group，主 App
+      # 在 SceneDelegate 的启动、回前台和激活阶段消费收件箱。下面保留历史失败记录，
+      # 但不再把“扩展未安装”写成当前状态。
       #
-      # 全能签（signall.nuosike.sign，实测其 Info.plist）包里根本没有任何 .appex，
-      # 也没有 PlugIns 目录。它出现在「共享」与「打开方式」里靠的是
-      # CFBundleDocumentTypes，靠系统把它作为文档处理程序启动来接手文件 —— 全程
-      # 没有一个扩展参与，也就没有「拉起宿主」这个动作需要被满足。
-      #
-      # 这里只摘掉嵌入（`- target: 3D-Views-Share`），**target 定义与源码全部保留**
-      # （见文件末尾），所以这是可逆的：把那两行加回来就能恢复，不必重写任何代码。
-      #
-      # 移除的直接影响：打出来的包里不再有 .appex，「共享」面板里那一行不再由扩展
-      # 提供。但文档声明仍在（下面 info.properties 里的 CFBundleDocumentTypes），
-      # 系统仍会把本 App 列进「共享」与「打开方式」——只是它以文档处理程序的身份被
-      # 启动，而不是以扩展的身份被加载。
-      #
-      # 历史上试过的三条路，结局仍记录在这里，免得第四次再走一遍：
-      #
-      # 1) 文档打开路径（2026-10 之前试过）。真机实测三组配置全是「App 跳转了、
+      # 历史上试过的扩展拉起主 App 方案仍不可用：extensionContext.open 在真机上恒为
+      # didOpen == false，因此扩展只负责完成文件交接，不负责主动打开宿主 App。
+      # 用户点选分享入口后，系统进入扩展的导入页面；扩展完成交接后，由主 App 的
+      # 生命周期消费收件箱并加载文件。
       #    文件没进来」：Alternate+false 不拷也不递 URL；None+false 能把文件拷进
       #    Documents/Inbox（用一个系统里无人声明的 .ipa 验证过），代价是「文件」
       #    App 的「打开方式」列表里从此看不到本 App（用户原话「打开方式没有

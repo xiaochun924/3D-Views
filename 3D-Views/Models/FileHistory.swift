@@ -688,6 +688,22 @@ final class FileHistory: ObservableObject {
         return imported
     }
 
+    /// 消费分享桥接留下的待导入文件。
+    ///
+    /// 扩展负责把临时文件复制进 App Group Inbox，主 App 在启动、回前台和激活阶段
+    /// 调用本方法取走并导入到自己的沙盒；重复调用是幂等的。
+    @discardableResult
+    func consumePendingShareImportIfNeeded(reason: String) -> [RecentFile] {
+        if let handoff = AppGroup.lastHandoff {
+            let names = handoff.names.isEmpty ? "无" : handoff.names.joined(separator: "、")
+            let failures = handoff.failures.isEmpty ? "无" : handoff.failures.joined(separator: "、")
+            note("分享交接消费\(reason)：清单=\(names)｜失败=\(failures)｜收件箱待取=\(AppGroup.pendingFileCount())")
+        } else {
+            note("分享交接消费\(reason)：无交接清单｜收件箱待取=\(AppGroup.pendingFileCount())")
+        }
+        return importFromSandbox(reason: "分享交接\(reason)")
+    }
+
     /// The sweep currently waiting to run its retries, so a burst of activation
     /// notifications leaves one pending sweep rather than one per notification.
     private var sweepTask: Task<Void, Never>?
