@@ -25,7 +25,10 @@ import UniformTypeIdentifiers
 final class ShareViewController: UIViewController {
 
     private let statusLabel = UILabel()
+    private let openButton = UIButton(type: .system)
     private var hasStarted = false
+    private var hostURL: URL?
+    private var handoffFinished = false
 
     override func viewDidLoad() {
         // Left before anything else, including the label. `NSExtensionPrincipalClass`
@@ -44,12 +47,23 @@ final class ShareViewController: UIViewController {
         statusLabel.textAlignment = .center
         statusLabel.numberOfLines = 0
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        openButton.setTitle("打开 3D Views", for: .normal)
+        openButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        openButton.configuration = .borderedProminent()
+        openButton.isHidden = true
+        openButton.addTarget(self, action: #selector(openHostApp), for: .touchUpInside)
+        openButton.translatesAutoresizingMaskIntoConstraints = false
+
         view.addSubview(statusLabel)
+        view.addSubview(openButton)
 
         NSLayoutConstraint.activate([
             statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            statusLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            statusLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -32),
+            openButton.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 20),
+            openButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
         ])
     }
 
@@ -93,12 +107,15 @@ final class ShareViewController: UIViewController {
 
         AppGroup.recordHandoff(names: deposited, failures: failures)
         statusLabel.text = message(deposited: deposited, failures: failures)
+        hostURL = URL(string: "\(AppGroup.wakeUpScheme)://import")
 
-        // The App Group copy is the durable handoff. The extension context's returned
-        // items belong to the source app, not to this app's document-open lifecycle.
-        // Ask SpringBoard to foreground the registered host URL after the copy completes.
-        await wakeUpHostApp()
-        extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+        // Apple documents completion as the operation that dismisses the extension. Keep the
+        // extension alive after the copy so the user can explicitly request the host handoff.
+        if deposited.isEmpty {
+            completeExtension()
+        } else {
+            openButton.isHidden = false
+        }
     }
 
     private func message(deposited: [String], failures: [String]) -> String {
@@ -174,23 +191,29 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Waking the app
 
-    /// Pulls the host app to the foreground before the extension is dismissed.
-    ///
-    /// The completion callback matters: ending a share extension immediately after calling
-    /// `open` can tear down the extension before SpringBoard handles the URL. The file is
-    /// already in the App Group inbox, so a failed wake-up is still recoverable on the next
-    /// app activation; it only affects whether the user is taken there automatically.
-    private func wakeUpHostApp() async -> Bool {
-        guard let url = URL(string: "\(AppGroup.wakeUpScheme)://import"),
-              let context = extensionContext else { return false }
+    @objc private func openHostApp() {
+        guard !handoffFinished, let url = hostURL, let context = extensionContext else { return }
+        openButton.isEnabled = false
+        statusLabel.text = "正在打开 3D Views…"
 
-        // Share extensions must ask their extension context to open the containing app.
-        // The callback is the handoff boundary; only finish the extension after iOS has
-        // accepted the request so SpringBoard can attach the host scene.
-        return await withCheckedContinuation { continuation in
-            context.open(url) { didOpen in
-                continuation.resume(returning: didOpen)
+        // The user action is the reliable point at which an extension may request its
+        // containing app. Complete only after UIKit reports that the request was accepted.
+        context.open(url) { [weak self] didOpen in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if didOpen {
+                    self.completeExtension()
+                } else {
+                    self.openButton.isEnabled = true
+                    self.statusLabel.text = "无法自动打开 3D Views，请再次点击"
+                }
             }
         }
+    }
+
+    private func completeExtension() {
+        guard !handoffFinished else { return }
+        handoffFinished = true
+        extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
 }
