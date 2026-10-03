@@ -240,10 +240,10 @@ final class FileHistory: ObservableObject {
         }
 
         lines.append("主包签名：\(sealState(of: Bundle.main.bundleURL))")
-        // Kept even though nothing embeds an .appex right now: this is the line that would
-        // tell a reader whether a *restored* extension was signed by whatever self-signing
-        // tool installed the build. `无` here is now the normal reading, not evidence of a
-        // bad signature — which is exactly why the header says what to expect.
+        // The extension is embedded again, so this line is load-bearing rather than
+        // forward-looking: an unsigned `.appex` inside a self-signed IPA is a real failure
+        // mode, and this is the only place it would show. `无` now means the extension is
+        // missing or was not signed, not that none was expected.
         lines.append("扩展签名：\(sealState(of: Bundle.main.bundleURL.appendingPathComponent("PlugIns/3D-Views-Share.appex")))")
 
         // Whether the extension has ever actually been brought up. "Not installed",
@@ -251,13 +251,10 @@ final class FileHistory: ObservableObject {
         // different faults, and a missing handoff record only rules out the third — this
         // line is what separates the other two.
         //
-        // While no .appex is embedded this line should read 从未 and stay there; a moving
-        // timestamp would mean a build that still carries an extension. It is kept because
-        // restoring the extension is a two-line change (see project.yml), and these two
-        // lines are what would make that restoration diagnosable.
-        //
-        // The document-open path is not read here at all: it is diagnosed by the launch
-        // lines in the log, which record the URL, the source, and `launchOptions`' key list.
+        // With the extension back in the bundle this should read a fresh timestamp after
+        // every share. 从未 on a build whose 扩展签名 line reads 有 means the share sheet
+        // never launched the extension at all, which is a different bug from the extension
+        // running and failing to hand anything over — the handoff lines below split those.
         if let started = AppGroup.lastExtensionStart {
             lines.append("扩展启动于：\(stampFormatter.string(from: started))")
         } else {
@@ -754,10 +751,11 @@ final class FileHistory: ObservableObject {
 
     /// How many files the share extension has left waiting. Shown in `SettingsView`.
     ///
-    /// Normally 0 now that nothing embeds an extension. The number is still read from the
-    /// App Group rather than assumed to be 0, because the group container survives an app
-    /// update: a build with the extension restored will find whatever is still sitting
-    /// there, and a hardcoded 0 would hide it.
+    /// The extension is embedded again, so this is a live reading rather than a
+    /// formality: it is normally 0 because the app takes the files out on activation, and
+    /// a number that stays above 0 after a share means the handover landed in the
+    /// container but nothing consumed it. Read from the App Group rather than assumed,
+    /// because the group container also survives an app update.
     func sharedInboxFileCount() -> Int {
         AppGroup.pendingFileCount()
     }

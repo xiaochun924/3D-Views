@@ -101,6 +101,14 @@ struct HomeView: View {
                 // onReceive, not onChange: @Published replays the current value on
                 // subscribe, so a file handed over during a cold launch — before any
                 // observer existed — still reaches the navigation stack.
+                //
+                // This is also the one place in the app that must NOT be migrated to
+                // `@Observable`. `@Observable` publishes through observation rather than
+                // Combine, so it emits nothing for `onReceive` to receive; converting
+                // `FileHistory` would silently drop the cold-launch handover, which is
+                // the case this line exists to handle. A migration is possible, but it
+                // has to replace this with an `onChange` over a replayed value at the
+                // same time — not as a mechanical wrapper swap.
                 guard let entry else { return }
                 navPath.append(entry)
                 history.pendingOpen = nil

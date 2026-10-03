@@ -90,9 +90,14 @@ struct SettingsView: View {
         } header: {
             Text("分享与导入")
         } footer: {
+            // These two strings described the document-open build, which was reverted; the
+            // share extension is the import path again, so the container is load-bearing
+            // rather than vestigial. Saying otherwise sends the next person debugging a
+            // failed share to the wrong mechanism entirely — which is exactly what the
+            // first version of this footer did.
             Text(AppGroup.isAvailable
-                 ? "当前方案由系统按「文档打开」把文件交给本应用，不经过共享容器。这一行在恢复分享扩展后才会再次有内容。"
-                 : "共享容器未打开：当前安装包的签名里没有这个 App Group。当前方案不依赖它（文件由系统按「文档打开」直接交给本应用），但恢复分享扩展后需要它，届时要在签名时带上该 App Group 权限。")
+                 ? "分享扩展把文件放进这个共享容器，本应用启动或回到前台时取走并导入。容器可用表示交接链路的两端已经能互相看见。"
+                 : "共享容器未打开：当前安装包的签名里没有这个 App Group，分享扩展放了文件也无人能取。装包时必须在签名里带上该 App Group 权限，界面上不会给出其他提示。")
                 .font(.system(size: 10))
         }
     }
