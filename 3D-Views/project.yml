@@ -30,20 +30,29 @@ targets:
           - project.yml
     dependencies:
       - package: OCCTSwift
-      # 分享扩展的嵌入被移除了。它一直在争同一次分享：Files 里点「分享」时，
-      # 只要有 com.apple.share-services 扩展，系统就只运行扩展进程，而扩展**没有**
-      # 「打开宿主 App」的正式能力 —— extensionContext.open 被系统拒绝（真机实测
-      # 回调恒为 false），扩展又必须结束自己，于是每次都是「弹窗消失、什么也没发生」。
+      # 分享扩展重新被嵌入。这是用户明确要求回到的方案（原话：还要通过原先分享扩展
+      # 导入方案），也是本文件里所有其他尝试都失败之后唯一还剩下的路。
       #
-      # 不嵌入扩展后，同一次分享改走系统原生的文档打开路径：「用其他应用打开」→
-      # iOS 自己启动 App 并把文件拷进 Documents/Inbox。这一条在同一个人的
-      # BatteryInsight（无扩展、只有 CFBundleDocumentTypes + LSSupportsOpeningDocumentsInPlace:false）
-      # 上真机跑通过，也是本文件下面 CFBundleDocumentTypes 注释里照抄的来源。
-      # 拉起 App 的是系统本身，不经过扩展，所以不存在被拒绝的问题。
+      # 中间试过的三条路，各自的结局都记录在这里，免得第四次再走一遍：
       #
-      # 扩展的 target 定义和源码都保留在下方（不再被嵌入），一条 `- target:` 就能恢复。
-      # - target: 3D-Views-Share
-      #   embed: true
+      # 1) 不嵌入扩展、靠系统文档打开路径（BatteryInsight 的做法）。真机实测三组
+      #    配置全是「App 跳转了、文件没进来」：Alternate+false 不拷也不递 URL；
+      #    None+false 能把文件拷进 Documents/Inbox（用一个系统里无人声明的 .ipa
+      #    验证过），代价是「文件」App 的「打开方式」列表里从此看不到本 App；
+      #    Alternate+true 不拷、URL 也没到过 application(_:open:options:) 或
+      #    .onOpenURL 任何一处。结论：本 App 没有接管 scene（自定义 SceneDelegate
+      #    会让应用启动即爆栈），而文档打开路径的 URL 恰好只走 scene 的
+      #    connectionOptions.urlContexts，那条路在本项目上是死的。
+      #
+      # 2) 因此重新走扩展：扩展自己把文件拷进 App Group 共享收件箱，主 App 每次
+      #    激活扫描那个收件箱。**整条链路不依赖任何 URL 投递**，这正是它比文档打开
+      #    路径可靠的地方 —— 文件是扩展亲手放的，不是系统答应给的。
+      #
+      # 3) 扩展里那个「打开 3D Views」按钮仍然保留，但它只是加速手段：点它能拉起
+      #    主 App 就立即看到导入结果，拉不起来（系统拒绝 extensionContext.open）也
+      #    没关系 —— 用户手动切回 App 同样会扫到文件。按钮不再是导入的前提。
+      - target: 3D-Views-Share
+        embed: true
     # App Group 是主 App 与分享扩展唯一能互相看见的地方。注意：IPA 以
     # CODE_SIGNING_ALLOWED=NO 构建，这份 entitlement 不会进包，必须由自签工具
     # 在签名时补上；否则 containerURL(forSecurityApplicationGroupIdentifier:)
@@ -73,28 +82,11 @@ targets:
         CFBundleDisplayName: 3D Views
         CFBundleDevelopmentRegion: zh_CN
         UIFileSharingEnabled: true
-        # 这一位是「文档投递方式」的总开关，真机上把它两个值都试过，结论如下。
-        #
-        # false —— 「我没有原地打开文档的能力」。系统于是打算**拷贝一份**到
-        # Documents/Inbox 再启动 App。实测：分享一个系统里没有任何 App 声明的 .ipa
-        # 时，拷贝确实发生，扫描直接看到；但分享 .step 时 Documents/Inbox 是空的 ——
-        # 因为本 App 声明了 com.xiaochun.step，系统改了主意，走文档打开那条路，
-        # 而那条路要把 URL 交给 scene 的 connectionOptions.urlContexts，本 App 没有
-        # 接管 scene（接管会让应用启动即爆栈，见 3D_ViewsApp.swift 的记录），
-        # 于是 URL 无人接收。结果就是「App 跳转了、文件没进来」。
-        #
-        # true —— 「我能原地打开文档」。系统不再考虑拷贝，改为**直接递一个安全作用域
-        # URL**，并且这次是递到本 App 已经接好的两个入口：application(_:open:options:)
-        # （3D_ViewsApp.swift:67-74）和 .onOpenURL（:113-115）。这两个入口从写下那天起
-        # 就一直挂着、却从未被触发过 —— 诊断里的 handoverLog 从来没有出现过
-        # 「AppDelegate 收到」或「onOpenURL 收到」两行，正是这条路一直没被走通的证据。
-        # 与 LSHandlerRank: Alternate 配合，语义才自洽：我是这个类型的候选处理者，
-        # 且我不拷贝，请直接把 URL 给我。
-        #
-        # 因此 true + Alternate 是现在要验证的组合。若 URL 仍不出现，下一步就不是调
-        # 这两个键，而是回到「不要文档归属」那条路（LSHandlerRank: None，它已被证实
-        # 能把文件拷进 Inbox，代价是「打开方式」列表里看不到本 App）。
-        LSSupportsOpeningDocumentsInPlace: true
+        # 回到从未被真机证伪的那个组合：文件在「文件」App 里看得见我（Alternate），
+        # 而我不原地打开（false）—— 后者配合扩展意味着系统会把文件拷一份给目标 App，
+        # 正是扩展方案依赖的语义。真机实测过 Alternate+true，结果是既不拷也不递 URL，
+        # 所以这个值必须回到 false。
+        LSSupportsOpeningDocumentsInPlace: false
         # 分享扩展把文件放进 App Group 之后，用这个 scheme 尝试把主 App 拉到前台。
         # 分享扩展没有被赋予「打开宿主 App」的正式能力，所以这只是尽力而为；真正
         # 保证交接完成的是主 App 每次激活时扫描共享收件箱。
@@ -103,22 +95,22 @@ targets:
             CFBundleURLSchemes:
               - 3dviews
         CFBundleDocumentTypes:
-          # LSHandlerRank 全部改回 Alternate，与上面 LSSupportsOpeningDocumentsInPlace: true
-          # 配套，构成一条语义自洽的声明：「这个类型我也能处理（所以「文件」App 的
-          # 打开方式列表里看得见我），而我不拷贝（所以请把 URL 直接递给我）」。
+          # LSHandlerRank 保持在 Alternate：它唯一的作用是让本 App 出现在「文件」App
+          # 的「打开方式」列表里，而这一点真机确认过（改 None 之后用户原话：
+          # 「打开方式没有 3dviews了」）。扩展方案不依赖这条声明 —— 文件由扩展亲手
+          # 拷进共享收件箱 —— 但保留它，用户从「打开方式」进来时至少能看到 App，
+          # 而不是一个空的候选列表。
           #
-          # 两个值都在真机上跑过，各自的代价都记录在这里，免得下次再走一遍：
+          # 两个值都在真机上跑过的结论，记在这里免得再走一遍：
           #
-          # None —— 系统不再把该类型判为「有主」，文件确实会走通用投递路径被拷进
-          # Documents/Inbox（一个系统里无人声明的 .ipa 就是这么进来的），但代价是
-          # **「打开方式」列表里再也看不到本 App**。真机确认：「打开方式没有 3dviews了」。
-          # 能导入却找不到入口，比导入失败更糟，所以这一版不用它。
+          # None —— 系统不再把该类型判为「有主」，文件会走通用投递路径被拷进
+          # Documents/Inbox（一个系统里无人声明的 .ipa 就是这么进来的），代价是
+          # 「打开方式」列表里再也看不到本 App。能导入却找不到入口，不可取。
           #
-          # Alternate —— 列表里看得到，系统按「文档打开」路径把安全作用域 URL 递进来。
-          # 之前的失败不在于这个值本身，而在于它与 LSSupportsOpeningDocumentsInPlace:
-          # false 组成的矛盾组合：声明了归属、却又声称不能原地打开，系统于是既没有
-          # 拷贝（因为文件有主）也没有递 URL（因为 App 自称要拷贝），两头落空。
-          # 现在 false 改成 true，这个矛盾消失。
+          # Alternate —— 列表里看得到。此前与 LSSupportsOpeningDocumentsInPlace: false
+          # 搭配时导入失败，但那不是这个值的问题：系统的文档打开路径只把 URL 递到
+          # scene 的 connectionOptions.urlContexts，而本 App 没有接管 scene，
+          # 那条路在本项目上根本走不通。扩展方案正是为了绕开它。
           - CFBundleTypeName: STEP CAD File
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
@@ -246,12 +238,9 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         DEVELOPMENT_TEAM: ""
 
-  # 分享扩展的定义。**它不再被主 App 嵌入**（见上方 dependencies 的注释），因此
-  # 打出来的包里不会有 .appex，「共享 → 到 3D Views」那一行也随之消失 —— 这正是
-  # 重点：那一行曾经把每次分享都变成一次注定失败的扩展调用。
-  #
-  # 保留在这里是为了可回退：把主 target 的 `- target: 3D-Views-Share` / `embed: true`
-  # 取消注释即可恢复。源码（3D-Views-Share/、Shared/）同样原样保留。
+  # 分享扩展的定义。**它现在被主 App 嵌入了**（见上方 dependencies），打出来的包里
+  # 会有 .appex，「共享 → 到 3D Views」那一行随之回来 —— 那是本方案唯一能让文件
+  # 真正落到 App 手里的入口，其余三条路都在真机上走过并且都失败了。
   3D-Views-Share:
     type: app-extension
     platform: iOS
