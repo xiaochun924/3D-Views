@@ -26,21 +26,28 @@ enum AppGroup {
     /// Registered by the app target under `CFBundleURLTypes`.
     static let wakeUpScheme = "3dviews"
 
-    /// The containing-app URL requested by the Share Extension.
+    /// The containing-app URL requested by the Share Extension, or `nil` if this process
+    /// cannot build one.
     ///
-    /// Built through `URLComponents` rather than `URL(string:)`: the string form of a
-    /// URL initializer is failable, and a force-unwrap of it turns a scheme typo into a
-    /// `SIGTRAP` inside this `static let`'s one-time initialization. That is exactly how
-    /// a share could die at the moment the user tapped "打开 3D Views" — the trap fires in
-    /// `dispatch_once`, taking the extension process with it, so the sheet vanishes and
-    /// the host app is never asked to open. A constant the whole handover depends on
-    /// must not be able to crash its own reader.
-    static let wakeUpURL: URL = {
-        var components = URLComponents()
-        components.scheme = wakeUpScheme
-        components.host = "import"
-        return components.url ?? URL(fileURLWithPath: "/dev/null")
-    }()
+    /// Deliberately a computed `var` and deliberately failable. Two crashes were spent
+    /// learning that both of Foundation's URL builders can *trap* here instead of
+    /// returning `nil`:
+    ///
+    /// * `URL(string: "3dviews://import")!` — the force-unwrap fired a `SIGTRAP` in this
+    ///   property's one-time initialization.
+    /// * `URLComponents()` + `components.scheme = wakeUpScheme` — the setter called
+    ///   `_assertionFailure` from inside Foundation itself, with `components.host` never
+    ///   even reached.
+    ///
+    /// Neither is catchable, and because both happened inside a `static let`, both killed
+    /// the extension during `dispatch_once` — the sheet vanished the instant the button was
+    /// tapped and `extensionContext.open` was never called. A handover helper must never
+    /// be able to take its own caller down, so this no longer stores anything: the URL is
+    /// built per call, the caller decides what to do when it is `nil`, and a failure is a
+    /// line of text the user can read rather than the end of the process.
+    static var wakeUpURL: URL? {
+        URL(string: "\(wakeUpScheme)://import")
+    }
 
     private static let inboxFolderName = "Inbox"
     private static let handoffAtKey = "SharedHandoffAt"

@@ -202,14 +202,17 @@ final class ShareViewController: UIViewController {
             return
         }
 
-        // `AppGroup.wakeUpURL` is a non-optional constant, so there is no "could not build
-        // the address" case to report. It used to be force-unwrapped from `URL(string:)`,
-        // which made this call site the trigger for a `SIGTRAP` in that constant's
-        // one-time initialization — the trap fired inside `dispatch_once`, killed the
-        // extension before `open` ever ran, and looked from the outside like "the button
-        // closes the sheet and nothing opens". The constant is now built from
-        // `URLComponents` and cannot fail; see `AppGroup.wakeUpURL`.
-        let url = AppGroup.wakeUpURL
+        // `AppGroup.wakeUpURL` is failable on purpose. Both Foundation URL builders have
+        // been observed to *trap* on this platform rather than return `nil` — a force
+        // unwrap of `URL(string:)` and an `_assertionFailure` inside `URLComponents.scheme`'s
+        // setter, each of which killed the extension during a `static let`'s
+        // `dispatch_once` and made the button look like a crash-to-nothing. Reporting the
+        // failure as text is the only way this case is ever observable.
+        guard let url = AppGroup.wakeUpURL else {
+            openButton.isEnabled = true
+            statusLabel.text = "无法构造唤醒地址（\(AppGroup.wakeUpScheme)）\n请手动切到 3D Views"
+            return
+        }
 
         openButton.isEnabled = false
         statusLabel.text = "正在打开 3D Views…"
