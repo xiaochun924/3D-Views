@@ -46,7 +46,21 @@ enum AppGroup {
     /// built per call, the caller decides what to do when it is `nil`, and a failure is a
     /// line of text the user can read rather than the end of the process.
     static var wakeUpURL: URL? {
-        URL(string: "\(wakeUpScheme)://import")
+        URL(string: wakeUpURLText)
+    }
+
+    /// The exact string `wakeUpURL` feeds to `URL(string:)`, exposed so a construction
+    /// failure can be *shown* rather than guessed at.
+    ///
+    /// `URL(string:)` returning `nil` for `3dviews://import` is the one fact this whole
+    /// investigation rests on and it has never been confirmed from the device — only
+    /// inferred from a `nil` branch. If the string that reaches Foundation is not byte for
+    /// byte the seven ASCII letters this file declares, the report below will say so; if
+    /// it is, then the parser itself is the problem and no amount of reshaping the string
+    /// will help. Building the text once here keeps both callers honest about which
+    /// string they are actually talking about.
+    static var wakeUpURLText: String {
+        "\(wakeUpScheme)://import"
     }
 
     private static let inboxFolderName = "Inbox"

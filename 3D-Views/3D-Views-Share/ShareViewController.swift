@@ -208,9 +208,15 @@ final class ShareViewController: UIViewController {
         // setter, each of which killed the extension during a `static let`'s
         // `dispatch_once` and made the button look like a crash-to-nothing. Reporting the
         // failure as text is the only way this case is ever observable.
+        //
+        // The report prints the string Foundation was actually given, its length and its
+        // code points. That turns "the parser rejected our URL" from an inference into a
+        // reading: if the text on screen is the expected seven ASCII letters and the parse
+        // still failed, no reshaping of the string can fix it and the fix has to happen
+        // somewhere other than `URL(string:)`.
         guard let url = AppGroup.wakeUpURL else {
             openButton.isEnabled = true
-            statusLabel.text = "无法构造唤醒地址（\(AppGroup.wakeUpScheme)）\n请手动切到 3D Views"
+            statusLabel.text = wakeUpFailureReport()
             return
         }
 
@@ -230,6 +236,26 @@ final class ShareViewController: UIViewController {
                 }
             }
         }
+    }
+
+    /// What to show when `AppGroup.wakeUpURL` comes back `nil`.
+    ///
+    /// On-screen, not in a log: the share extension's log is not reachable from the
+    /// device, and this is the only channel the user has. Everything printed is taken from
+    /// the string Foundation was actually handed, so the report cannot itself be wrong
+    /// about what was parsed.
+    private func wakeUpFailureReport() -> String {
+        let text = AppGroup.wakeUpURLText
+        let codePoints = text.unicodeScalars
+            .map { String($0.value) }
+            .joined(separator: " ")
+        return """
+        无法构造唤醒地址
+        原文：\(text)
+        长度：\(text.count)
+        码位：\(codePoints)
+        请手动切到 3D Views
+        """
     }
 
     private func completeExtension() {
