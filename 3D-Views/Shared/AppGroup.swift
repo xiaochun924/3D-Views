@@ -22,52 +22,19 @@ enum AppGroup {
     /// The group the self-signed install is provisioned with.
     static let identifier = "group.ffcd1c12e1a9728e.1"
 
-    /// The scheme the extension uses to pull the host app forward after a share.
-    /// Registered by the app target under `CFBundleURLTypes`.
-    static let wakeUpScheme = "3dviews"
-
-    /// The containing-app URL requested by the Share Extension, or `nil` if this process
-    /// cannot build one.
-    ///
-    /// Deliberately a computed `var` and deliberately failable. Two crashes were spent
-    /// learning that both of Foundation's URL builders can *trap* here instead of
-    /// returning `nil`:
-    ///
-    /// * `URL(string: "3dviews://import")!` — the force-unwrap fired a `SIGTRAP` in this
-    ///   property's one-time initialization.
-    /// * `URLComponents()` + `components.scheme = wakeUpScheme` — the setter called
-    ///   `_assertionFailure` from inside Foundation itself, with `components.host` never
-    ///   even reached.
-    ///
-    /// Neither is catchable, and because both happened inside a `static let`, both killed
-    /// the extension during `dispatch_once` — the sheet vanished the instant the button was
-    /// tapped and `extensionContext.open` was never called. A handover helper must never
-    /// be able to take its own caller down, so this no longer stores anything: the URL is
-    /// built per call, the caller decides what to do when it is `nil`, and a failure is a
-    /// line of text the user can read rather than the end of the process.
-    static var wakeUpURL: URL? {
-        // `NSURL(string:)` and `URL(string:)` are separate initializers with separate
-        // parsers — `URL` is the Swift value type, `NSURL` the Objective-C one it bridges
-        // from, and a failure in one says nothing about the other. On the device this was
-        // observed returning `nil` for a string whose length and code points were verified
-        // to be exactly `3dviews://import`, so the Swift parser is not trustworthy here and
-        // the bridged path is worth one build before giving up on a URL entirely.
-        NSURL(string: wakeUpURLText) as URL?
-    }
-
-    /// The exact string `wakeUpURL` feeds to `URL(string:)`, exposed so a construction
-    /// failure can be *shown* rather than guessed at.
-    ///
-    /// `URL(string:)` returning `nil` for `3dviews://import` is the one fact this whole
-    /// investigation rests on and it has never been confirmed from the device — only
-    /// inferred from a `nil` branch. If the string that reaches Foundation is not byte for
-    /// byte the seven ASCII letters this file declares, the report below will say so; if
-    /// it is, then the parser itself is the problem and no amount of reshaping the string
-    /// will help. Building the text once here keeps both callers honest about which
-    /// string they are actually talking about.
-    static var wakeUpURLText: String {
-        "\(wakeUpScheme)://import"
-    }
+    // The wake-up URL scheme that used to live here (`3dviews://import`) has been removed
+    // along with `CFBundleURLTypes` from the app's `Info.plist`.
+    //
+    // It existed so the share extension could pull the host app forward after a share.
+    // The extension has no supported way to do that: `extensionContext.open` reported
+    // `didOpen == false` on the device on every single attempt, and the scheme could not
+    // be opened from Safari either — so the URL was never once followed. Three separate
+    // crashes were also spent on building that URL, because both `URL(string:)` and
+    // `URLComponents.scheme` *trap* rather than return `nil` when they fail.
+    //
+    // None of that is needed for the handover to complete: the extension copies the file
+    // into the shared inbox, and the app drains that inbox on every activation. Removing
+    // the URL removes the only part of this flow that could crash the extension.
 
     private static let inboxFolderName = "Inbox"
     private static let handoffAtKey = "SharedHandoffAt"

@@ -81,147 +81,29 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleDisplayName: 3D Views
         CFBundleDevelopmentRegion: zh_CN
+        # 让用户在「文件」App 里能看到 App 自己的目录（Documents），手动放文件进去。
+        # 这与分享扩展无关，是另一条完全独立、并且一直可用的入口。
         UIFileSharingEnabled: true
-        # 回到从未被真机证伪的那个组合：文件在「文件」App 里看得见我（Alternate），
-        # 而我不原地打开（false）—— 后者配合扩展意味着系统会把文件拷一份给目标 App，
-        # 正是扩展方案依赖的语义。真机实测过 Alternate+true，结果是既不拷也不递 URL，
-        # 所以这个值必须回到 false。
-        LSSupportsOpeningDocumentsInPlace: false
-        # 分享扩展把文件放进 App Group 之后，用这个 scheme 尝试把主 App 拉到前台。
-        # 分享扩展没有被赋予「打开宿主 App」的正式能力，所以这只是尽力而为；真正
-        # 保证交接完成的是主 App 每次激活时扫描共享收件箱。
-        CFBundleURLTypes:
-          - CFBundleURLName: com.xiaochun.3DViews
-            CFBundleURLSchemes:
-              - 3dviews
-        CFBundleDocumentTypes:
-          # LSHandlerRank 保持在 Alternate：它唯一的作用是让本 App 出现在「文件」App
-          # 的「打开方式」列表里，而这一点真机确认过（改 None 之后用户原话：
-          # 「打开方式没有 3dviews了」）。扩展方案不依赖这条声明 —— 文件由扩展亲手
-          # 拷进共享收件箱 —— 但保留它，用户从「打开方式」进来时至少能看到 App，
-          # 而不是一个空的候选列表。
-          #
-          # 两个值都在真机上跑过的结论，记在这里免得再走一遍：
-          #
-          # None —— 系统不再把该类型判为「有主」，文件会走通用投递路径被拷进
-          # Documents/Inbox（一个系统里无人声明的 .ipa 就是这么进来的），代价是
-          # 「打开方式」列表里再也看不到本 App。能导入却找不到入口，不可取。
-          #
-          # Alternate —— 列表里看得到。此前与 LSSupportsOpeningDocumentsInPlace: false
-          # 搭配时导入失败，但那不是这个值的问题：系统的文档打开路径只把 URL 递到
-          # scene 的 connectionOptions.urlContexts，而本 App 没有接管 scene，
-          # 那条路在本项目上根本走不通。扩展方案正是为了绕开它。
-          - CFBundleTypeName: STEP CAD File
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            CFBundleTypeExtensions:
-              - step
-              - stp
-            LSItemContentTypes:
-              - com.xiaochun.step
-          - CFBundleTypeName: STL Mesh
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            CFBundleTypeExtensions:
-              - stl
-            LSItemContentTypes:
-              - com.xiaochun.stl
-          # IGES 是 SolidWorks / Fusion 用户不额外花钱就能导出的通用格式。它和下面的
-          # 原生 .sldprt 各管一段：IGES 是「另存为」那条路，.sldprt 是直接把文件拖进
-          # 来那条路（App 自己把容器里内嵌的 Parasolid B-rep 转成 STEP）。
-          - CFBundleTypeName: IGES CAD File
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            CFBundleTypeExtensions:
-              - iges
-              - igs
-            LSItemContentTypes:
-              - com.xiaochun.iges
-          - CFBundleTypeName: OBJ Mesh
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            CFBundleTypeExtensions:
-              - obj
-            LSItemContentTypes:
-              - com.xiaochun.obj
-          # BREP 没有第二拼写：OCCT 自己的扩展名就这一个。
-          - CFBundleTypeName: OCCT BREP File
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            CFBundleTypeExtensions:
-              - brep
-            LSItemContentTypes:
-              - com.xiaochun.brep
-          # SolidWorks 零件。原生 .sldprt 是私有容器，OpenCASCADE 读不了，但 App 自带
-          # sldprt2step 的 Swift 移植（Models/SLDPRT/）：先从容器里取出内嵌的 Parasolid
-          # XT B-rep，转成 STEP 文本，再交给 loadSTEP —— 面/边/顶点量测能力完整保留。
-          - CFBundleTypeName: SolidWorks Part
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            CFBundleTypeExtensions:
-              - sldprt
-            LSItemContentTypes:
-              - com.xiaochun.sldprt
-          # 「Any Data File → public.data」这一条被删掉了，它很可能正是那条让投递
-          # 静默失败的声明。`public.data` 是 UTI 树的根，所有文件都是它；声明它，
-          # 等于让本 App 对系统说「任何文件我都能打开」。系统在决定把一个文件投给
-          # 哪个 App 时（尤其是「拷贝到 Documents/Inbox 再启动」这条路径），面对
-          # 一个声称通吃一切的候选会失去判定依据，结果是启动 App、却不交付任何东西
-          # —— 真机表现正是「跳转成功、Documents/Inbox 不存在、URL 也没送达」。
-          # 上面六个具体格式已完整覆盖此查看器认识的类型，兜底声明没有存在必要。
-        UTExportedTypeDeclarations:
-          # conformsTo 从 public.data 改成分得清的具体基础类型。public.data 是 UTI
-          # 树的根，所有文件都符合它；一个只声明「我是任意数据」的类型，在系统眼里
-          # 和别的文件没有任何区别，也就没有理由被优先投递给本 App。BatteryInsight
-          # 那条真机跑通的声明用的是 public.plain-text（具体类型），不是根类型 ——
-          # 这次照它改。
-          # STEP / IGES / OBJ / BREP 都是纯文本格式（ISO 10303、ASME Y14.26M 等），
-          # 归 public.text；STL 分 ASCII 与二进制两版、SLDPRT 是私有二进制容器，
-          # 二者只能归 public.data。
-          - UTTypeIdentifier: com.xiaochun.step
-            UTTypeDescription: STEP CAD File
-            UTTypeConformsTo:
-              - public.text
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - step
-                - stp
-          - UTTypeIdentifier: com.xiaochun.stl
-            UTTypeDescription: STL Mesh
-            UTTypeConformsTo:
-              - public.data
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - stl
-          - UTTypeIdentifier: com.xiaochun.iges
-            UTTypeDescription: IGES CAD File
-            UTTypeConformsTo:
-              - public.text
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - iges
-                - igs
-          - UTTypeIdentifier: com.xiaochun.obj
-            UTTypeDescription: OBJ Mesh
-            UTTypeConformsTo:
-              - public.text
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - obj
-          - UTTypeIdentifier: com.xiaochun.brep
-            UTTypeDescription: OCCT BREP File
-            UTTypeConformsTo:
-              - public.text
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - brep
-          - UTTypeIdentifier: com.xiaochun.sldprt
-            UTTypeDescription: SolidWorks Part
-            UTTypeConformsTo:
-              - public.data
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - sldprt
+        # 以下三段声明全部删除，因为它们的导入模式在真机上从未成功过一次，
+        # 保留只会让系统在投递文件时有更多机会走错路：
+        #
+        # 1) CFBundleURLTypes（3dviews://）—— 分享扩展曾用它尝试把主 App 拉到前台，
+        #    但 extensionContext.open 的回调在真机上始终是 didOpen == false，
+        #    Safari 也打不开这个 scheme。分享扩展现在不尝试启动主 App 了。
+        #
+        # 2) CFBundleDocumentTypes（6 条）——「文件」App 的「打开方式」路径。三种配置
+        #    都在真机上量过：Alternate+false 不拷贝也不递 URL；None+false 会拷贝但
+        #    App 从「打开方式」列表里消失（用户原话「打开方式没有 3dviews了」）；
+        #    Alternate+true 既不拷也不递。系统那条路只把 URL 递到 scene 的
+        #    connectionOptions.urlContexts，而本 App 没有接管 scene，所以它走不通。
+        #
+        # 3) UTExportedTypeDeclarations —— 上面那 6 条声明引用的自定义类型。没有文档
+        #    类型声明后它们没有任何作用。App 认识的格式由运行时的扩展名白名单决定
+        #    （Models/FileHistory.swift:101 的 supportedExtension(of:)），与 Info.plist
+        #    无关，所以删掉不影响能导入哪些文件。
+        #
+        # 唯一保留的导入路径是分享扩展：它把文件拷进 App Group 共享收件箱，主 App 每次
+        # 激活时扫描收件箱完成导入（Models/FileHistory.swift:470 的 importFromSandbox）。
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews

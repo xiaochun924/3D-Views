@@ -11,8 +11,8 @@ import UIKit
 /// It used to sit at the top of the file list, which was the wrong place twice over: it
 /// pushed the actual content down on every launch, and it stayed invisible whenever the
 /// list had something else to show. What it is for is answering one question — did the
-/// handover arrive, and if not, which of the three routes failed — so it belongs behind
-/// a deliberate tap, where it can also be long enough to be useful.
+/// handover arrive, and if not, which step failed — so it belongs behind a deliberate
+/// tap, where it can also be long enough to be useful.
 struct ImportLogView: View {
     @StateObject private var history = FileHistory.shared
     @State private var copied = false
@@ -42,7 +42,6 @@ struct ImportLogView: View {
                 Text("下面每一行都是「系统把文件交给本应用」或「本应用去找文件」时的现场记录，最新的在最上面。")
                     .font(.system(size: 10))
             }
-
             Section {
                 if history.handoverLog.isEmpty {
                     Text("尚无记录")
@@ -66,7 +65,7 @@ struct ImportLogView: View {
                 }
             }
 
-            Section("安装包声明") {
+            Section("安装包状态") {
                 ForEach(Array(FileHistory.bundleFacts().enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.system(size: 11, design: .monospaced))
@@ -76,7 +75,7 @@ struct ImportLogView: View {
             }
 
             Section {
-                Text("包里的这些声明、共享容器是否可用、扩展是否装上，决定了分享面板点进来之后文件能走哪条路。全部复制下来即可用于定位。")
+                Text("分享扩展是否装上、共享容器是否可用，决定了分享面板点进来之后文件能不能交到本应用手里。全部复制下来即可用于定位。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }

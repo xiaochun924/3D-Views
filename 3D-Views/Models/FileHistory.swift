@@ -135,25 +135,16 @@ final class FileHistory: ObservableObject {
             lines.append("场景清单：无")
         }
 
-        if let types = info["CFBundleDocumentTypes"] as? [[String: Any]], !types.isEmpty {
-            lines.append("文档类型：\(types.count) 项")
-            for type in types {
-                let ids = (type["LSItemContentTypes"] as? [String])?.joined(separator: ",") ?? "-"
-                let exts = (type["CFBundleTypeExtensions"] as? [String])?.joined(separator: ",") ?? "-"
-                lines.append("  \(exts) → \(ids)")
-            }
-        } else {
-            lines.append("文档类型：无")
-        }
-
-        let exported = (info["UTExportedTypeDeclarations"] as? [[String: Any]] ?? [])
-            .compactMap { $0["UTTypeIdentifier"] as? String }
-        let imported = (info["UTImportedTypeDeclarations"] as? [[String: Any]] ?? [])
-            .compactMap { $0["UTTypeIdentifier"] as? String }
-        let exportedText = exported.isEmpty ? "无" : exported.joined(separator: ",")
-        let importedText = imported.isEmpty ? "无" : imported.joined(separator: ",")
-        lines.append("导出 UTI：\(exportedText)")
-        lines.append("导入 UTI：\(importedText)")
+        // The document-type and exported-UTI blocks that used to print here are gone
+        // along with their declarations. They were removed from `Info.plist` after the
+        // Files-app 「打开方式」 path they describe failed in every configuration that
+        // was measured on the device (`Alternate`+`false`, `None`+`false`,
+        // `Alternate`+`true`). Printing them now would only show a row of 无 and invite
+        // another round of tuning a path that is not in use.
+        //
+        // What matters for the one remaining import path is the line further down that
+        // states whether the share extension is installed, and the App Group block above
+        // it: the extension copies into that container and the app drains it.
 
         let bundleID = Bundle.main.bundleIdentifier ?? "?"
         lines.append("Bundle ID：\(bundleID)")
@@ -213,6 +204,12 @@ final class FileHistory: ObservableObject {
         // "installed but never started" and "started but never finished" are three
         // different faults, and a missing handoff record only rules out the third — this
         // line is what separates the other two.
+        //
+        // This is the line that now carries the whole diagnosis, because the share
+        // extension is the only import path left. If a share produces no import and this
+        // timestamp has not moved, the extension process never ran and nothing downstream
+        // can be at fault. If it has moved, the extension ran and the file is either in
+        // the inbox below or was rejected by the format whitelist while being copied.
         if let started = AppGroup.lastExtensionStart {
             lines.append("扩展启动于：\(stampFormatter.string(from: started))")
         } else {
@@ -607,18 +604,14 @@ final class FileHistory: ObservableObject {
         }
     }
 
-    /// The single entry point for a URL from outside the app, whichever door it used.
+    /// The single entry point for a URL from outside the app.
     ///
-    /// The app registers `3dviews://` so the share extension has something to call when
-    /// it tries to pull the app forward. That URL names no file — it means "go and look
-    /// in the shared inbox" — and handing it to `receiveExternalFile` would reject it as
-    /// an unsupported type and raise a false 「无法导入」 alert.
+    /// Only one door is left: the system handing over a file URL. The app used to register
+    /// `3dviews://` for the share extension to call, and `CFBundleDocumentTypes` for the
+    /// Files app's 「打开方式」 path — both were removed after neither ever delivered
+    /// anything on the device. So there is no scheme to special-case here any more, and
+    /// no URL that names no file can arrive.
     func handleIncomingURL(_ url: URL, source: String) {
-        if url.scheme?.lowercased() == AppGroup.wakeUpScheme {
-            note("\(source)：收到本 App 链接")
-            scheduleInboxSweep(reason: source)
-            return
-        }
         receiveExternalFile(at: url, source: source)
     }
 

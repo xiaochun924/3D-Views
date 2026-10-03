@@ -2,17 +2,26 @@
 //  ShareViewController.swift
 //  3D-Views-Share
 //
-//  The share sheet's entry point for 3D Views.
+//  The share sheet's entry point for 3D Views — the **only** import path.
 //
 //  An app only gets a row in the share sheet's app strip from a **share extension**
-//  (`com.apple.share-services`). This app had none, which is why "共享 → 到 3D Views"
-//  could only ever bounce through the document-open path — a path that, on this
-//  project, has never once been observed to deliver a URL.
+//  (`com.apple.share-services`). Two other paths were tried on this project and both
+//  were removed after failing on the device every single time:
 //
-//  So the extension stops waiting for a URL it does not control. It takes whatever
-//  the share sheet offered, copies it into the App Group inbox, and leaves a note
-//  there. The app drains that inbox on every activation, so the handover completes
-//  whether or not the app was ever woken up.
+//  * The document-open path (`CFBundleDocumentTypes` + `LSHandlerRank`). Measured with
+//    `Alternate`+`false`, `None`+`false`, and `Alternate`+`true`; none of the three ever
+//    delivered a URL, because the system routes that URL to the scene's
+//    `connectionOptions.urlContexts` and this app does not own its scene.
+//  * The wake-up URL scheme (`3dviews://import`). `extensionContext.open` returned
+//    `didOpen == false` on every attempt, and Safari could not open the scheme either.
+//
+//  So the extension stops waiting for a URL it does not control. It takes whatever the
+//  share sheet offered, copies it into the App Group inbox, and leaves a note there.
+//  The app drains that inbox on every activation, so the handover completes whether or
+//  not the app was ever woken up — which is the one behaviour that was measured to work.
+//
+//  The sheet reports the outcome and stays up so the user can read it. It does not try to
+//  launch the host app: it has no supported way to do that, and the file does not need it.
 //
 
 import UIKit
@@ -47,7 +56,7 @@ final class ShareViewController: UIViewController {
         statusLabel.numberOfLines = 0
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        openButton.setTitle("打开 3D Views", for: .normal)
+        openButton.setTitle("完成", for: .normal)
         openButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
         openButton.configuration = .borderedProminent()
         openButton.isHidden = true
@@ -109,16 +118,11 @@ final class ShareViewController: UIViewController {
         await MainActor.run { [weak self] in
             guard let self else { return }
             self.statusLabel.text = self.message(deposited: deposited, failures: failures)
-            self.openButton.isHidden = deposited.isEmpty
-            self.openButton.isEnabled = !deposited.isEmpty
-        }
-
-        // Keep the extension alive after a successful copy. The user can now see and tap the
-        // button, which lets us distinguish an iOS URL-handoff rejection from a dead extension.
-        if deposited.isEmpty {
-            await MainActor.run { [weak self] in
-                self?.completeExtension()
-            }
+            // The button is the only way out of a share extension that stays alive. It is
+            // shown whatever happened, so a failure still leaves something tappable rather
+            // than a sheet the user has to dismiss by swiping.
+            self.openButton.isHidden = false
+            self.openButton.isEnabled = true
         }
     }
 
@@ -131,7 +135,7 @@ final class ShareViewController: UIViewController {
         case (false, false):
             return "已导入 \(deposited.count) 个文件，另有 \(failures.count) 个未能读取"
         case (true, _):
-            return "没有拿到可导入的文件\n请试试用文件 App 打开后分享"
+            return "没有拿到可导入的文件\n请试试从「文件」App 里分享"
         }
     }
 
@@ -193,69 +197,22 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    // MARK: - Waking the app
+    // MARK: - Finishing
 
-    @objc private func openHostApp() {
-        guard !handoffFinished else { return }
-        guard let context = extensionContext else {
-            statusLabel.text = "分享扩展已结束，请返回后重新分享"
-            return
-        }
-
-        // `AppGroup.wakeUpURL` is failable on purpose. Both Foundation URL builders have
-        // been observed to *trap* on this platform rather than return `nil` — a force
-        // unwrap of `URL(string:)` and an `_assertionFailure` inside `URLComponents.scheme`'s
-        // setter, each of which killed the extension during a `static let`'s
-        // `dispatch_once` and made the button look like a crash-to-nothing. Reporting the
-        // failure as text is the only way this case is ever observable.
-        //
-        // The report prints the string Foundation was actually given, its length and its
-        // code points. That turns "the parser rejected our URL" from an inference into a
-        // reading: if the text on screen is the expected seven ASCII letters and the parse
-        // still failed, no reshaping of the string can fix it and the fix has to happen
-        // somewhere other than `URL(string:)`.
-        guard let url = AppGroup.wakeUpURL else {
-            openButton.isEnabled = true
-            statusLabel.text = wakeUpFailureReport()
-            return
-        }
-
-        openButton.isEnabled = false
-        statusLabel.text = "正在打开 3D Views…"
-
-        // The extension context is Apple's supported handoff API. Keep the extension alive
-        // until its completion callback, because completing first can discard the request.
-        context.open(url) { [weak self] didOpen in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if didOpen {
-                    self.completeExtension()
-                } else {
-                    self.openButton.isEnabled = true
-                    self.statusLabel.text = "系统未能打开 3D Views，请关闭后重试"
-                }
-            }
-        }
-    }
-
-    /// What to show when `AppGroup.wakeUpURL` comes back `nil`.
+    /// Closes the extension. The file is already in the shared inbox by the time this can
+    /// be tapped, and the app drains that inbox on activation — so this button only saves
+    /// the user a manual app switch. There is no URL handoff here any more.
     ///
-    /// On-screen, not in a log: the share extension's log is not reachable from the
-    /// device, and this is the only channel the user has. Everything printed is taken from
-    /// the string Foundation was actually handed, so the report cannot itself be wrong
-    /// about what was parsed.
-    private func wakeUpFailureReport() -> String {
-        let text = AppGroup.wakeUpURLText
-        let codePoints = text.unicodeScalars
-            .map { String($0.value) }
-            .joined(separator: " ")
-        return """
-        无法构造唤醒地址
-        原文：\(text)
-        长度：\(text.count)
-        码位：\(codePoints)
-        请手动切到 3D Views
-        """
+    /// The `extensionContext.open` call that used to live here has been removed. On this
+    /// device it never once succeeded: the callback was always `didOpen == false`, so the
+    /// button's only effect was to replace the import result with a failure message. The
+    /// wake-up URL scheme it used (`3dviews://`) is gone from `Info.plist` with it.
+    ///
+    /// The extension also cannot launch the host app on its own. Closing the sheet returns
+    /// the user to where the share started, and the app picks the file up whenever it is
+    /// next opened — which is the part that was measured to work.
+    @objc private func openHostApp() {
+        completeExtension()
     }
 
     private func completeExtension() {
