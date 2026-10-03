@@ -1,0 +1,433 @@
+# XcodeGen 工程定义：在 Views/ 目录执行 `xcodegen generate` 生成 .xcodeproj
+#
+# 这是工程的真源。CI 每次都会重新生成 .xcodeproj，并用下面的 info.properties
+# 覆盖重写 Info.plist —— 所以改 Info.plist 必须改这里，否则改动会被构建时抹掉。
+#
+# ---- 2026-10-03：从 3D-Views 更名为 Views（用户要求，含 Bundle ID）----
+#
+# 动机是诊断页那一行「声明名 _D_Views.SceneDelegate｜运行时名 3D_Views.SceneDelegate」。
+# 根源是 PRODUCT_NAME 为 `3D-Views` 时 Xcode 要改写两次，而两次规则不同：
+#   * Swift 模块名：非标识符字符换下划线 → `3D_Views`
+#   * ObjC 运行时名：C 标识符不能以数字开头，补前缀 → `_D_Views`
+# 于是 plist 里的字符串永远无法与 Swift 拼接出的名字相等。
+#
+# 改成 `Views` 后两套规则都无事可做，模块名与 ObjC 名**同为 `Views`**，不再有不一致。
+#
+# 注意：这不会修好文件导入。project.yml 下方实测记录写着——声明名与运行时名一致的
+# 那一版（`_D_Views.SceneDelegate`）**依然收不到 URL**，所以 UISceneDelegateClassName
+# 不是阻塞点。本次更名解决的是「诊断读数自相矛盾」这件事，不是导入本身。
+#
+# Bundle ID 也一并从 com.xiaochun.3DViews 改为 com.xiaochun.Views。对真机而言这是**另一个
+# App**：旧包不会被覆盖而是并存，App Group 的 entitlement 必须按新标识符重新自签，
+# 否则 containerURL(forSecurityApplicationGroupIdentifier:) 返回 nil、交接静默失败。
+name: Views
+options:
+  bundleIdPrefix: com.xiaochun
+  deploymentTarget:
+    iOS: "17.0"
+  generateEmptyDirectories: true
+packages:
+  OCCTSwift:
+    url: https://github.com/SecondMouseAU/OCCTSwift.git
+    from: 3.0.0
+targets:
+  Views:
+    type: application
+    platform: iOS
+    sources:
+      - path: .
+        excludes:
+          - Models/STEP/**
+          - Models/Mesh/**
+          # 分享扩展是独立 target，它的源码不能混进主 App
+          - Views-Share/**
+          - Views.entitlements
+          - Views-Share.entitlements
+          # 工程定义本身不是资源。path: . 会把整个目录收进来，上一版就把它原样
+          # 打进了已发布的 .app —— 解包可见 6553 字节的 project.yml 躺在根目录。
+          - project.yml
+      # Base.lproj/LaunchScreen.storyboard 由上面那条 `path: .` 收进来（没被 excludes
+      # 排除），XcodeGen 会把 .lproj 目录当作本地化资源处理，编译成 Base.lproj/
+      # LaunchScreen.storyboardc —— 正是全能签包里的那个结构。这里显式写一遍是为了
+      # 让它不被将来改 excludes 的人顺手排掉：UILaunchStoryboardName 指向的名字如果
+      # 在包里找不到，系统会静默退回默认启动画面，不报错。
+      - path: Base.lproj
+    dependencies:
+      - package: OCCTSwift
+      # 分享接收页是全能签两阶段导入模型的第一阶段：先在分享界面接收文件，
+      # 再由主 App 在 scene 激活时消费 App Group 收件箱。
+      - target: Views-Share
+      # 当前已恢复嵌入分享扩展：分享页面负责接收文件并写入 App Group，主 App
+      # 在 SceneDelegate 的启动、回前台和激活阶段消费收件箱。下面保留历史失败记录，
+      # 但不再把“扩展未安装”写成当前状态。
+      #
+      # 历史上试过的扩展拉起主 App 方案仍不可用：extensionContext.open 在真机上恒为
+      # didOpen == false，因此扩展只负责完成文件交接，不负责主动打开宿主 App。
+      # 用户点选分享入口后，系统进入扩展的导入页面；扩展完成交接后，由主 App 的
+      # 生命周期消费收件箱并加载文件。
+      #    文件没进来」：Alternate+false 不拷也不递 URL；None+false 能把文件拷进
+      #    Documents/Inbox（用一个系统里无人声明的 .ipa 验证过），代价是「文件」
+      #    App 的「打开方式」列表里从此看不到本 App（用户原话「打开方式没有
+      #    3dviews了」）；Alternate+true 不拷、URL 也没到过
+      #    application(_:open:options:) 或 .onOpenURL 任何一处。
+      #    **但那三组失败的共同原因是第三根支柱缺席**：本 App 当时没有接管 scene，
+      #    而文档打开路径的 URL 恰好只走 scene 的 connectionOptions.urlContexts。
+      #    没有 SceneDelegate 时那条路确实是死的；现在 SceneDelegate 有了
+      #    （ViewsApp.swift），所以那三组读数不再能预言这次的结果 —— 这次
+      #    是首次带着 scene 去走这条路，验证状态为零。
+      #
+      # 2) 分享扩展：扩展自己把文件拷进 App Group 共享收件箱，主 App 每次激活扫描
+      #    那个收件箱。**整条链路不依赖任何 URL 投递**，是至今唯一真机验证过能导入
+      #    的路径（诊断读数：.step 成功导入）。已按用户要求移除嵌入，源码保留。
+      #
+          # 扩展里那个「打开 3D Views」按钮：一直只是加速手段，点它能拉起主 App 就
+      #    立即看到结果，拉不起来（系统拒绝 extensionContext.open，Apple 文档写明
+      #    分享扩展不在支持该方法之列）也没关系。随扩展一起不再参与。
+    # App Group 是主 App 与分享扩展唯一能互相看见的地方。注意：IPA 以
+    # CODE_SIGNING_ALLOWED=NO 构建，这份 entitlement 不会进包，必须由自签工具
+    # 在签名时补上；否则 containerURL(forSecurityApplicationGroupIdentifier:)
+    # 在真机上返回 nil，交接会静默失败（设置页会直接把这一点显示出来）。
+    entitlements:
+      path: Views.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ffcd1c12e1a9728e.1
+    info:
+      path: Info.plist
+      properties:
+        # ---- 2026-10-03：启动画面改成 storyboard（照全能签复刻） ----
+        #
+        # 原来这里是 UILaunchScreen: {UIColorName: "", UIImageRespectsSafeAreaInsets: false}，
+        # 即 iOS 14+ 的新式启动画面声明；全能签用的是旧式的
+        # UILaunchStoryboardName: LaunchScreen 加包内一个 Base.lproj/LaunchScreen.storyboardc，
+        # 我们两样都没有。
+        #
+        # 启动画面与文档投递之间没有已知的因果关系，补它不是为了修 bug，而是为了把差异
+        # 收敛干净：全面复刻之后如果仍然失败，那就说明问题根本不在这些声明里，从而不必
+        # 再逐个怀疑它们。
+        #
+        # UILaunchScreen 与 UILaunchStoryboardName **不能同时声明**：前者优先，后者会被
+        # 静默忽略（苹果没有报错，只是不生效）。所以这里是替换，不是追加。
+        UILaunchStoryboardName: LaunchScreen
+        # 本 App 自己拥有 scene（ViewsApp.swift 是 UIKit 生命周期，@main 是 AppDelegate）。
+        #
+        # ---- 2026-10-03：写死 UISceneDelegateClassName（照全能签） ----
+        #
+        # 原先这里**不带** delegate 名，理由是「XcodeGen 每次重新生成 Info.plist，写死类名
+        # 会多一处漂移点」，真正的类由 application(_:configurationForConnecting:options:)
+        # 里的 configuration.delegateClass 给出。那个理由现在被真机读数推翻了。
+        #
+        # 对照实验：同一个 .step 文件，导入全能签它**收得到**（它打不开是另一回事，它不是
+        # CAD 软件），导入本 App 收不到。同一台设备、同一个入口、同一个文件，唯一变量是本
+        # App —— 所以差别一定在两个包里，而逐项对账后剩下的差异就是这一条：
+        #
+        #   全能签：UISceneDelegateClassName: SceneDelegate  （写在 Info.plist 里）
+        #   本 App：那一项**没有任何 delegate 名**，只有 UISceneConfigurationName
+        #
+        # 诊断页显示的「场景代理：SceneDelegate」只证明**运行时**装上了，证明不了系统在
+        # **投递文档 URL 之前**就知道该找谁。冷启动投递文档时系统要在构建 scene 之前读这份
+        # 配置来决定 URL 交给哪个 delegate；配置里没有类名，URL 就无处可投，于是既不递 URL
+        # 也不拷文件 —— 正是这两轮读数（`SceneDelegate 冷启动` 只记扫描、从无「收到：」行，
+        # 且 Documents/Inbox 目录不存在）。
+        #
+        # 类名写**模块限定名的字面值**：Views.SceneDelegate。
+        #
+        # ---- 为什么不用 $(PRODUCT_MODULE_NAME)（2026-10-03 实测，2026-10-04 更名为 Views 后失效） ----
+        #
+        # 先试的正是 $(PRODUCT_MODULE_NAME).SceneDelegate，因为本仓库已经用同一个写法在真机上
+        # 修好过一模一样的问题（分享扩展的 NSExtensionPrincipalClass，见文件末尾）。
+        # 但打进包里的结果是：
+        #
+        #     UISceneDelegateClassName = '_D_Views.SceneDelegate'   ← 开头的 3 没了
+        #
+        # 当时 target 的 PRODUCT_NAME 是 3D-Views，而模块名**不能以数字开头**，Xcode 必须改写它。
+        # 关键在于**改写的两处不一致**：XcodeGen 生成 Info.plist 时把 3D-Views 展开成 _D_Views，
+        # 而编译器把模块名定成 3D_Views。两个名字对不上，系统就会去 _D_Views 这个模块里找
+        # SceneDelegate，找不到 —— 症状与原来的问题**一模一样**（不递 URL、不报错），
+        # 那种情况下根本分不清是没修好还是修出了新问题。
+        #
+        # **这一段的历史前提已被本次更名消除**：PRODUCT_NAME 现在是 `Views`，不含数字也
+        # 不含连字符，Swift 模块名与 ObjC 运行时名**都是 `Views`**，$(PRODUCT_MODULE_NAME)
+        # 展开不再有改写分歧。保留这段是因为它记录了「同一个变量名、两条替换路径」这个
+        # 陷阱；将来若再把 PRODUCT_NAME 改回带数字/连字符的名字，这个坑会立刻重新出现。
+        #
+        # NSExtensionPrincipalClass 用 $(PRODUCT_MODULE_NAME) 是安全的，因为那个 plist 走 Xcode
+        # 自己的构建变量替换（与编译器同源）；而 Info.plist 走 XcodeGen 的替换（另一套规则）。
+        # 同一个变量名，两条替换路径，只有一条通向正确的类名。
+        #
+        # ---- 为什么是这个字面值 ----
+        #
+        # 更名前的字面值是 `3D_Views.SceneDelegate`（Xcode 对 PRODUCT_NAME 3D-Views 的标准
+        # 改写：非标识符字符换成下划线）。现在 PRODUCT_NAME 是 `Views`，模块名就是这个字面值。
+        # 诊断页会把 plist 里声明的名字与运行时注册的名字**同时读回来打印并比对**
+        # （Models/FileHistory.swift 的「声明名／运行时名」两行），所以设备上跑的是哪个
+        # 名字、两者是否一致都是可见的，不必再靠推断。
+        #
+        # 注意：运行时那一半取自 ObjC 运行时，而 ObjC 名与 Swift 模块名的改写规则**不同**
+        # （ObjC 侧把开头的数字改写成 _D，即 _D_Views）。更名前实测两版读数：
+        #
+        #   plist 写 _D_Views.SceneDelegate（ObjC 名） → 与运行时一致 → 仍收不到
+        #   plist 写 3D_Views.SceneDelegate（Swift 名）→ 与运行时不一致 → 仍收不到
+        #
+        # 两版都收不到，所以 UISceneDelegateClassName 这个键**不是**阻塞点 —— 本次更名让
+        # 两者一致，是为了消掉诊断页那条自相矛盾的读数，**不是**为了修好导入。
+        # 保留它另有一个理由：与全能签一致（它写在 plist 里）。
+        #
+        # 代码里的 configuration.delegateClass 保留：两者指向同一个类，不冲突，且能让
+        # 「配置来自 plist」和「配置来自代码」两条路都通向 SceneDelegate。
+        #
+        # 必须与下面 UISceneConfigurations 的 sessionRole 一致：两边都是
+        # UIWindowSceneSessionRoleApplication。
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+                UISceneDelegateClassName: Views.SceneDelegate
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleDisplayName: 3D Views
+        CFBundleDevelopmentRegion: zh_CN
+        # 让用户在「文件」App 里能看到 App 自己的目录（Documents），手动放文件进去。
+        # 这与分享扩展无关，是另一条完全独立、并且一直可用的入口。
+        UIFileSharingEnabled: true
+        # 文档打开路径回来了，而且是照着一个已知能用的样本抄的：全能签（signall.nuosike.sign，
+        # 实测其 Info.plist）。它的模型是三条一起用：
+        #
+        # 1) CFBundleDocumentTypes —— 让本 App 出现在「共享」与「打开方式」列表里；
+        # 2) LSSupportsOpeningDocumentsInPlace —— 就地打开，系统不做拷贝；
+        # 3) UISceneDelegateClassName / 代码里的 SceneDelegate —— 接住系统递来的 URL。
+        #
+        # 当年三次失败的是第 3 条缺席：本 App 没有接管 scene，而文档打开路径的 URL 恰好只走
+        # scene 的 connectionOptions.urlContexts，所以文件永远递不进来。三条里缺一条，另外两条
+        # 都白搭，这也是当时误判成「文档打开路径走不通」的原因。
+        #
+        # LSHandlerRank 用 Owner 而不是当年测过的那两个值（Alternate 会「App 跳转了、文件没进来」，
+        # None 会让本 App 从「打开方式」里消失，用户原话「打开方式没有 3dviews了」）。Owner 是
+        # 全能签在绝大多数条目上用的值，本项目从未测过。
+        #
+        # ---- 2026-10-03：为什么前一轮「三根支柱全对」仍然失败 ----
+        #
+        # 上一轮真机读数里，文档类型 6 条进包了、rank=Owner、就地打开=true、场景代理=SceneDelegate，
+        # 四行全对，结果仍然是「冷启动，无 URL」＋「Documents/Inbox 目录不存在」——系统启动了本 App，
+        # 却没把文件交给它。翻 Apple 的 plist 定义才找到缺的那一件：
+        #
+        #   CFBundleTypeRole —— 可选 Editor / Viewer / Shell / QLGenerator / None，
+        #   **默认值 None**（Apple 原文：Attributes → default = None）。
+        #
+        # 我们一条都没写，于是 6 条声明的角色全是 None，字面意思就是「本 App 对这类文档没有任何角色」。
+        # 而 LSHandlerRank 的定义是「The ranking of this app among apps that declare themselves as
+        # **editors or viewers** of the given file type.」——角色是 None 就意味着我们从未加入那个集合，
+        # Owner 是在一个自己不在的名次表里排名，等于空转。
+        #
+        # 全能签 8 条声明**每一条**都写着 CFBundleTypeRole: Editor。这不是凑数的装饰，是本项目
+        # 一直缺的那一件。所以下面每条都补上 Editor。
+        #
+        # 另外两处照全能签对齐：
+        #   * LSItemContentTypes 的顺序是「自定义类型在前，系统类型在后兜底」。全能签的 zip 条目是
+        #     nsk-sign.nuosike.sign.zip → public.zip-archive → public.archive → public.content → public.data。
+        #     本项目上一轮把自定义类型当成唯一匹配依据，一旦系统没解析出 com.xiaochun.step，整条就匹配不上。
+        #   * UTTypeTagSpecification 除了 public.filename-extension 还带 public.mime-type（全能签每条都有）。
+        #
+        # 第一条「3D 模型」保留 public.data/public.content 覆盖，但同样补上 Editor：它是让本 App 出现在
+        # 「共享」与「打开方式」里的那条宽泛声明，现在也真的是个角色了。
+        #
+        # 扩展名白名单仍由运行时决定（Models/FileHistory.swift:101 的 supportedExtension(of:)），
+        # 与 Info.plist 无关；这里声明的是「本 App 愿意接手哪类文件」，不是「本 App 能读懂什么」。
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: 3D 模型
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - public.data
+              - public.content
+          - CFBundleTypeName: STEP
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.step
+              - public.data
+              - public.content
+          - CFBundleTypeName: IGES
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.iges
+              - public.data
+              - public.content
+          - CFBundleTypeName: STL
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.stl
+              - public.data
+              - public.content
+          - CFBundleTypeName: OBJ
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.obj
+              - public.data
+              - public.content
+          - CFBundleTypeName: BREP
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.xiaochun.brep
+              - public.data
+              - public.content
+        # 上面引用的自定义类型。每条都 conform 到一个系统既有类型，否则 iOS 会在
+        # 「打开方式」里忽略它（全能签的 9 条声明全部是这个写法）。
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.xiaochun.step
+            UTTypeDescription: STEP 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - step
+                - stp
+              public.mime-type:
+                - application/octet-stream
+          - UTTypeIdentifier: com.xiaochun.iges
+            UTTypeDescription: IGES 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - iges
+                - igs
+              public.mime-type:
+                - application/octet-stream
+          - UTTypeIdentifier: com.xiaochun.stl
+            UTTypeDescription: STL 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - stl
+              public.mime-type:
+                - application/octet-stream
+          - UTTypeIdentifier: com.xiaochun.obj
+            UTTypeDescription: OBJ 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - obj
+              public.mime-type:
+                - application/octet-stream
+          - UTTypeIdentifier: com.xiaochun.brep
+            UTTypeDescription: BREP 模型
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - brep
+              public.mime-type:
+                - application/octet-stream
+        # ---- 2026-10-03：CFBundleURLTypes 也恢复（照全能签复刻） ----
+        #
+        # 这一段先前**故意**没恢复，理由是「文档打开路径由系统启动本 App 并直接递 URL 到
+        # scene，中间没有『拉起』这个动作，用不上 scheme」。那个推理本身没错，但它默认了
+        # 「scheme 只服务于拉起」，而这是未经验证的假设。
+        #
+        # 全能签有一条 CFBundleURLTypes（CFBundleURLName: nsk-sign.udid，schemes: [nsk-sign]）。
+        # 既然要求全面复刻，就把它补上，让剩下的差异只剩真正可疑的那些。
+        #
+        # scheme 用 3dviews，与历史上删掉的那条同名。当年它失败的原因是
+        # extensionContext.open 在分享扩展里不被支持（Apple 文档：仅 Today 与 iMessage
+        # 扩展点支持该方法），那是**扩展拉宿主**这条路失败，不是 scheme 本身有问题；
+        # scheme 留着可以让 App 被 URL 唤起，而这条能力与文档路径并不冲突。
+        CFBundleURLTypes:
+          - CFBundleURLName: com.xiaochun.Views
+            CFBundleURLSchemes:
+              - 3dviews
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.Views
+        PRODUCT_NAME: Views
+        SWIFT_VERSION: "6.2"
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_APPROACHABLE_CONCURRENCY: YES
+        MARKETING_VERSION: 1.0
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: false
+        INFOPLIST_FILE: Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        DEVELOPMENT_TEAM: ""
+
+  # 分享扩展的定义。它被主 App 嵌入了（见上方 dependencies 的 `- target: Views-Share`），
+  # 所以打出来的包里有 .appex —— 分享导入的整条链路依赖它。
+  #
+  # 历史注记：有一段时期它不被嵌入（dependencies 里那两行被摘掉），因为当时在试文档打开
+  # 路径。那条路已在 `9599e24` 回退，嵌入已按 `91ca1bc` 恢复。
+  Views-Share:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Views-Share
+        excludes:
+          - Info.plist
+      - path: Shared
+    entitlements:
+      path: Views-Share.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.ffcd1c12e1a9728e.1
+    info:
+      path: Views-Share/Info.plist
+      properties:
+        CFBundleDisplayName: 3D Views
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          # Apple 文档要求 Swift 扩展在这里写**模块限定名**：$(PRODUCT_MODULE_NAME).类名。
+          # 本 target 的 PRODUCT_NAME 是 Views-Share，Xcode 由此生成的模块名会把非标识符
+          # 字符换成下划线，即 Views_Share。这个展开是安全的：它的 plist 走 Xcode 自己的
+          # 构建变量替换，与编译器同源。
+          #
+          # 这里原本只写 `ShareViewController`（配合源码里的 @objc(ShareViewController)），
+          # 真机实测的结果是：分享菜单里那一行**在**，.appex 在包里、签名也在（诊断页
+          # 「分享扩展：已安装／扩展签名：有」两行都有值），但**进程一次都没启动过** ——
+          # 「扩展启动于」这个时间戳停在旧值不动，而它正是 viewDidLoad 的第一行
+          # （ShareViewController.swift:38 的 AppGroup.recordExtensionStart()）写下的。
+          # 也就是说扩展在跑到那一行之前就死了，最可能就是系统在这里找不到类。
+          #
+          # 模块限定名不依赖 Swift 的 Objective-C 名字注册时机，所以它既能命中这个类，
+          # 又不受冷启动顺序影响。@objc(ShareViewController) 保留：它让类同时也能以
+          # 不带模块前缀的名字被找到，两条路都留着。
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsFileWithMaxCount: 20
+              # Files may expose a document as public.url / public.file-url.
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 0
+              NSExtensionActivationSupportsMovieWithMaxCount: 0
+              NSExtensionActivationSupportsText: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.Views.Share
+        PRODUCT_NAME: Views-Share
+        SWIFT_VERSION: "6.2"
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_APPROACHABLE_CONCURRENCY: YES
+        MARKETING_VERSION: 1.0
+        CURRENT_PROJECT_VERSION: 1
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES

@@ -1,4 +1,4 @@
-"""Draws the app icon for 3D-Views.
+"""Draws the app icon for Views.
 
 The mark is a wireframe cube seen in slight perspective, drawn in the same blue
 the app uses for selection and measurement — a viewer that measures solids, in
@@ -15,7 +15,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 SIZE = 1024
-OUT = Path(__file__).resolve().parent.parent / "3D-Views" / "Assets.xcassets" / "AppIcon.appiconset"
+OUT = Path(__file__).resolve().parent.parent / "Views" / "Assets.xcassets" / "AppIcon.appiconset"
 
 # The app's accent blue, top-lit so the tile reads as a solid object rather than
 # a flat swatch. background: dark graphite so a white-ish wireframe carries.

@@ -1,4 +1,4 @@
-# 3D Views — 交接文档
+﻿# 3D Views — 交接文档
 
 > 生成于 HEAD `8c34cb4`（`main`）。**实测**=量过且有数据；**推断**=基于实测的推论，未直接验证。
 
@@ -42,7 +42,7 @@
 - `extensionContext.open` 回调**每次都是 `didOpen == false`**
 - Safari 也**打不开** `3dviews://import`
 
-依据：`3D-Views/3D-Views-Share/ShareViewController.swift:15-16` 与 `:207-209`（注释形式的历史记录）。
+依据：`Views/Views-Share/ShareViewController.swift:15-16` 与 `:207-209`（注释形式的历史记录）。
 
 **iOS 从设计上不给 share extension 拉起宿主 App 的能力**。不要再为「分享后自动跳转」花构建次数。可行流程是：分享 → 用户手动切回 → App 自己打开刚导入的文件（用户已确认后半段工作正常）。
 
@@ -86,7 +86,7 @@
 
 这与 `.sldprt` 的区别就是全部问题所在：`.sldprt` 能打开，是因为零件容器里**藏着 Parasolid XT transmit**，`Models/SLDPRT/` 把它挖出来转成 STEP 文本，再交给 `Shape.loadSTEP`。
 
-装配体没有这个 transmit，喂给 `SLDPRTConverter.convert(data:fileName:)` 会在第一道门抛 `no_parasolid_geometry`——即 `3D-Views/Models/SLDPRT/SLDPRTConverter.swift:40-42`。
+装配体没有这个 transmit，喂给 `SLDPRTConverter.convert(data:fileName:)` 会在第一道门抛 `no_parasolid_geometry`——即 `Views/Models/SLDPRT/SLDPRTConverter.swift:40-42`。
 
 ### 好消息：装配体结构是明文可读的
 
@@ -192,7 +192,7 @@ uoTempAssemblySHDData_c
    - `ae49100`（模块限定类名 `$(PRODUCT_MODULE_NAME).ShareViewController`）骑在同批构建里，一次验证两件事
 3. **`.sldasm` 原生读几何**（用户已明确要求）
 4. **`.sldasm` 拒绝提示改写**（确定收益，与路线选择无关）
-   - 当前提示在 `3D-Views/ViewModels/ViewerViewModel.swift:648-649`：
+   - 当前提示在 `Views/ViewModels/ViewerViewModel.swift:648-649`：
      > 暂不支持 SolidWorks 装配体（.sldasm）原生格式。请在原软件里另存为 STEP 或 IGES 后再打开。
    - 问题：**没提本 App 其实支持 `.sldprt`**，也没提装配体可以**另存为零件**
 5. **`.easm` / HSF 支持**（暂缓，用户说「先做 `.sldasm`」）
@@ -207,7 +207,7 @@ uoTempAssemblySHDData_c
 | **二** | 提供一个**单组件最小 `.sldasm`**（一个长方体/圆柱，不导入标准件）作为 ground truth | 让路线一**可验证**。知道预期三角形数与包围盒后，候选布局要么对上要么对不上 |
 | **三** | SolidWorks 里**另存为零件**（Save As → `.sldprt`） | **很可能可行，零新代码**。装配体被烘焙成单文件，里面就有 Parasolid transmit |
 
-关于路线三的实测依据：`3D-Views/Models/SLDPRT/SLDPRTConverter.swift:63-65` **已经**会把多个 `body_type == 1` 实体合并成一个 STEP 并命名为 `Body1`、`Body2`…… —— **多实体处理本来就有**。
+关于路线三的实测依据：`Views/Models/SLDPRT/SLDPRTConverter.swift:63-65` **已经**会把多个 `body_type == 1` 实体合并成一个 STEP 并命名为 `Body1`、`Body2`…… —— **多实体处理本来就有**。
 
 ### 若要按路线一/二推进，建议的下一步探针
 
@@ -223,26 +223,26 @@ uoTempAssemblySHDData_c
 
 | # | 位置 | 说明 |
 |---|---|---|
-| 1 | `3D-Views/Models/FileHistory.swift:72-79` | `supportedExtensions` —— 运行时门禁，交接 / 沙箱扫描 / 拒绝提示三处都查它 |
-| 2 | `3D-Views/Models/FileHistory.swift:91-97` | `knownUnsupportedFormats` |
-| 3 | `3D-Views/ViewModels/ViewerViewModel.swift:581-587` | `ModelFormat` 枚举 case |
-| 4 | `3D-Views/ViewModels/ViewerViewModel.swift:596-601` | `isBrep`（穷尽 switch） |
-| 5 | `3D-Views/ViewModels/ViewerViewModel.swift:603-612` | `label`（穷尽 switch） |
-| 6 | `3D-Views/ViewModels/ViewerViewModel.swift:619-629` | `ModelFormat.named(_:)` |
-| 7 | `3D-Views/ViewModels/ViewerViewModel.swift:668-687` | `loadFile` 装载 switch（穷尽） |
-| 8 | `3D-Views/Views/HomeView.swift:22`、`3D-Views/Views/SettingsView.swift:44` | 用户可见文案（**这两处目前连 sldprt 都没提**） |
+| 1 | `Views/Models/FileHistory.swift:72-79` | `supportedExtensions` —— 运行时门禁，交接 / 沙箱扫描 / 拒绝提示三处都查它 |
+| 2 | `Views/Models/FileHistory.swift:91-97` | `knownUnsupportedFormats` |
+| 3 | `Views/ViewModels/ViewerViewModel.swift:581-587` | `ModelFormat` 枚举 case |
+| 4 | `Views/ViewModels/ViewerViewModel.swift:596-601` | `isBrep`（穷尽 switch） |
+| 5 | `Views/ViewModels/ViewerViewModel.swift:603-612` | `label`（穷尽 switch） |
+| 6 | `Views/ViewModels/ViewerViewModel.swift:619-629` | `ModelFormat.named(_:)` |
+| 7 | `Views/ViewModels/ViewerViewModel.swift:668-687` | `loadFile` 装载 switch（穷尽） |
+| 8 | `Views/Views/HomeView.swift:22`、`Views/Views/SettingsView.swift:44` | 用户可见文案（**这两处目前连 sldprt 都没提**） |
 
-> **关键约束**：`3D-Views/Models/FileHistory.swift:65` 写着
+> **关键约束**：`Views/Models/FileHistory.swift:65` 写着
 > 「Every entry here has a real reader behind it, which is the only thing that makes it honest to list.」
 > —— **`supportedExtensions` 里每一项都必须有真实读取器**。没有读取器就加后缀是撒谎。
 
 ### 结构性硬阻塞
 
-全仓库 `grep` `TopoDS_Compound|addShape|BRep_Builder|makeCompound|Compound` 只命中**两处注释**（`3D-Views/Models/SLDPRT/SLDPRTCompat.swift:18`、`3D-Views/Models/SLDPRT/SLDPRTContainer.swift:28`，均为 MS-CFB 说明）。
+全仓库 `grep` `TopoDS_Compound|addShape|BRep_Builder|makeCompound|Compound` 只命中**两处注释**（`Views/Models/SLDPRT/SLDPRTCompat.swift:18`、`Views/Models/SLDPRT/SLDPRTContainer.swift:28`，均为 MS-CFB 说明）。
 
 **代码中不存在任何 compound 或多 shape 概念**，而量测按单一 shape 设计：
-- `3D-Views/ViewModels/ViewerViewModel.swift:596` — `var isBrep: Bool`
-- `3D-Views/ViewModels/ViewerViewModel.swift:1943` — `var usesEntityMeasurement: Bool { isBrep }`
+- `Views/ViewModels/ViewerViewModel.swift:596` — `var isBrep: Bool`
+- `Views/ViewModels/ViewerViewModel.swift:1943` — `var usesEntityMeasurement: Bool { isBrep }`
 
 装配体必须先决定：**合并成 `TopoDS_Compound` 当一个 shape**，还是**改造成多 shape 模型**。
 
@@ -254,7 +254,7 @@ uoTempAssemblySHDData_c
 |---|---|
 | 本机 Xcode | **无**。CI 是 Swift 编译的权威 |
 | CI | GitHub Actions macOS（macos-latest，Xcode 26.6） |
-| 工程真源 | **`3D-Views/project.yml`**（XcodeGen） |
+| 工程真源 | **`Views/project.yml`**（XcodeGen） |
 | ⚠️ | CI 每次跑 `xcodegen generate`，用 `project.yml` 的 `info.properties` **重写** `Info.plist`。**只改 `Info.plist` 无法影响产物** |
 | App Group | `group.ffcd1c12e1a9728e.1`（容器在重装后仍存活） |
 | Release tag | `unsigned-ipa` 每次推送都删除重建，所以总是最新 IPA |
@@ -304,4 +304,4 @@ C:\Users\14548\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.
 2. **不要推测「用户测的是旧版本」。** 用户已明确纠正：「我每次测试都是按照最新构建的来的 不要推测版本问题了」。
 3. **`.appex` 不会被 `find -name "*.app"` 匹配**（glob 是尾部锚定的）——这个理论已实证证伪。
 4. **`~` 前缀在 `knownUnsupportedFormats` 里查不到**：iOS 给的临时文件路径可能带 `~` 或大写，`coordinate`/`coordination` 类小动作会漏。
-5. **文档数字要与代码现状对账。** 本次核对发现 `3D-Views/Views/HomeView.swift:22` 实际文案是「支持 STEP、IGES、STL、OBJ、BREP。」——**漏了 sldprt**，与第五节待办 8 的描述一致。改文档时不要照抄旧结论，回到源文件核。
+5. **文档数字要与代码现状对账。** 本次核对发现 `Views/Views/HomeView.swift:22` 实际文案是「支持 STEP、IGES、STL、OBJ、BREP。」——**漏了 sldprt**，与第五节待办 8 的描述一致。改文档时不要照抄旧结论，回到源文件核。
