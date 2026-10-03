@@ -73,15 +73,28 @@ targets:
         CFBundleDisplayName: 3D Views
         CFBundleDevelopmentRegion: zh_CN
         UIFileSharingEnabled: true
-        # 本项目最关键的一处开关。true 表示「本 App 有能力原地打开文档」，iOS 于是只递
-        # 一个安全作用域 URL 过来，**不往 Documents/Inbox 拷任何东西**。真机诊断里
-        # 「Documents/Inbox：目录不存在」正是这么来的：不是拷得慢，而是按设计就不会拷。
-        # 偏偏那条 URL 通路在本项目上七轮都没被观察到真正交付过（scene 生命周期下它
-        # 走 connectionOptions.urlContexts，而去碰那个入口会让应用启动即爆栈）。
-        # 改成 false 后行为翻转：iOS 先把文件拷进 Documents/Inbox，再启动 App。即使 URL
-        # 依旧递不到，importFromSandbox() 每次激活都会扫描并把文件捡走 —— 一条不依赖
-        # URL 的保底通道。
-        LSSupportsOpeningDocumentsInPlace: false
+        # 这一位是「文档投递方式」的总开关，真机上把它两个值都试过，结论如下。
+        #
+        # false —— 「我没有原地打开文档的能力」。系统于是打算**拷贝一份**到
+        # Documents/Inbox 再启动 App。实测：分享一个系统里没有任何 App 声明的 .ipa
+        # 时，拷贝确实发生，扫描直接看到；但分享 .step 时 Documents/Inbox 是空的 ——
+        # 因为本 App 声明了 com.xiaochun.step，系统改了主意，走文档打开那条路，
+        # 而那条路要把 URL 交给 scene 的 connectionOptions.urlContexts，本 App 没有
+        # 接管 scene（接管会让应用启动即爆栈，见 3D_ViewsApp.swift 的记录），
+        # 于是 URL 无人接收。结果就是「App 跳转了、文件没进来」。
+        #
+        # true —— 「我能原地打开文档」。系统不再考虑拷贝，改为**直接递一个安全作用域
+        # URL**，并且这次是递到本 App 已经接好的两个入口：application(_:open:options:)
+        # （3D_ViewsApp.swift:67-74）和 .onOpenURL（:113-115）。这两个入口从写下那天起
+        # 就一直挂着、却从未被触发过 —— 诊断里的 handoverLog 从来没有出现过
+        # 「AppDelegate 收到」或「onOpenURL 收到」两行，正是这条路一直没被走通的证据。
+        # 与 LSHandlerRank: Alternate 配合，语义才自洽：我是这个类型的候选处理者，
+        # 且我不拷贝，请直接把 URL 给我。
+        #
+        # 因此 true + Alternate 是现在要验证的组合。若 URL 仍不出现，下一步就不是调
+        # 这两个键，而是回到「不要文档归属」那条路（LSHandlerRank: None，它已被证实
+        # 能把文件拷进 Inbox，代价是「打开方式」列表里看不到本 App）。
+        LSSupportsOpeningDocumentsInPlace: true
         # 分享扩展把文件放进 App Group 之后，用这个 scheme 尝试把主 App 拉到前台。
         # 分享扩展没有被赋予「打开宿主 App」的正式能力，所以这只是尽力而为；真正
         # 保证交接完成的是主 App 每次激活时扫描共享收件箱。
@@ -90,26 +103,25 @@ targets:
             CFBundleURLSchemes:
               - 3dviews
         CFBundleDocumentTypes:
-          # LSHandlerRank 全部改为 None，这是被真机实测逼出来的结论。
+          # LSHandlerRank 全部改回 Alternate，与上面 LSSupportsOpeningDocumentsInPlace: true
+          # 配套，构成一条语义自洽的声明：「这个类型我也能处理（所以「文件」App 的
+          # 打开方式列表里看得见我），而我不拷贝（所以请把 URL 直接递给我）」。
           #
-          # Alternate 的语义是「我也能处理这个类型，但默认不是我」。系统据此把本 App
-          # 视为该类型的**归属候选**，于是在分享时启用「文档打开」路径 —— 启动 App、
-          # 把 URL 交给 scene 的 connectionOptions.urlContexts，**不往 Documents/Inbox
-          # 拷任何东西**。而本 App 没有接管 scene（自定义 SceneDelegate 会让应用启动
-          # 即爆栈，见 3D_ViewsApp.swift 里的记录），那个入口无人接收，URL 就此丢失。
-          # 表现就是「App 跳转了，文件没进来」。
+          # 两个值都在真机上跑过，各自的代价都记录在这里，免得下次再走一遍：
           #
-          # 同一台设备上的对照实验给出了决定性证据：分享一个 .ipa —— 系统里没有任何
-          # App 声明它，于是按通用类型处理，**拷进了 Documents/Inbox**，扫描直接看到；
-          # 分享 .step —— 因为本 App 声明了 com.xiaochun.step，改走文档打开路径，
-          # Documents/Inbox 里什么都没有。差别不在拷贝机制（同一个 App 上它明明是通的），
-          # 而在这个「有主」声明把文件引到了另一条路上。
+          # None —— 系统不再把该类型判为「有主」，文件确实会走通用投递路径被拷进
+          # Documents/Inbox（一个系统里无人声明的 .ipa 就是这么进来的），但代价是
+          # **「打开方式」列表里再也看不到本 App**。真机确认：「打开方式没有 3dviews了」。
+          # 能导入却找不到入口，比导入失败更糟，所以这一版不用它。
           #
-          # None 让系统不再把该类型判为「有主」，从而回到与 .ipa 相同的通用投递行为：
-          # 拷贝到 Documents/Inbox，再不依赖 URL 地被本 App 每次激活时扫到。
+          # Alternate —— 列表里看得到，系统按「文档打开」路径把安全作用域 URL 递进来。
+          # 之前的失败不在于这个值本身，而在于它与 LSSupportsOpeningDocumentsInPlace:
+          # false 组成的矛盾组合：声明了归属、却又声称不能原地打开，系统于是既没有
+          # 拷贝（因为文件有主）也没有递 URL（因为 App 自称要拷贝），两头落空。
+          # 现在 false 改成 true，这个矛盾消失。
           - CFBundleTypeName: STEP CAD File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: None
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - step
               - stp
@@ -117,7 +129,7 @@ targets:
               - com.xiaochun.step
           - CFBundleTypeName: STL Mesh
             CFBundleTypeRole: Viewer
-            LSHandlerRank: None
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - stl
             LSItemContentTypes:
@@ -127,7 +139,7 @@ targets:
           # 来那条路（App 自己把容器里内嵌的 Parasolid B-rep 转成 STEP）。
           - CFBundleTypeName: IGES CAD File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: None
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - iges
               - igs
@@ -135,7 +147,7 @@ targets:
               - com.xiaochun.iges
           - CFBundleTypeName: OBJ Mesh
             CFBundleTypeRole: Viewer
-            LSHandlerRank: None
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - obj
             LSItemContentTypes:
@@ -143,7 +155,7 @@ targets:
           # BREP 没有第二拼写：OCCT 自己的扩展名就这一个。
           - CFBundleTypeName: OCCT BREP File
             CFBundleTypeRole: Viewer
-            LSHandlerRank: None
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - brep
             LSItemContentTypes:
@@ -153,7 +165,7 @@ targets:
           # XT B-rep，转成 STEP 文本，再交给 loadSTEP —— 面/边/顶点量测能力完整保留。
           - CFBundleTypeName: SolidWorks Part
             CFBundleTypeRole: Viewer
-            LSHandlerRank: None
+            LSHandlerRank: Alternate
             CFBundleTypeExtensions:
               - sldprt
             LSItemContentTypes:
