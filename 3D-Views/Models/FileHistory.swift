@@ -287,7 +287,50 @@ final class FileHistory: ObservableObject {
             lines.append("场景代理：无（场景未连接）")
         }
 
+        // The module name Swift actually registered, and the class name inside it, as opposed
+        // to whatever `project.yml` claims. `project.yml` has to name the delegate class in
+        // `UISceneDelegateClassName`, and the module-qualified form is the only one that
+        // resolves at cold-launch time — but the module name is not simply `PRODUCT_NAME`:
+        // a module cannot begin with a digit, so Xcode rewrites `3D-Views`, and XcodeGen
+        // rewrites it *differently* when expanding `$(PRODUCT_MODULE_NAME)` into Info.plist.
+        // Measured in the shipped IPA, that expansion produced `_D_Views.SceneDelegate` while
+        // the compiler registered `3D_Views.SceneDelegate`, so the two silently disagreed and
+        // the failure looked exactly like never having named a delegate at all.
+        //
+        // Printing both halves from the running binary makes that class of mistake visible on
+        // the device instead of only in the built artifact: if these disagree with the literal
+        // in `project.yml`, the plist names a class that does not exist.
+        lines.append("模块名：\(Self.moduleName)｜代理类名：\(String(describing: type(of: Self.self)))")
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let delegate = scene.delegate {
+            let runtimeName = "\(Self.moduleName).\(type(of: delegate))"
+            let declared = Bundle.main.object(
+                forInfoDictionaryKey: "UIApplicationSceneManifest"
+            ) as? [String: Any]
+            let declaredName = ((declared?["UISceneConfigurations"] as? [String: Any])?[
+                "UIWindowSceneSessionRoleApplication"
+            ] as? [[String: Any]])?.first?["UISceneDelegateClassName"] as? String
+            lines.append("声明名：\(declaredName ?? "未声明")｜运行时名：\(runtimeName)")
+            if let declaredName {
+                lines.append(
+                    declaredName == runtimeName
+                        ? "场景代理名：一致"
+                        : "场景代理名：**不一致**（plist 写的是 \(declaredName)，运行时是 \(runtimeName)）"
+                )
+            }
+        }
+
         return lines
+    }
+
+    /// The Swift module this binary was built as, taken from the runtime rather than from a
+    /// build setting — the two disagreed once already (see the note at the call site).
+    ///
+    /// `String(reflecting:)` on a type yields the fully-qualified name, so the text before the
+    /// first dot is the module. `FileHistory` is a type in this same module, which is what
+    /// makes it a valid subject.
+    private static var moduleName: String {
+        String(reflecting: FileHistory.self).split(separator: ".").first.map(String.init) ?? "?"
     }
 
     /// Empties the record. The log is meant to be read right after something failed, and a

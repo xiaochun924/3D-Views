@@ -102,21 +102,32 @@ targets:
         # 也不拷文件 —— 正是这两轮读数（`SceneDelegate 冷启动` 只记扫描、从无「收到：」行，
         # 且 Documents/Inbox 目录不存在）。
         #
-        # 类名写**模块限定名**，而且用 $(PRODUCT_MODULE_NAME) 而不是写死 3D_Views：
-        # 本仓库已经用同一个写法在真机上修好过一模一样的问题 —— 分享扩展的
-        # NSExtensionPrincipalClass（见文件末尾），那里原本只写裸类名 `ShareViewController`，
-        # 真机结果是「分享菜单里有它、.appex 在包里、签名也在，但进程一次都没启动过」；
-        # 改成 $(PRODUCT_MODULE_NAME).ShareViewController 才活。原因写在那一处的注释里：
-        # 模块限定名不依赖 Swift 的 Objective-C 名字注册时机。
+        # 类名写**模块限定名的字面值**：3D_Views.SceneDelegate。
         #
-        # SceneDelegate 面对的是同一个时机问题，而且更靠前：冷启动投递文档时，系统要在
-        # **构建 scene 之前**就从 Info.plist 里查出类名。那时 Swift 的 ObjC 名字还没注册，
-        # 裸类名可能查不到；查不到就没有 delegate 接 URL，也就既不递 URL 也不拷文件。
+        # ---- 为什么不用 $(PRODUCT_MODULE_NAME)（2026-10-03 实测） ----
         #
-        # 用 $(PRODUCT_MODULE_NAME) 而不是写死模块名：XcodeGen 会在生成 plist 时展开它，
-        # 模块名由 PRODUCT_NAME 派生（3D-Views → 3D_Views），改名时自动跟着走，不必手改。
-        # 全能签写裸名 `SceneDelegate` 是因为它的 PRODUCT_NAME 就是 NSKSign 这一个词，
-        # 没有字符变换，裸名与模块限定名恰好同形 —— 它没有暴露这个差别，不代表我们也没有。
+        # 先试的正是 $(PRODUCT_MODULE_NAME).SceneDelegate，因为本仓库已经用同一个写法在真机上
+        # 修好过一模一样的问题（分享扩展的 NSExtensionPrincipalClass，见文件末尾）。
+        # 但打进包里的结果是：
+        #
+        #     UISceneDelegateClassName = '_D_Views.SceneDelegate'   ← 开头的 3 没了
+        #
+        # 本 target 的 PRODUCT_NAME 是 3D-Views，而模块名**不能以数字开头**，Xcode 必须改写它。
+        # 关键在于**改写的两处不一致**：XcodeGen 生成 Info.plist 时把 3D-Views 展开成 _D_Views，
+        # 而编译器把模块名定成 3D_Views。两个名字对不上，系统就会去 _D_Views 这个模块里找
+        # SceneDelegate，找不到 —— 症状与原来的问题**一模一样**（不递 URL、不报错），
+        # 那种情况下根本分不清是没修好还是修出了新问题。
+        #
+        # NSExtensionPrincipalClass 用 $(PRODUCT_MODULE_NAME) 是安全的，因为那个 plist 走 Xcode
+        # 自己的构建变量替换（与编译器同源）；而 Info.plist 走 XcodeGen 的替换（另一套规则）。
+        # 同一个变量名，两条替换路径，只有一条通向正确的类名。
+        #
+        # ---- 为什么是这个字面值 ----
+        #
+        # 3D_Views 是 Xcode 对 PRODUCT_NAME 3D-Views 的标准改写：非标识符字符换成下划线。
+        # 诊断页会把它**从运行时读回来打印**（Models/FileHistory.swift 的「模块名：」一行，
+        # 读 String(reflecting: type(of: self)) 取模块前缀），所以设备上跑的是哪个名字是可见的，
+        # 不必再靠推断 —— 若这一行与这里的字面值对不上，那是改名漂移，改这里即可。
         #
         # 代码里的 configuration.delegateClass 保留：两者指向同一个类，不冲突，且能让
         # 「配置来自 plist」和「配置来自代码」两条路都通向 SceneDelegate。
@@ -128,7 +139,7 @@ targets:
           UISceneConfigurations:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default Configuration
-                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+                UISceneDelegateClassName: 3D_Views.SceneDelegate
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
