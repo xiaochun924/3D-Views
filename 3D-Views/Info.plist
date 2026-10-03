@@ -37,6 +37,29 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!-- 分享扩展用 3dviews://import 把主 App 拉到前台。这个 scheme 必须真的写进
+	     安装包里的 Info.plist，系统才知道该由谁处理这个 URL；缺失时 extensionContext
+	     的 open 请求会被直接丢弃 —— 分享面板照常关闭，App 不跳转，而且没有任何报错。
+	     project.yml 的 info.properties 里虽然声明了它，但那份声明并没有合并进本文件，
+	     所以这里必须显式写出。 -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.xiaochun.3DViews</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>3dviews</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
