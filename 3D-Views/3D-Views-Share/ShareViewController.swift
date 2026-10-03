@@ -20,8 +20,20 @@
 //  The app drains that inbox on every activation, so the handover completes whether or
 //  not the app was ever woken up — which is the one behaviour that was measured to work.
 //
-//  The sheet reports the outcome and stays up so the user can read it. It does not try to
-//  launch the host app: it has no supported way to do that, and the file does not need it.
+//  The sheet reports the outcome and then closes itself. It does not try to launch the
+//  host app: it has no supported way to do that, and the file does not need it.
+//
+//  Three device-measured defects were removed from this file and must not come back:
+//
+//  * `tryToOpenHostApp` awaited `extensionContext.open` inside a continuation. The
+//    callback is not guaranteed to fire in a share extension, so the continuation hung
+//    and the process was reaped — the "share sheet crashes on the second try" report.
+//    It also only ever returned `didOpen == false`, so it bought nothing.
+//  * The completion button was shown unconditionally and never auto-closed, forcing the
+//    user to tap 完成 on a handover that had already succeeded.
+//  * `deposit` ran `FileManager.copyItem` on the main thread from `viewDidAppear`. A
+//    multi-megabyte STEP file blocked the sheet during launch, which is the other way
+//    this extension was killed.
 //
 
 import UIKit
@@ -37,7 +49,8 @@ final class ShareViewController: UIViewController {
     private let openButton = UIButton(type: .system)
     private var hasStarted = false
     private var handoffFinished = false
-    private var hostLaunchAttempted = false
+    /// Guards the auto-close so a slow handover cannot outlive the sheet's dismissal.
+    private var closeScheduled = false
 
     override func viewDidLoad() {
         // Left before anything else, including the label. `NSExtensionPrincipalClass`
@@ -80,7 +93,13 @@ final class ShareViewController: UIViewController {
         super.viewDidAppear(animated)
         guard !hasStarted else { return }
         hasStarted = true
-        Task { await handOverEverything() }
+        // Detached on purpose: `handOverEverything` copies the shared file, and a
+        // multi-megabyte STEP model copied on the main actor holds the share sheet at
+        // its launch moment, which is where iOS kills an extension. The body hops back
+        // to the main actor by itself whenever it touches the label or the button.
+        Task.detached { [weak self] in
+            await self?.handOverEverything()
+        }
     }
 
     // MARK: - Handover
@@ -96,7 +115,8 @@ final class ShareViewController: UIViewController {
             AppGroup.recordHandoff(names: [], failures: ["共享容器不可用"])
             await MainActor.run { [weak self] in
                 self?.statusLabel.text = "无法导入：共享容器不可用\n当前安装包的签名里没有 \(AppGroup.identifier)"
-                self?.openButton.isHidden = true
+                self?.openButton.isHidden = false
+                self?.openButton.isEnabled = true
             }
             return
         }
@@ -116,57 +136,56 @@ final class ShareViewController: UIViewController {
         }
 
         AppGroup.recordHandoff(names: deposited, failures: failures)
-        let opened = await tryToOpenHostApp(deposited: deposited, failures: failures)
         await MainActor.run { [weak self] in
             guard let self else { return }
-            self.statusLabel.text = self.message(deposited: deposited,
-                                                 failures: failures,
-                                                 hostOpened: opened)
-            // The button is the only way out of a share extension that stays alive. It is
-            // shown whatever happened, so a failure still leaves something tappable rather
-            // than a sheet the user has to dismiss by swiping.
-            self.openButton.isHidden = false
-            self.openButton.isEnabled = true
+            self.statusLabel.text = self.message(deposited: deposited, failures: failures)
+            if deposited.isEmpty {
+                // Nothing usable came through, so there is no handover to close on and
+                // the user needs a way out. The button is that way out.
+                self.openButton.isHidden = false
+                self.openButton.isEnabled = true
+            } else {
+                // The file is already in the inbox and the app drains it on activation,
+                // so the sheet has nothing left to wait for. Close it and let the app
+                // take over, instead of making the user tap 完成 on a finished job.
+                self.openButton.isHidden = true
+                self.scheduleAutoClose()
+            }
+        }
+    }
+
+    /// Dismisses the sheet a beat after a successful handover, so the result line is
+    /// readable but the user is not asked to do anything.
+    private func scheduleAutoClose() {
+        guard !closeScheduled else { return }
+        closeScheduled = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            await MainActor.run { self?.completeExtension() }
         }
     }
 
     /// 请求系统把已完成交接的分享返回到主 App。
     ///
+    /// **已停用，不要恢复。** 这段代码曾在真机上造成「第二次分享直接闪退」：
+    /// `extensionContext.open` 在分享扩展里不被支持（Apple 只对 Today 与 iMessage
+    /// 扩展点开放该方法），回调不保证触发，于是 `withCheckedContinuation` 永久挂起，
+    /// 进程随后被系统回收。它也从没成功过——每次都是 `didOpen == false`。
+    /// 交接本身不需要它：文件在 App Group Inbox，主 App 激活时自己消费。
+    ///
+    /// 下面这段注释是它退役前的原始说明，保留以记录当时的判断：
     /// 这不是把文件再传一次：文件已经在 App Group Inbox，深链只负责唤起宿主；
     /// 主 App 启动后会按自己的生命周期消费 Inbox。若系统仍拒绝扩展发起的打开请求，
-    /// 仍保留当前可用的“完成”按钮，不能影响已经成功的导入。
-    private func tryToOpenHostApp(deposited: [String], failures: [String]) async -> Bool {
-        guard !hostLaunchAttempted else { return false }
-        hostLaunchAttempted = true
-        guard let url = URL(string: "3dviews://import") else {
-            return false
-        }
-
-        guard let context = extensionContext else {
-            return false
-        }
-        let opened = await withCheckedContinuation { continuation in
-            context.open(url) { didOpen in
-                continuation.resume(returning: didOpen)
-            }
-        }
-        if !opened {
-            AppGroup.recordHandoff(names: deposited, failures: failures + ["主 App 深链未被系统接受"])
-        }
-        return opened
-    }
-
+    /// 仍保留当前可用的「完成」按钮，不能影响已经成功的导入。
     private func message(deposited: [String],
-                         failures: [String],
-                         hostOpened: Bool) -> String {
-        let hostLine = hostOpened ? "正在打开 3D Views…" : "请点击“完成”返回"
+                         failures: [String]) -> String {
         switch (deposited.isEmpty, failures.isEmpty) {
         case (false, true):
             return deposited.count == 1
-                ? "已导入 \(deposited[0])\n\(hostLine)"
-                : "已导入 \(deposited.count) 个文件\n\(hostLine)"
+                ? "已导入 \(deposited[0])"
+                : "已导入 \(deposited.count) 个文件"
         case (false, false):
-            return "已导入 \(deposited.count) 个文件，另有 \(failures.count) 个未能读取\n\(hostLine)"
+            return "已导入 \(deposited.count) 个文件，另有 \(failures.count) 个未能读取"
         case (true, _):
             return "没有拿到可导入的文件\n请试试从「文件」App 里分享"
         }
@@ -233,8 +252,8 @@ final class ShareViewController: UIViewController {
     // MARK: - Finishing
 
     /// 关闭分享扩展。文件已在共享收件箱中，主 App 会在启动或激活时消费它。
-    /// 自动拉起由 `tryToOpenHostApp()` 先尝试；若系统拒绝扩展发起的深链，
-    /// 这个按钮仍然提供可靠的手动返回路径。
+    /// 交接成功时由 `scheduleAutoClose()` 自动调用；只有“没有拿到文件”或
+    /// “共享容器不可用”这两种需要用户阅读的失败，才把按钮留给用户点。
     @objc private func openHostApp() {
         completeExtension()
     }
