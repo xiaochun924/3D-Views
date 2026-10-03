@@ -30,8 +30,20 @@ targets:
           - project.yml
     dependencies:
       - package: OCCTSwift
-      - target: 3D-Views-Share
-        embed: true
+      # 分享扩展的嵌入被移除了。它一直在争同一次分享：Files 里点「分享」时，
+      # 只要有 com.apple.share-services 扩展，系统就只运行扩展进程，而扩展**没有**
+      # 「打开宿主 App」的正式能力 —— extensionContext.open 被系统拒绝（真机实测
+      # 回调恒为 false），扩展又必须结束自己，于是每次都是「弹窗消失、什么也没发生」。
+      #
+      # 不嵌入扩展后，同一次分享改走系统原生的文档打开路径：「用其他应用打开」→
+      # iOS 自己启动 App 并把文件拷进 Documents/Inbox。这一条在同一个人的
+      # BatteryInsight（无扩展、只有 CFBundleDocumentTypes + LSSupportsOpeningDocumentsInPlace:false）
+      # 上真机跑通过，也是本文件下面 CFBundleDocumentTypes 注释里照抄的来源。
+      # 拉起 App 的是系统本身，不经过扩展，所以不存在被拒绝的问题。
+      #
+      # 扩展的 target 定义和源码都保留在下方（不再被嵌入），一条 `- target:` 就能恢复。
+      # - target: 3D-Views-Share
+      #   embed: true
     # App Group 是主 App 与分享扩展唯一能互相看见的地方。注意：IPA 以
     # CODE_SIGNING_ALLOWED=NO 构建，这份 entitlement 不会进包，必须由自签工具
     # 在签名时补上；否则 containerURL(forSecurityApplicationGroupIdentifier:)
@@ -201,9 +213,12 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         DEVELOPMENT_TEAM: ""
 
-  # 分享面板应用行的来源。没有这个 target，App 在「共享 → 到 3D Views」里就只是
-  # 一个文档打开目标 —— 而这条路在本项目上从未被观察到真正交付过 URL。
-  # 有了它，文件先落进 App Group 收件箱，主 App 每次激活时取走。
+  # 分享扩展的定义。**它不再被主 App 嵌入**（见上方 dependencies 的注释），因此
+  # 打出来的包里不会有 .appex，「共享 → 到 3D Views」那一行也随之消失 —— 这正是
+  # 重点：那一行曾经把每次分享都变成一次注定失败的扩展调用。
+  #
+  # 保留在这里是为了可回退：把主 target 的 `- target: 3D-Views-Share` / `embed: true`
+  # 取消注释即可恢复。源码（3D-Views-Share/、Shared/）同样原样保留。
   3D-Views-Share:
     type: app-extension
     platform: iOS
