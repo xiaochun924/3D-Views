@@ -27,8 +27,20 @@ enum AppGroup {
     static let wakeUpScheme = "3dviews"
 
     /// The containing-app URL requested by the Share Extension.
-    /// Construct it once here so both targets use the exact same value.
-    static let wakeUpURL = URL(string: "3dviews://import")!
+    ///
+    /// Built through `URLComponents` rather than `URL(string:)`: the string form of a
+    /// URL initializer is failable, and a force-unwrap of it turns a scheme typo into a
+    /// `SIGTRAP` inside this `static let`'s one-time initialization. That is exactly how
+    /// a share could die at the moment the user tapped "打开 3D Views" — the trap fires in
+    /// `dispatch_once`, taking the extension process with it, so the sheet vanishes and
+    /// the host app is never asked to open. A constant the whole handover depends on
+    /// must not be able to crash its own reader.
+    static let wakeUpURL: URL = {
+        var components = URLComponents()
+        components.scheme = wakeUpScheme
+        components.host = "import"
+        return components.url ?? URL(fileURLWithPath: "/dev/null")
+    }()
 
     private static let inboxFolderName = "Inbox"
     private static let handoffAtKey = "SharedHandoffAt"

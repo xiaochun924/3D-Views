@@ -203,8 +203,12 @@ final class ShareViewController: UIViewController {
         }
 
         // `AppGroup.wakeUpURL` is a non-optional constant, so there is no "could not build
-        // the address" case to report. A guard here would be unreachable code that showed a
-        // diagnostic the build could never actually produce.
+        // the address" case to report. It used to be force-unwrapped from `URL(string:)`,
+        // which made this call site the trigger for a `SIGTRAP` in that constant's
+        // one-time initialization — the trap fired inside `dispatch_once`, killed the
+        // extension before `open` ever ran, and looked from the outside like "the button
+        // closes the sheet and nothing opens". The constant is now built from
+        // `URLComponents` and cannot fail; see `AppGroup.wakeUpURL`.
         let url = AppGroup.wakeUpURL
 
         openButton.isEnabled = false
