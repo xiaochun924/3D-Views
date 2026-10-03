@@ -28,6 +28,12 @@ targets:
           # 工程定义本身不是资源。path: . 会把整个目录收进来，上一版就把它原样
           # 打进了已发布的 .app —— 解包可见 6553 字节的 project.yml 躺在根目录。
           - project.yml
+      # Base.lproj/LaunchScreen.storyboard 由上面那条 `path: .` 收进来（没被 excludes
+      # 排除），XcodeGen 会把 .lproj 目录当作本地化资源处理，编译成 Base.lproj/
+      # LaunchScreen.storyboardc —— 正是全能签包里的那个结构。这里显式写一遍是为了
+      # 让它不被将来改 excludes 的人顺手排掉：UILaunchStoryboardName 指向的名字如果
+      # 在包里找不到，系统会静默退回默认启动画面，不报错。
+      - path: Base.lproj
     dependencies:
       - package: OCCTSwift
       # 分享扩展**已从包里移除**（用户明确要求：完全照搬全能签的方案）。
@@ -78,9 +84,20 @@ targets:
     info:
       path: Info.plist
       properties:
-        UILaunchScreen:
-          UIColorName: ""
-          UIImageRespectsSafeAreaInsets: false
+        # ---- 2026-10-03：启动画面改成 storyboard（照全能签复刻） ----
+        #
+        # 原来这里是 UILaunchScreen: {UIColorName: "", UIImageRespectsSafeAreaInsets: false}，
+        # 即 iOS 14+ 的新式启动画面声明；全能签用的是旧式的
+        # UILaunchStoryboardName: LaunchScreen 加包内一个 Base.lproj/LaunchScreen.storyboardc，
+        # 我们两样都没有。
+        #
+        # 启动画面与文档投递之间没有已知的因果关系，补它不是为了修 bug，而是为了把差异
+        # 收敛干净：全面复刻之后如果仍然失败，那就说明问题根本不在这些声明里，从而不必
+        # 再逐个怀疑它们。
+        #
+        # UILaunchScreen 与 UILaunchStoryboardName **不能同时声明**：前者优先，后者会被
+        # 静默忽略（苹果没有报错，只是不生效）。所以这里是替换，不是追加。
+        UILaunchStoryboardName: LaunchScreen
         # 本 App 自己拥有 scene（3D_ViewsApp.swift 是 UIKit 生命周期，@main 是 AppDelegate）。
         #
         # ---- 2026-10-03：写死 UISceneDelegateClassName（照全能签） ----
@@ -125,9 +142,18 @@ targets:
         # ---- 为什么是这个字面值 ----
         #
         # 3D_Views 是 Xcode 对 PRODUCT_NAME 3D-Views 的标准改写：非标识符字符换成下划线。
-        # 诊断页会把它**从运行时读回来打印**（Models/FileHistory.swift 的「模块名：」一行，
-        # 读 String(reflecting: type(of: self)) 取模块前缀），所以设备上跑的是哪个名字是可见的，
-        # 不必再靠推断 —— 若这一行与这里的字面值对不上，那是改名漂移，改这里即可。
+        # 诊断页会把 plist 里声明的名字与运行时注册的名字**同时读回来打印并比对**
+        # （Models/FileHistory.swift 的「声明名／运行时名」两行），所以设备上跑的是哪个
+        # 名字、两者是否一致都是可见的，不必再靠推断 —— 若显示不一致，改这里的字面值。
+        #
+        # 注意：运行时那一半取自 ObjC 运行时，而 ObjC 名与 Swift 模块名的改写规则**不同**
+        # （ObjC 侧把开头的数字改写成 _D，即 _D_Views）。实测两版读数：
+        #
+        #   plist 写 _D_Views.SceneDelegate（ObjC 名） → 与运行时一致 → 仍收不到
+        #   plist 写 3D_Views.SceneDelegate（Swift 名）→ 与运行时不一致 → 仍收不到
+        #
+        # 两版都收不到，所以 UISceneDelegateClassName 这个键**不是**阻塞点。保留它是为了
+        # 与全能签一致（它写在 plist 里），而不是因为它能修好问题。
         #
         # 代码里的 configuration.delegateClass 保留：两者指向同一个类，不冲突，且能让
         # 「配置来自 plist」和「配置来自代码」两条路都通向 SceneDelegate。
@@ -295,10 +321,23 @@ targets:
                 - brep
               public.mime-type:
                 - application/octet-stream
-        # 唯一**没有**恢复的一段是 CFBundleURLTypes（3dviews://）。跳转不再需要它：文档打开
-        # 路径由系统启动本 App 并直接把 URL 递到 scene，中间没有「拉起」这个动作，也就用不上
-        # scheme。旧 scheme 是配合 extensionContext.open 用的，而那个 API 在分享扩展里不被
-        # 支持（Apple 文档原文见 3D_ViewsApp.swift 的注释），恢复它只会把一条死路重新接上。
+        # ---- 2026-10-03：CFBundleURLTypes 也恢复（照全能签复刻） ----
+        #
+        # 这一段先前**故意**没恢复，理由是「文档打开路径由系统启动本 App 并直接递 URL 到
+        # scene，中间没有『拉起』这个动作，用不上 scheme」。那个推理本身没错，但它默认了
+        # 「scheme 只服务于拉起」，而这是未经验证的假设。
+        #
+        # 全能签有一条 CFBundleURLTypes（CFBundleURLName: nsk-sign.udid，schemes: [nsk-sign]）。
+        # 既然要求全面复刻，就把它补上，让剩下的差异只剩真正可疑的那些。
+        #
+        # scheme 用 3dviews，与历史上删掉的那条同名。当年它失败的原因是
+        # extensionContext.open 在分享扩展里不被支持（Apple 文档：仅 Today 与 iMessage
+        # 扩展点支持该方法），那是**扩展拉宿主**这条路失败，不是 scheme 本身有问题；
+        # scheme 留着可以让 App 被 URL 唤起，而这条能力与文档路径并不冲突。
+        CFBundleURLTypes:
+          - CFBundleURLName: com.xiaochun.3DViews
+            CFBundleURLSchemes:
+              - 3dviews
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.3DViews
