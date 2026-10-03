@@ -5,6 +5,7 @@
 
 import Foundation
 import UniformTypeIdentifiers
+import UIKit
 
 struct RecentFile: Codable, Identifiable, Hashable, Equatable {
     let id: UUID
@@ -135,16 +136,55 @@ final class FileHistory: ObservableObject {
             lines.append("场景清单：无")
         }
 
-        // The document-type and exported-UTI blocks that used to print here are gone
-        // along with their declarations. They were removed from `Info.plist` after the
-        // Files-app 「打开方式」 path they describe failed in every configuration that
-        // was measured on the device (`Alternate`+`false`, `None`+`false`,
-        // `Alternate`+`true`). Printing them now would only show a row of 无 and invite
-        // another round of tuning a path that is not in use.
+        // The document-type and exported-UTI blocks that used to print here were deleted
+        // when the declarations themselves were, on the reasoning that a row of 无 only
+        // invites another round of tuning a path that is not in use. That reasoning no
+        // longer holds: the document-open path IS the only path now, and these declarations
+        // are its entire entry point. They also live only in the *installed* bundle —
+        // `Info.plist` is merged from `project.yml` at build time, and a side-loaded build
+        // need not be the one in the source tree, so what is compiled here proves nothing
+        // about what is running on the device.
         //
-        // What matters for the one remaining import path is the line further down that
-        // states whether the share extension is installed, and the App Group block above
-        // it: the extension copies into that container and the app drains it.
+        // Printed raw rather than summarised. The question being asked is precisely
+        // "did the declaration survive into the binary", and a count would hide a
+        // declaration that arrived with the wrong rank or the wrong type list.
+        if let types = info["CFBundleDocumentTypes"] as? [[String: Any]] {
+            lines.append("文档类型：\(types.count) 条")
+            for type in types {
+                let name = type["CFBundleTypeName"] as? String ?? "?"
+                let rank = type["LSHandlerRank"] as? String ?? "未声明"
+                let contents = (type["LSItemContentTypes"] as? [String]) ?? []
+                lines.append("  \(name)｜rank=\(rank)｜\(contents.joined(separator: ","))")
+            }
+        } else {
+            lines.append("文档类型：未声明")
+        }
+
+        if let exported = info["UTExportedTypeDeclarations"] as? [[String: Any]] {
+            lines.append("自定义类型：\(exported.count) 条")
+            for type in exported {
+                let id = type["UTTypeIdentifier"] as? String ?? "?"
+                let tags = (type["UTTypeTagSpecification"] as? [String: Any])?["public.filename-extension"]
+                let exts = (tags as? [String])?.joined(separator: ",") ?? "?"
+                lines.append("  \(id)｜\(exts)")
+            }
+        } else {
+            lines.append("自定义类型：未声明")
+        }
+
+        // Whether the app is willing to open a document in place, which is what decides
+        // whether Files hands over a copy it made or a URL pointing at the original. It is
+        // the setting most likely to be the difference between "the app opened and the file
+        // did not arrive" and "the file arrived under a name we did not expect".
+        let inPlace = (info["LSSupportsOpeningDocumentsInPlace"] as? Bool)
+            .map { $0 ? "true" : "false" } ?? "未声明"
+        lines.append("就地打开：\(inPlace)")
+
+        // Kept for the same reason as the App Group block above, and reworded because the
+        // extension is no longer the thing that fills this container: the document-open
+        // path does not touch the App Group at all, so `未安装` here is the expected value
+        // rather than a finding. It is still worth a line, because it is what tells a
+        // reader that the build on the device is the one this source tree describes.
 
         let bundleID = Bundle.main.bundleIdentifier ?? "?"
         lines.append("Bundle ID：\(bundleID)")
@@ -232,6 +272,19 @@ final class FileHistory: ObservableObject {
             lines.append("上次分享：\(stampFormatter.string(from: handoff.at)) \(names)\(failures)")
         } else {
             lines.append("上次分享：无")
+        }
+
+        // Whether the scene the app is running in was built by us or by SwiftUI. This is the
+        // one fact that decides whether a handed-over URL can be received at all: the
+        // document-open path delivers into `connectionOptions.urlContexts` on the scene, so
+        // with no `SceneDelegate` of our own there is nothing to receive it and the app is
+        // launched for a file it then never sees. Reporting the delegate's own class name
+        // answers it directly, instead of inferring it from the absence of a log line.
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let delegate = scene.delegate {
+            lines.append("场景代理：\(type(of: delegate))")
+        } else {
+            lines.append("场景代理：无（场景未连接）")
         }
 
         return lines
