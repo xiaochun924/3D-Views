@@ -482,6 +482,16 @@ final class FileHistory: ObservableObject {
             sharedCount = names.count
             for name in names.sorted() {
                 let source = shared.appendingPathComponent(name)
+                // Folders are skipped before anything else, and that guard is not
+                // optional: the parking folder below is itself an entry in this very
+                // directory, so a version of this loop that treated every entry as a
+                // file would try to move `Unsupported` into `Unsupported/Unsupported`
+                // on every scan — failing, and logging a line about it, forever. That
+                // is exactly what happened the first time this was written.
+                var isDirectory: ObjCBool = false
+                guard manager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+                      !isDirectory.boolValue
+                else { continue }
                 guard Self.supportedExtension(of: source) != nil else {
                     // A file the viewer cannot open used to be skipped and left where it
                     // was — which made the shared inbox permanently un-drainable. The
@@ -504,8 +514,16 @@ final class FileHistory: ObservableObject {
 
         let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
         let inboxNames = (try? manager.contentsOfDirectory(atPath: inbox.path)) ?? []
+        var inboxFileCount = 0
         for name in inboxNames.sorted() {
             let source = inbox.appendingPathComponent(name)
+            // Same guard as the shared inbox above: a folder here is not a handover,
+            // and passing one to `supportedExtension` would decide by its last dot.
+            var isDirectory: ObjCBool = false
+            guard manager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue
+            else { continue }
+            inboxFileCount += 1
             guard Self.supportedExtension(of: source) != nil else { continue }
             if let entry = importSandboxCopy(at: source, removeSource: true) {
                 imported.append(entry)
@@ -550,7 +568,7 @@ final class FileHistory: ObservableObject {
             // and without the reason they are identical rows that cannot be told apart,
             // which is how a real handover gets misread as a refresh.
             let origin = reason.map { "（\($0)）" } ?? ""
-            note("扫描\(origin)：共享 \(sharedText)｜Inbox \(inboxNames.count) 项｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
+            note("扫描\(origin)：共享 \(sharedText)｜Inbox \(inboxFileCount) 个文件（\(inboxNames.count) 项）｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
         }
 
         if !imported.isEmpty {
