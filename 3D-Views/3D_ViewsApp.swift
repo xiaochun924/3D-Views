@@ -101,6 +101,43 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func applicationDidBecomeActive(_ application: UIApplication) {
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
     }
+
+    /// Receives custom-scheme URLs during scene connection, including cold launch.
+    /// SwiftUI's onOpenURL does not reliably cover this delivery path.
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(
+            name: "Default Configuration",
+            sessionRole: connectingSceneSession.role
+        )
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
+    }
+}
+
+@MainActor
+final class SceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(
+        _ scene: UIScene,
+        willConnectTo session: UISceneSession,
+        options connectionOptions: UIScene.ConnectionOptions
+    ) {
+        handle(connectionOptions.urlContexts, source: "SceneDelegate 冷启动")
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        handle(URLContexts, source: "SceneDelegate")
+    }
+
+    private func handle(_ contexts: Set<UIOpenURLContext>, source: String) {
+        for context in contexts {
+            FileHistory.shared.handleIncomingURL(context.url, source: source)
+        }
+        FileHistory.shared.scheduleInboxSweep(reason: source)
+    }
 }
 
 @main
