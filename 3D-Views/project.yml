@@ -123,35 +123,77 @@ targets:
         # None 会让本 App 从「打开方式」里消失，用户原话「打开方式没有 3dviews了」）。Owner 是
         # 全能签在绝大多数条目上用的值，本项目从未测过。
         #
+        # ---- 2026-10-03：为什么前一轮「三根支柱全对」仍然失败 ----
+        #
+        # 上一轮真机读数里，文档类型 6 条进包了、rank=Owner、就地打开=true、场景代理=SceneDelegate，
+        # 四行全对，结果仍然是「冷启动，无 URL」＋「Documents/Inbox 目录不存在」——系统启动了本 App，
+        # 却没把文件交给它。翻 Apple 的 plist 定义才找到缺的那一件：
+        #
+        #   CFBundleTypeRole —— 可选 Editor / Viewer / Shell / QLGenerator / None，
+        #   **默认值 None**（Apple 原文：Attributes → default = None）。
+        #
+        # 我们一条都没写，于是 6 条声明的角色全是 None，字面意思就是「本 App 对这类文档没有任何角色」。
+        # 而 LSHandlerRank 的定义是「The ranking of this app among apps that declare themselves as
+        # **editors or viewers** of the given file type.」——角色是 None 就意味着我们从未加入那个集合，
+        # Owner 是在一个自己不在的名次表里排名，等于空转。
+        #
+        # 全能签 8 条声明**每一条**都写着 CFBundleTypeRole: Editor。这不是凑数的装饰，是本项目
+        # 一直缺的那一件。所以下面每条都补上 Editor。
+        #
+        # 另外两处照全能签对齐：
+        #   * LSItemContentTypes 的顺序是「自定义类型在前，系统类型在后兜底」。全能签的 zip 条目是
+        #     nsk-sign.nuosike.sign.zip → public.zip-archive → public.archive → public.content → public.data。
+        #     本项目上一轮把自定义类型当成唯一匹配依据，一旦系统没解析出 com.xiaochun.step，整条就匹配不上。
+        #   * UTTypeTagSpecification 除了 public.filename-extension 还带 public.mime-type（全能签每条都有）。
+        #
+        # 第一条「3D 模型」保留 public.data/public.content 覆盖，但同样补上 Editor：它是让本 App 出现在
+        # 「共享」与「打开方式」里的那条宽泛声明，现在也真的是个角色了。
+        #
         # 扩展名白名单仍由运行时决定（Models/FileHistory.swift:101 的 supportedExtension(of:)），
         # 与 Info.plist 无关；这里声明的是「本 App 愿意接手哪类文件」，不是「本 App 能读懂什么」。
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleDocumentTypes:
           - CFBundleTypeName: 3D 模型
+            CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes:
               - public.data
               - public.content
           - CFBundleTypeName: STEP
+            CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.xiaochun.step
+              - public.data
+              - public.content
           - CFBundleTypeName: IGES
+            CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.xiaochun.iges
+              - public.data
+              - public.content
           - CFBundleTypeName: STL
+            CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.xiaochun.stl
+              - public.data
+              - public.content
           - CFBundleTypeName: OBJ
+            CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.xiaochun.obj
+              - public.data
+              - public.content
           - CFBundleTypeName: BREP
+            CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.xiaochun.brep
+              - public.data
+              - public.content
         # 上面引用的自定义类型。每条都 conform 到一个系统既有类型，否则 iOS 会在
         # 「打开方式」里忽略它（全能签的 9 条声明全部是这个写法）。
         UTExportedTypeDeclarations:
@@ -164,6 +206,8 @@ targets:
               public.filename-extension:
                 - step
                 - stp
+              public.mime-type:
+                - application/octet-stream
           - UTTypeIdentifier: com.xiaochun.iges
             UTTypeDescription: IGES 模型
             UTTypeConformsTo:
@@ -173,6 +217,8 @@ targets:
               public.filename-extension:
                 - iges
                 - igs
+              public.mime-type:
+                - application/octet-stream
           - UTTypeIdentifier: com.xiaochun.stl
             UTTypeDescription: STL 模型
             UTTypeConformsTo:
@@ -181,6 +227,8 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - stl
+              public.mime-type:
+                - application/octet-stream
           - UTTypeIdentifier: com.xiaochun.obj
             UTTypeDescription: OBJ 模型
             UTTypeConformsTo:
@@ -189,6 +237,8 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - obj
+              public.mime-type:
+                - application/octet-stream
           - UTTypeIdentifier: com.xiaochun.brep
             UTTypeDescription: BREP 模型
             UTTypeConformsTo:
@@ -197,6 +247,8 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - brep
+              public.mime-type:
+                - application/octet-stream
         # 唯一**没有**恢复的一段是 CFBundleURLTypes（3dviews://）。跳转不再需要它：文档打开
         # 路径由系统启动本 App 并直接把 URL 递到 scene，中间没有「拉起」这个动作，也就用不上
         # scheme。旧 scheme 是配合 extensionContext.open 用的，而那个 API 在分享扩展里不被

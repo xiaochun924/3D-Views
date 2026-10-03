@@ -21,3 +21,8 @@ xcuserdata/
 .build/
 Packages/
 Package.resolved
+
+### Local probes (unpacked third-party IPAs and format experiments) ###
+quannengqian-probe/
+sldasm-probe/
+easm-probe/
