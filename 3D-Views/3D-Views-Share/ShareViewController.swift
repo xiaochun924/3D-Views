@@ -37,6 +37,7 @@ final class ShareViewController: UIViewController {
     private let openButton = UIButton(type: .system)
     private var hasStarted = false
     private var handoffFinished = false
+    private var hostLaunchAttempted = false
 
     override func viewDidLoad() {
         // Left before anything else, including the label. `NSExtensionPrincipalClass`
@@ -115,9 +116,12 @@ final class ShareViewController: UIViewController {
         }
 
         AppGroup.recordHandoff(names: deposited, failures: failures)
+        let opened = await tryToOpenHostApp(deposited: deposited, failures: failures)
         await MainActor.run { [weak self] in
             guard let self else { return }
-            self.statusLabel.text = self.message(deposited: deposited, failures: failures)
+            self.statusLabel.text = self.message(deposited: deposited,
+                                                 failures: failures,
+                                                 hostOpened: opened)
             // The button is the only way out of a share extension that stays alive. It is
             // shown whatever happened, so a failure still leaves something tappable rather
             // than a sheet the user has to dismiss by swiping.
@@ -126,14 +130,43 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    private func message(deposited: [String], failures: [String]) -> String {
+    /// 请求系统把已完成交接的分享返回到主 App。
+    ///
+    /// 这不是把文件再传一次：文件已经在 App Group Inbox，深链只负责唤起宿主；
+    /// 主 App 启动后会按自己的生命周期消费 Inbox。若系统仍拒绝扩展发起的打开请求，
+    /// 仍保留当前可用的“完成”按钮，不能影响已经成功的导入。
+    private func tryToOpenHostApp(deposited: [String], failures: [String]) async -> Bool {
+        guard !hostLaunchAttempted else { return false }
+        hostLaunchAttempted = true
+        guard let url = URL(string: "3dviews://import") else {
+            return false
+        }
+
+        guard let context = extensionContext else {
+            return false
+        }
+        let opened = await withCheckedContinuation { continuation in
+            context.open(url) { didOpen in
+                continuation.resume(returning: didOpen)
+            }
+        }
+        if !opened {
+            AppGroup.recordHandoff(names: deposited, failures: failures + ["主 App 深链未被系统接受"])
+        }
+        return opened
+    }
+
+    private func message(deposited: [String],
+                         failures: [String],
+                         hostOpened: Bool) -> String {
+        let hostLine = hostOpened ? "正在打开 3D Views…" : "请点击“完成”返回"
         switch (deposited.isEmpty, failures.isEmpty) {
         case (false, true):
             return deposited.count == 1
-                ? "已导入 \(deposited[0])\n打开 3D Views 查看"
-                : "已导入 \(deposited.count) 个文件\n打开 3D Views 查看"
+                ? "已导入 \(deposited[0])\n\(hostLine)"
+                : "已导入 \(deposited.count) 个文件\n\(hostLine)"
         case (false, false):
-            return "已导入 \(deposited.count) 个文件，另有 \(failures.count) 个未能读取"
+            return "已导入 \(deposited.count) 个文件，另有 \(failures.count) 个未能读取\n\(hostLine)"
         case (true, _):
             return "没有拿到可导入的文件\n请试试从「文件」App 里分享"
         }
@@ -199,18 +232,9 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Finishing
 
-    /// Closes the extension. The file is already in the shared inbox by the time this can
-    /// be tapped, and the app drains that inbox on activation — so this button only saves
-    /// the user a manual app switch. There is no URL handoff here any more.
-    ///
-    /// The `extensionContext.open` call that used to live here has been removed. On this
-    /// device it never once succeeded: the callback was always `didOpen == false`, so the
-    /// button's only effect was to replace the import result with a failure message. The
-    /// wake-up URL scheme it used (`3dviews://`) is gone from `Info.plist` with it.
-    ///
-    /// The extension also cannot launch the host app on its own. Closing the sheet returns
-    /// the user to where the share started, and the app picks the file up whenever it is
-    /// next opened — which is the part that was measured to work.
+    /// 关闭分享扩展。文件已在共享收件箱中，主 App 会在启动或激活时消费它。
+    /// 自动拉起由 `tryToOpenHostApp()` 先尝试；若系统拒绝扩展发起的深链，
+    /// 这个按钮仍然提供可靠的手动返回路径。
     @objc private func openHostApp() {
         completeExtension()
     }
