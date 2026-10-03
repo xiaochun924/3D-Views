@@ -36,7 +36,35 @@ targets:
       - path: Base.lproj
     dependencies:
       - package: OCCTSwift
-      # 当前版本不嵌入 Share Extension。全能签没有 .appex，文件由系统直接交给主 App 的 SceneDelegate。
+      # 分享接收页是全能签两阶段导入模型的第一阶段：先在分享界面接收文件，
+      # 再由主 App 在 scene 激活时消费 App Group 收件箱。
+      - target: 3D-Views-Share
+      # 当前已恢复嵌入分享扩展：分享页面负责接收文件并写入 App Group，主 App
+      # 在 SceneDelegate 的启动、回前台和激活阶段消费收件箱。下面保留历史失败记录，
+      # 但不再把“扩展未安装”写成当前状态。
+      #
+      # 历史上试过的扩展拉起主 App 方案仍不可用：extensionContext.open 在真机上恒为
+      # didOpen == false，因此扩展只负责完成文件交接，不负责主动打开宿主 App。
+      # 用户点选分享入口后，系统进入扩展的导入页面；扩展完成交接后，由主 App 的
+      # 生命周期消费收件箱并加载文件。
+      #    文件没进来」：Alternate+false 不拷也不递 URL；None+false 能把文件拷进
+      #    Documents/Inbox（用一个系统里无人声明的 .ipa 验证过），代价是「文件」
+      #    App 的「打开方式」列表里从此看不到本 App（用户原话「打开方式没有
+      #    3dviews了」）；Alternate+true 不拷、URL 也没到过
+      #    application(_:open:options:) 或 .onOpenURL 任何一处。
+      #    **但那三组失败的共同原因是第三根支柱缺席**：本 App 当时没有接管 scene，
+      #    而文档打开路径的 URL 恰好只走 scene 的 connectionOptions.urlContexts。
+      #    没有 SceneDelegate 时那条路确实是死的；现在 SceneDelegate 有了
+      #    （3D_ViewsApp.swift），所以那三组读数不再能预言这次的结果 —— 这次
+      #    是首次带着 scene 去走这条路，验证状态为零。
+      #
+      # 2) 分享扩展：扩展自己把文件拷进 App Group 共享收件箱，主 App 每次激活扫描
+      #    那个收件箱。**整条链路不依赖任何 URL 投递**，是至今唯一真机验证过能导入
+      #    的路径（诊断读数：.step 成功导入）。已按用户要求移除嵌入，源码保留。
+      #
+      # 3) 扩展里那个「打开 3D Views」按钮：一直只是加速手段，点它能拉起主 App 就
+      #    立即看到结果，拉不起来（系统拒绝 extensionContext.open，Apple 文档写明
+      #    分享扩展不在支持该方法之列）也没关系。随扩展一起不再参与。
     # App Group 是主 App 与分享扩展唯一能互相看见的地方。注意：IPA 以
     # CODE_SIGNING_ALLOWED=NO 构建，这份 entitlement 不会进包，必须由自签工具
     # 在签名时补上；否则 containerURL(forSecurityApplicationGroupIdentifier:)
