@@ -760,10 +760,135 @@ final class FileHistory: ObservableObject {
     /// of measurements — there was no scene to receive it. `receiveExternalFile` recognises
     /// a file it has already taken, so both doors being knocked on is harmless.
     ///
-    /// There is still no `3dviews://` scheme to special-case: it existed only to serve
-    /// `extensionContext.open`, which a share extension is not allowed to use.
+    /// It dispatches on scheme now. The sentence that used to stand here said there was
+    /// nothing to special-case, on the reasoning that the scheme existed only to serve
+    /// `extensionContext.open`; `CFBundleURLTypes` was restored to the plist afterwards, and
+    /// that sentence became false. An unhandled `3dviews://` URL fell through to the file
+    /// path, was found to carry no CAD extension, and was answered with 「只能打开 STEP、STP…」.
     func handleIncomingURL(_ url: URL, source: String) {
+        if url.scheme?.lowercased() == Self.customScheme {
+            handleCustomScheme(url, source: source)
+            return
+        }
         receiveExternalFile(at: url, source: source)
+    }
+
+    /// The scheme this app registers in `CFBundleURLSchemes` (`project.yml`).
+    static let customScheme = "3dviews"
+
+    /// Handles `3dviews://…` — the one route here that is *addressed* rather than delivered.
+    ///
+    /// Shape: `3dviews://import?file=<the model's address>`. The host is deliberately not
+    /// checked, so `import`, `open` and an empty host all behave the same, and both `file`
+    /// and `url` are accepted as the parameter name. That slack is the point: this route
+    /// exists to be typed into a web page, a note or a shortcut, and refusing a link over a
+    /// synonym is a poor trade for a check nobody benefits from.
+    ///
+    /// An `http(s)` address is downloaded first — see `receiveRemoteFile`. A `file://`
+    /// address goes straight to the local path, which makes this form a plain alias for an
+    /// ordinary file hand-over. Anything else is refused *with the shape that would have
+    /// worked*, because a hand-typed link is the only way to arrive here wrong.
+    private func handleCustomScheme(_ url: URL, source: String) {
+        note("\(source) 收到 \(Self.customScheme)://：\(url.absoluteString)")
+
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            importFailure = "链接无法解析：\(url.absoluteString)"
+            return
+        }
+
+        let addressed = components.queryItems?
+            .first { $0.name == "file" || $0.name == "url" }?
+            .value
+
+        guard let addressed, !addressed.isEmpty else {
+            importFailure = "链接里没有模型地址。正确写法：\(Self.customScheme)://import?file=https://…/part.step"
+            note("  拒绝：没有 file 参数")
+            return
+        }
+
+        guard let target = URL(string: addressed) else {
+            importFailure = "链接里的地址无法解析：\(addressed)"
+            note("  拒绝：参数不是合法地址")
+            return
+        }
+
+        switch target.scheme?.lowercased() {
+        case "http", "https":
+            Task { await self.receiveRemoteFile(at: target, source: source) }
+        case "file":
+            receiveExternalFile(at: target, source: "\(source)（\(Self.customScheme) 转本地）")
+        default:
+            importFailure = "只支持 http／https／file 地址，收到「\(target.scheme ?? "无 scheme")」。"
+            note("  拒绝：scheme 不支持")
+        }
+    }
+
+    /// Downloads a model named by an `http(s)` address, then imports it through the same
+    /// door a locally handed-over file uses.
+    ///
+    /// The download deliberately imports nothing itself. It lands the bytes under the remote
+    /// file's own name and calls `receiveExternalFile` — so the format gate, the dedup, the
+    /// copy into `Documents/Imported`, the history row and the `pendingOpen` navigation all
+    /// stay in exactly one place, and the remote route cannot drift away from the local one.
+    ///
+    /// The name has to be restored by hand. `URLSession.download(from:)` writes to a randomly
+    /// named file in the system temp directory, and every gate downstream reads the *path
+    /// extension* to decide what a file is: a random name would be refused as an unknown
+    /// type. That temp file is also removed as soon as this returns, whichever way it
+    /// returns, so it is moved somewhere this function owns before anything else touches it.
+    @discardableResult
+    func receiveRemoteFile(at url: URL, source: String) async -> RecentFile? {
+        note("\(source) 下载：\(url.absoluteString)")
+
+        // Refused before the download rather than after it: an address whose own file name
+        // cannot be a model should not cost the user megabytes of mobile data to rule out.
+        guard Self.looksLikeCADFile(url) else {
+            if let refusal = Self.unsupportedFormatMessage(for: url) {
+                importFailure = refusal
+            } else {
+                importFailure = "链接结尾不是可打开的文件名（\(url.lastPathComponent)）。"
+            }
+            note("  拒绝：链接文件名不是支持的格式")
+            return nil
+        }
+
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteImport-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        } catch {
+            importFailure = "下载失败：无法建立临时目录（\(error.localizedDescription)）。"
+            note("  失败：临时目录")
+            return nil
+        }
+        defer { try? FileManager.default.removeItem(at: staging) }
+
+        var downloaded: URL?
+        do {
+            let (temporary, response) = try await URLSession.shared.download(from: url)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                importFailure = "下载失败：服务器返回 \(http.statusCode)。"
+                note("  失败：HTTP \(http.statusCode)")
+                return nil
+            }
+            let name = url.lastPathComponent.isEmpty ? "downloaded.step" : url.lastPathComponent
+            let landed = staging.appendingPathComponent(name)
+            try FileManager.default.moveItem(at: temporary, to: landed)
+            downloaded = landed
+        } catch {
+            importFailure = "下载失败：\(error.localizedDescription)"
+            note("  失败：\(error.localizedDescription)")
+            return nil
+        }
+
+        guard let downloaded else {
+            importFailure = "下载失败：没有得到文件。"
+            note("  失败：下载未落地")
+            return nil
+        }
+
+        note("  下载完成：\(downloaded.lastPathComponent)")
+        return receiveExternalFile(at: downloaded, source: "\(source) 下载完成")
     }
 
     /// How many files the share extension has left waiting. Shown in `SettingsView`.
