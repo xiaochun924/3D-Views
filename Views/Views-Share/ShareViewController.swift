@@ -146,11 +146,12 @@ final class ShareViewController: UIViewController {
                 self.openButton.isHidden = false
                 self.openButton.isEnabled = true
             } else {
-                // The file is already in the inbox and the app drains it on activation,
-                // so the sheet has nothing left to wait for. Close it and let the app
-                // take over, instead of making the user tap 完成 on a finished job.
+                // The file is already durable in the App Group inbox. Complete the
+                // extension now; host wake-up is only an optimization and must not gate
+                // the handoff because iOS may reject or omit its callback.
                 self.openButton.isHidden = true
                 self.requestHostWakeup()
+                self.scheduleAutoClose()
             }
         }
     }
