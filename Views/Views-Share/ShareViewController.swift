@@ -180,13 +180,10 @@ final class ShareViewController: UIViewController {
             return
         }
 
-        // Use the supported extension API. Keep one delayed retry for devices that
-        // momentarily reject the request while the share sheet is dismissing.
+        // Use the supported extension API, then the responder-chain fallback inside
+        // `openHostAppRequest`. Deliberately a single attempt: a rejected wake-up is
+        // retried by the user via the button rather than by the sheet itself.
         openHostAppRequest(url)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self, !self.hostWakeupResolved else { return }
-            self.openHostAppRequest(url)
-        }
 
         wakeupTimeoutScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
