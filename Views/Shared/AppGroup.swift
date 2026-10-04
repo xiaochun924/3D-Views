@@ -1,4 +1,4 @@
-﻿//
+//
 //  AppGroup.swift
 //  Views
 //
@@ -62,6 +62,20 @@ enum AppGroup {
         return inbox
     }
 
+    /// The folder an inbox parks what the app cannot read, so the inbox itself can be
+    /// drained.
+    ///
+    /// A format with no reader cannot be imported and must not be deleted either — this
+    /// copy is the only one the app holds of what the user shared — so it is moved aside:
+    /// still findable, no longer standing in the way of the files that can be imported.
+    /// The name lives here because the app parks into two different inboxes (the shared
+    /// container and `Documents/Inbox`) and has to collect both the same way.
+    static let parkingFolderName = "Unsupported"
+
+    static func parkingURL(in inbox: URL) -> URL {
+        inbox.appendingPathComponent(parkingFolderName, isDirectory: true)
+    }
+
     /// Copies one file into the shared inbox and returns the name it landed under.
     ///
     /// Always a copy: the URL the share sheet hands over points at a temporary file
@@ -115,11 +129,30 @@ enum AppGroup {
 
     /// Whether anything is waiting in the shared inbox — the count `SettingsView`
     /// shows and the app uses to decide whether a sweep is worth logging.
+    ///
+    /// Files only, and that is the whole fix. The inbox also holds the `Unsupported`
+    /// parking folder the app keeps for shares it has no reader for, and counting that
+    /// folder as a waiting file is not a small mistake: it made 「收件箱待取」 read 1
+    /// forever after a single unsupported share, so every later handover looked like it
+    /// had failed against a number that could never fall back to zero.
     static func pendingFileCount() -> Int {
+        pendingFileNames().count
+    }
+
+    /// The files waiting in the shared inbox, folders excluded. An unreachable container
+    /// reads as "nothing waiting" rather than as an error, because that is what the
+    /// caller can act on.
+    static func pendingFileNames() -> [String] {
         guard let inbox = inboxURL,
               let names = try? FileManager.default.contentsOfDirectory(atPath: inbox.path)
-        else { return 0 }
-        return names.count
+        else { return [] }
+        let manager = FileManager.default
+        return names.filter { name in
+            var isDirectory: ObjCBool = false
+            let path = inbox.appendingPathComponent(name).path
+            guard manager.fileExists(atPath: path, isDirectory: &isDirectory) else { return false }
+            return !isDirectory.boolValue
+        }
     }
 
     // MARK: - Extension liveness

@@ -106,8 +106,95 @@ final class FileHistory: ObservableObject {
     }
 
     private init() {
-        load()
+        // The persisted log is read *before* anything below, not after. `load()` and the
+        // storage collection that follows it report through `note()`, which writes the whole
+        // array back — so reading the log afterwards would hand this build the line it had
+        // just written instead of the history it inherited.
         handoverLog = UserDefaults.standard.stringArray(forKey: handoverLogKey) ?? []
+        // Recovery before `load()`, deliberately: a file restored here is back on disk by the
+        // time the history is filtered for missing files, so a row that names it is not
+        // dropped a moment before the file reappears.
+        let recovered = recoverInterruptedImports()
+        load()
+        adoptRecoveredImports(recovered)
+    }
+
+    /// Finishes an import the previous process was killed in the middle of, and returns the
+    /// entries that had to be put back.
+    ///
+    /// Everything in `Imported/.staging` is a *complete* copy — it is written in full before
+    /// the destination is touched — so the only question is what to do with each one. If the
+    /// destination exists, the import finished and the crumb is just the leftover of a swap
+    /// that got there; if it does not, the process died between the two renames and this is
+    /// the import. The caller adds the rows, because a file that came back must be listed —
+    /// otherwise the very next collection pass would see an unreferenced file and delete what
+    /// recovery just restored.
+    private func recoverInterruptedImports() -> [RecentFile] {
+        let manager = FileManager.default
+        let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let importedDir = docs.appendingPathComponent("Imported", isDirectory: true)
+        let staging = Self.stagingDirectory(in: importedDir)
+        guard let names = try? manager.contentsOfDirectory(atPath: staging.path) else { return [] }
+
+        var recovered: [RecentFile] = []
+        var stranded = 0
+        for name in names.sorted() {
+            let crumb = staging.appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            guard manager.fileExists(atPath: crumb.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue
+            else { continue }
+
+            let destination = importedDir.appendingPathComponent(name)
+            if manager.fileExists(atPath: destination.path) {
+                removeQuietly(crumb)
+                continue
+            }
+            do {
+                try manager.moveItem(at: crumb, to: destination)
+                recovered.append(
+                    RecentFile(
+                        id: UUID(),
+                        fileName: name,
+                        localPath: name,
+                        // The file's own timestamp, which is the only honest answer for when
+                        // this import happened: the row that would have carried the real date
+                        // was never written.
+                        openedAt: Self.modified(destination)
+                    )
+                )
+                ownedImportNames.insert(name)
+                note("  恢复中断的导入：\(name)")
+            } catch {
+                // Left where it is, and the folder is then left alone: a crumb that cannot be
+                // moved is still the only complete copy of that file.
+                stranded += 1
+                note("  恢复失败：\(name)（\(error.localizedDescription)）")
+            }
+        }
+
+        if stranded == 0 { try? manager.removeItem(at: staging) }
+        return recovered
+    }
+
+    /// Lists the imports recovery put back, then runs the launch's one collection pass.
+    ///
+    /// A recovered file must get a row here or it is indistinguishable from an orphan, and the
+    /// collection pass that follows is exactly what would delete it.
+    private func adoptRecoveredImports(_ recovered: [RecentFile]) {
+        if !recovered.isEmpty {
+            let known = Set(files.map(\.localPath))
+            let fresh = recovered.filter { !known.contains($0.localPath) }
+            if !fresh.isEmpty {
+                files = (fresh + files).sorted { $0.openedAt > $1.openedAt }
+                if files.count > 20 { files = Array(files.prefix(20)) }
+                save()
+            }
+        }
+        // Collection last, and the launch's only pass: everything a launch can make
+        // collectable — a dropped row, a restored file, a file the user deleted from Files —
+        // has happened by the time this runs.
+        pruneStorage(verbose: false)
     }
 
     /// Records one line of handover evidence. Kept to a short window so the 诊断
@@ -473,25 +560,37 @@ final class FileHistory: ObservableObject {
         return found
     }
 
+    /// Copies a file into `Documents/Imported` and makes it the newest history entry.
+    ///
+    /// The copy is **staged**: the new bytes are written in full under `Imported/.staging/`
+    /// and only then take the destination's place. The previous version removed the
+    /// destination and then copied onto it, so a copy that failed destroyed the working copy
+    /// already sitting there — the one case where a failed re-import cost the user more than
+    /// the import was worth. A process killed inside the swap leaves the complete file in the
+    /// staging folder, and `recoverInterruptedImports` finishes the job on the next launch.
     func addFile(sourceURL: URL) throws -> RecentFile {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let importedDir = docs.appendingPathComponent("Imported")
-        try? FileManager.default.createDirectory(at: importedDir, withIntermediateDirectories: true)
+        let manager = FileManager.default
+        let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let importedDir = docs.appendingPathComponent("Imported", isDirectory: true)
+        try? manager.createDirectory(at: importedDir, withIntermediateDirectories: true)
 
-        let dest = importedDir.appendingPathComponent(sourceURL.lastPathComponent)
-        try? FileManager.default.removeItem(at: dest)
-        // The copy *is* the import. This used to be `try?`, which failed into silence
-        // while the entry was still listed and navigated to afterwards — so a failed
-        // import left behind a recent row that opened onto nothing, which looks exactly
-        // like the import never having run. A throw here can be reported. The
-        // `removeItem` above stays best-effort: a file that was not there is not a
-        // problem.
-        try FileManager.default.copyItem(at: sourceURL, to: dest)
+        let name = sourceURL.lastPathComponent
+        let dest = importedDir.appendingPathComponent(name)
+
+        // A source that already *is* the destination: re-importing a file out of
+        // `Imported` itself, which is reachable in Files under 「我的 iPhone」→「3D Views」
+        // because the app declares `UIFileSharingEnabled`. Copying a file onto itself is not
+        // a no-op — the old code removed the destination first, so the source was gone
+        // before it could be read and the import failed *and* took the working copy with it.
+        // There is nothing to copy in this case; the row is refreshed below.
+        if sourceURL.standardizedFileURL.path != dest.standardizedFileURL.path {
+            try stage(sourceURL, at: dest, in: importedDir)
+        }
 
         let entry = RecentFile(
             id: UUID(),
-            fileName: sourceURL.lastPathComponent,
-            localPath: sourceURL.lastPathComponent,
+            fileName: name,
+            localPath: name,
             openedAt: Date()
         )
         // The destination path is a file's identity here, so importing the same name again
@@ -500,9 +599,45 @@ final class FileHistory: ObservableObject {
         // picked twice — lists twice.
         files.removeAll { $0.localPath == entry.localPath }
         files.insert(entry, at: 0)
+        // This list *is* the retention policy, and from here on it is a real one: the 21st
+        // import drops the oldest row and now also releases that row's bytes on disk. Until
+        // this, the row was dropped and the file stayed put, so `Imported` grew without
+        // bound behind a list that never showed more than 20 entries.
         if files.count > 20 { files = Array(files.prefix(20)) }
+        ownedImportNames.insert(name)
         save()
+        // Collection rides along with the moment the referenced set changed, which is the
+        // only moment anything becomes collectable.
+        pruneStorage(verbose: false)
         return entry
+    }
+
+    /// Copies `source` into place, writing the whole file first and only then replacing what
+    /// the destination name already holds.
+    ///
+    /// The order is the point. The copy lands in full under `Imported/.staging/` before the
+    /// destination is touched at all, so a copy that fails — a truncated provider file, a
+    /// permission the sandbox will not grant — fails *before* it can destroy the working copy
+    /// sitting there, which is exactly what remove-then-copy did. From there the swap is two
+    /// renames inside one directory.
+    ///
+    /// A process killed between those renames leaves the complete new file in the staging
+    /// folder with no destination to show for it. That is left alone deliberately rather than
+    /// cleaned up: it is the only complete copy of that file, and `recoverInterruptedImports`
+    /// puts it in place on the next launch.
+    private func stage(_ source: URL, at destination: URL, in importedDir: URL) throws {
+        let manager = FileManager.default
+        let staging = Self.stagingDirectory(in: importedDir)
+        try manager.createDirectory(at: staging, withIntermediateDirectories: true)
+
+        let crumb = staging.appendingPathComponent(destination.lastPathComponent)
+        // A crumb under this name can only be a leftover: recovery empties this folder before
+        // any import runs, and only one import is ever in flight on the main actor.
+        try? manager.removeItem(at: crumb)
+        try manager.copyItem(at: source, to: crumb)
+
+        try? manager.removeItem(at: destination)
+        try manager.moveItem(at: crumb, to: destination)
     }
 
     /// Receives a file handed over from outside the app — the share sheet's
@@ -595,14 +730,18 @@ final class FileHistory: ObservableObject {
         var fingerprints = sandboxScanFingerprints
         var gainedFingerprint = false
 
-        // The App Group inbox first. Nothing embeds a share extension at the moment, so this
-        // loop normally finds nothing — it is kept because the extension is a two-line
-        // change away from coming back (see project.yml), and this is the half that picks up
-        // after it. When it *is* live it is the route that asks nothing of the system: the
-        // extension did the copy itself, and this just picks it up.
+        // The App Group inbox first, and it is the live route: `project.yml` embeds the
+        // share extension in the app (the main target's dependencies list
+        // `- target: Views-Share`), so this is the half that picks up what the extension
+        // deposited. It asks nothing of the system — the extension did the copy itself —
+        // which is why it is read before any of the routes that depend on iOS handing the
+        // app a URL.
         var sharedCount = -1
         if let shared = AppGroup.ensureInbox() {
-            let names = (try? manager.contentsOfDirectory(atPath: shared.path)) ?? []
+            // Files only. The inbox also holds the `Unsupported` parking folder below, and
+            // counting that folder made 「收件箱待取」 stick at 1 after a single share of a
+            // format the viewer cannot read.
+            let names = AppGroup.pendingFileNames()
             sharedCount = names.count
             for name in names.sorted() {
                 let source = shared.appendingPathComponent(name)
@@ -624,9 +763,7 @@ final class FileHistory: ObservableObject {
                     // reads as a failure against that stale count. Moving it aside keeps
                     // the inbox honest: the file is still there if it is ever wanted, but
                     // it no longer stands in the way of the ones that can be imported.
-                    let parked = shared.appendingPathComponent("Unsupported", isDirectory: true)
-                    try? manager.createDirectory(at: parked, withIntermediateDirectories: true)
-                    try? manager.moveItem(at: source, to: parked.appendingPathComponent(name))
+                    park(source, in: shared)
                     note("  收件箱移出（格式不支持）：\(name)")
                     continue
                 }
@@ -648,7 +785,17 @@ final class FileHistory: ObservableObject {
                   !isDirectory.boolValue
             else { continue }
             inboxFileCount += 1
-            guard Self.supportedExtension(of: source) != nil else { continue }
+            guard Self.supportedExtension(of: source) != nil else {
+                // The same treatment the shared inbox gives an unreadable format. Leaving it
+                // in place is what made this Inbox undrainable: iOS expects an app to take
+                // what it puts here, and a file that can never be imported would be
+                // re-reported by every scan, for as long as the app stays installed. The two
+                // inboxes used to disagree about this, which is the kind of difference that
+                // only shows up as "the count is stuck" months later.
+                park(source, in: inbox)
+                note("  Documents/Inbox 移出（格式不支持）：\(name)")
+                continue
+            }
             if let entry = importSandboxCopy(at: source, removeSource: true) {
                 imported.append(entry)
             }
@@ -686,14 +833,25 @@ final class FileHistory: ObservableObject {
         // retries are exactly where a file that landed after launch turns up, and an
         // import happening there must not be the one event the log omits.
         if verbose || !imported.isEmpty {
-            let sharedText = sharedCount < 0 ? "容器不可用" : "\(sharedCount) 项"
+            let sharedText = sharedCount < 0 ? "不可用" : "\(sharedCount) 个"
             // Which pass this was. Several scans run within a second of each other —
             // launch, return to the foreground, the sweep's retries, this screen opening —
             // and without the reason they are identical rows that cannot be told apart,
             // which is how a real handover gets misread as a refresh.
             let origin = reason.map { "（\($0)）" } ?? ""
-            note("扫描\(origin)：共享 \(sharedText)｜Inbox \(inboxFileCount) 个文件（\(inboxNames.count) 项）｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
+            // One number per folder and nothing else. The counts used to carry their own
+            // parenthetical total (`Inbox 0 个文件（2 项）`), which existed to expose the
+            // `Unsupported` parking folder sitting in the directory — but that folder is
+            // excluded from both counts now, so the two numbers could only ever agree, and
+            // agreeing twice reads as a discrepancy to anyone scanning the log. The names
+            // behind these numbers are in 目录实况 of the copied report.
+            note("扫描\(origin)：共享 \(sharedText)｜收件箱 \(inboxFileCount) 个｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
         }
+
+        // Collection rides along with a real scan — launch, return to the foreground, the
+        // 重新扫描 button — and deliberately not with the sweep's silent retries, which run
+        // three more times inside a couple of seconds of every activation.
+        if verbose { pruneStorage(verbose: true) }
 
         if !imported.isEmpty {
             importFailure = nil
@@ -708,14 +866,17 @@ final class FileHistory: ObservableObject {
     /// 调用本方法取走并导入到自己的沙盒；重复调用是幂等的。
     @discardableResult
     func consumePendingShareImportIfNeeded(reason: String) -> [RecentFile] {
+        // The reason is bracketed like every other line that carries one. This read
+        // 「分享交接消费冷启动」, a sentence the log had to be split by eye, and the screen
+        // now puts its own timestamp and icon around this text.
         if let handoff = AppGroup.lastHandoff {
             let names = handoff.names.isEmpty ? "无" : handoff.names.joined(separator: "、")
             let failures = handoff.failures.isEmpty ? "无" : handoff.failures.joined(separator: "、")
-            note("分享交接消费\(reason)：清单=\(names)｜失败=\(failures)｜收件箱待取=\(AppGroup.pendingFileCount())")
+            note("扩展交接（\(reason)）：\(names)｜失败 \(failures)｜待取 \(AppGroup.pendingFileCount())")
         } else {
-            note("分享交接消费\(reason)：无交接清单｜收件箱待取=\(AppGroup.pendingFileCount())")
+            note("扩展交接（\(reason)）：无交接清单｜待取 \(AppGroup.pendingFileCount())")
         }
-        return importFromSandbox(reason: "分享交接\(reason)")
+        return importFromSandbox(reason: "交接·\(reason)")
     }
 
     /// The sweep currently waiting to run its retries, so a burst of activation
@@ -1010,12 +1171,274 @@ final class FileHistory: ObservableObject {
         save()
     }
 
+    // MARK: - Storage collection
+
+    /// The names the app itself put into `Documents/Imported`.
+    ///
+    /// Collection has to tell two unreferenced files apart: one this app imported and then
+    /// dropped from history, and one somebody placed in the folder by hand. Both have no
+    /// row, and deleting the second would destroy something the app never owned — the folder
+    /// is browsable in Files because the app declares `UIFileSharingEnabled`. Only a name
+    /// recorded here is ever collected.
+    private var ownedImportNames: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: ownedImportsKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue).sorted(), forKey: ownedImportsKey) }
+    }
+
+    /// Whether `files` currently describes what is on disk.
+    ///
+    /// False until `load()` has read the stored history successfully. It is the interlock
+    /// that keeps an unreadable history from being read as "nothing is referenced" — with
+    /// garbage in that defaults entry, collection would otherwise delete every import the
+    /// user has.
+    private var historyIsAuthoritative = false
+
+    private let ownedImportsKey = "OwnedImportNames"
+
+    /// Where a staged import waits before it takes the destination's name: inside `Imported`
+    /// so the final move is a rename within one directory, and dot-named so it stays out of
+    /// the way in Files.
+    private static let stagingFolderName = ".staging"
+
+    private static func stagingDirectory(in importedDir: URL) -> URL {
+        importedDir.appendingPathComponent(stagingFolderName, isDirectory: true)
+    }
+
+    /// How long a leftover `tmp/` staging folder is left alone: long enough that no live
+    /// import could own it, short enough that a crash does not hold the disk for days.
+    private static let tempStagingMaxAge: TimeInterval = 24 * 60 * 60
+
+    /// The names of the temporary folders two other code paths create and normally clean up
+    /// themselves. Named here because collection recognises them by exactly these prefixes.
+    private static let remoteStagingPrefix = "RemoteImport-"
+    private static let sldprtStagingPrefix = "sldprt-"
+
+    /// How much of a parking folder is kept, and for how long the rest survives.
+    private static let parkingKeepNewest = 20
+    private static let parkingMaxAge: TimeInterval = 30 * 24 * 60 * 60
+
+    /// The one entry point for storage collection, so every caller collects the same things
+    /// in the same order.
+    ///
+    /// Called where the referenced set changes — the history being restored, a file being
+    /// imported, a scan being run — rather than on a timer. Those are the only moments
+    /// anything becomes collectable, and a viewer that is open for seconds at a time would
+    /// spend most of a timer's ticks finding nothing.
+    private func pruneStorage(verbose: Bool) {
+        let imports = pruneImportedStorage()
+        let fingerprints = pruneStaleFingerprints()
+
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var parked = 0
+        // The shared inbox is collected through its URL rather than through `ensureInbox()`:
+        // collection is not a reason to create a folder.
+        if let shared = AppGroup.inboxURL { parked += pruneParking(in: shared) }
+        parked += pruneParking(in: docs.appendingPathComponent("Inbox", isDirectory: true))
+        let staging = pruneStagingDirectories()
+
+        guard verbose, imports + parked + staging + fingerprints > 0 else { return }
+        note("清理：Imported 回收 \(imports) 个｜停车目录 \(parked) 个｜临时目录 \(staging) 个｜指纹 \(fingerprints) 条")
+    }
+
+    /// Releases the bytes of imports that history no longer refers to, plus the crumbs an
+    /// interrupted import can leave behind.
+    ///
+    /// This is what makes the 20-entry list an actual retention policy. The row for the 21st
+    /// oldest import was always dropped; its file was not, so `Imported` grew a file at a
+    /// time behind a list that never showed more than 20 — invisible from inside the app,
+    /// and only obvious to anyone who opened the folder in Files.
+    @discardableResult
+    private func pruneImportedStorage() -> Int {
+        guard historyIsAuthoritative else { return 0 }
+
+        let manager = FileManager.default
+        let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let importedDir = docs.appendingPathComponent("Imported", isDirectory: true)
+        guard let names = try? manager.contentsOfDirectory(atPath: importedDir.path) else { return 0 }
+
+        let live = Set(files.map(\.localPath))
+        let owned = ownedImportNames.union(live)
+        var removed = 0
+        var surviving = Set<String>()
+
+        for name in names {
+            let url = importedDir.appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            // Folders are skipped, which is what keeps `.staging` out of this loop: it is
+            // emptied by recovery at launch, not by collection.
+            guard manager.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue
+            else { continue }
+
+            guard owned.contains(name), !live.contains(name) else {
+                surviving.insert(name)
+                continue
+            }
+            if removeQuietly(url) { removed += 1 }
+        }
+
+        // The ownership record only has to describe what is actually in the folder, or it
+        // would grow a name at a time for as long as the app is installed.
+        let stillOwned = owned.intersection(surviving)
+        if stillOwned != ownedImportNames { ownedImportNames = stillOwned }
+        return removed
+    }
+
+    /// Keeps one inbox's parking folder from turning into an archive nobody ever opens.
+    ///
+    /// Parking is what makes an inbox drainable, and the parked folder was itself never
+    /// collected: a user who keeps sharing a format this viewer cannot read grew it one file
+    /// at a time, forever. The newest `parkingKeepNewest` are kept whatever their age; the
+    /// rest go once they pass `parkingMaxAge`. Nothing that exists *only* here is lost —
+    /// parking moves a copy iOS made of a file whose original is still where the user shared
+    /// it from.
+    @discardableResult
+    private func pruneParking(in inbox: URL) -> Int {
+        let manager = FileManager.default
+        let parked = AppGroup.parkingURL(in: inbox)
+        guard let names = try? manager.contentsOfDirectory(atPath: parked.path), !names.isEmpty else {
+            return 0
+        }
+
+        var entries: [(url: URL, at: Date)] = []
+        for name in names {
+            let url = parked.appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            guard manager.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue
+            else { continue }
+            entries.append((url: url, at: Self.modified(url)))
+        }
+        entries.sort { $0.at > $1.at }
+
+        let cutoff = Date().addingTimeInterval(-Self.parkingMaxAge)
+        var removed = 0
+        for (index, entry) in entries.enumerated()
+        where index >= Self.parkingKeepNewest || entry.at < cutoff {
+            if removeQuietly(entry.url) { removed += 1 }
+        }
+        return removed
+    }
+
+    /// Removes the temporary directories an earlier process left behind.
+    ///
+    /// `receiveRemoteFile` cleans its own staging folder with a `defer`, and the viewer
+    /// removes the STEP it converts a SolidWorks part into — but a `defer` does not run when
+    /// the app is killed, so a download or a conversion interrupted by a crash leaves the
+    /// whole file in `tmp/` until the system gets round to reclaiming it. The two prefixes
+    /// are checked before anything is deleted: this must never reach outside the app's own
+    /// staging.
+    @discardableResult
+    private func pruneStagingDirectories() -> Int {
+        let manager = FileManager.default
+        let staging = manager.temporaryDirectory
+        guard let names = try? manager.contentsOfDirectory(atPath: staging.path) else { return 0 }
+
+        let cutoff = Date().addingTimeInterval(-Self.tempStagingMaxAge)
+        var removed = 0
+        for name in names
+        where name.hasPrefix(Self.remoteStagingPrefix) || name.hasPrefix(Self.sldprtStagingPrefix) {
+            let url = staging.appendingPathComponent(name)
+            guard Self.modified(url) < cutoff else { continue }
+            if removeQuietly(url) { removed += 1 }
+        }
+        return removed
+    }
+
+    /// Drops scan fingerprints whose file is no longer there.
+    ///
+    /// A fingerprint can only ever answer "have I already taken this exact file", and for a
+    /// path that no longer exists it cannot answer anything — it just rides along in the
+    /// defaults entry until the 200-entry cap pushes it out, making the set unreadable as a
+    /// picture of what is under `Documents` in the meantime.
+    @discardableResult
+    private func pruneStaleFingerprints() -> Int {
+        let fingerprints = sandboxScanFingerprints
+        let existing = Set(fingerprints.filter { mark in
+            guard let path = mark.split(separator: "|", maxSplits: 1).first else { return false }
+            return FileManager.default.fileExists(atPath: String(path))
+        })
+        guard existing.count != fingerprints.count else { return 0 }
+        sandboxScanFingerprints = existing
+        return fingerprints.count - existing.count
+    }
+
+    /// Moves one un-importable file out of an inbox and into that inbox's parking folder,
+    /// under a name that is still free there.
+    ///
+    /// The free name is not a detail: the same document shared twice parks twice, and
+    /// `moveItem` onto an existing name fails — which would leave the second copy in the
+    /// inbox for good, the exact state parking exists to prevent.
+    private func park(_ source: URL, in inbox: URL) {
+        let manager = FileManager.default
+        let parked = AppGroup.parkingURL(in: inbox)
+        try? manager.createDirectory(at: parked, withIntermediateDirectories: true)
+        try? manager.moveItem(at: source, to: Self.freeURL(for: source.lastPathComponent, in: parked))
+    }
+
+    /// A URL in `directory` that no file occupies, suffixing `-2`, `-3`… as needed. The same
+    /// rule `AppGroup` applies to a deposit, for the same reason: two files must both
+    /// survive the arrival of the second.
+    private static func freeURL(for name: String, in directory: URL) -> URL {
+        let manager = FileManager.default
+        var candidate = directory.appendingPathComponent(name)
+        guard manager.fileExists(atPath: candidate.path) else { return candidate }
+
+        let ext = (name as NSString).pathExtension
+        let stem = ext.isEmpty ? name : (name as NSString).deletingPathExtension
+        var index = 2
+        while manager.fileExists(atPath: candidate.path) {
+            let next = ext.isEmpty ? "\(stem)-\(index)" : "\(stem)-\(index).\(ext)"
+            candidate = directory.appendingPathComponent(next)
+            index += 1
+        }
+        return candidate
+    }
+
+    /// Removes `url` and reports whether it is gone afterwards. `try? removeItem` alone
+    /// cannot: it counts a removal that failed as a removal that happened, which is the kind
+    /// of quiet overstatement this file has paid for before.
+    private func removeQuietly(_ url: URL) -> Bool {
+        let manager = FileManager.default
+        do {
+            try manager.removeItem(at: url)
+            return true
+        } catch {
+            return !manager.fileExists(atPath: url.path)
+        }
+    }
+
+    /// When a file was last written, or `distantPast` when that cannot be read — so an
+    /// unreadable timestamp never reads as "just now" and keeps something alive forever.
+    private static func modified(_ url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            ?? .distantPast
+    }
+
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey),
-              let decoded = try? JSONDecoder().decode([RecentFile].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey) else {
+            // No stored history at all: nothing is referenced, and that reading *is*
+            // authoritative. Collection still runs afterwards, because an import interrupted
+            // before its first save can leave a complete file in the staging folder.
+            historyIsAuthoritative = true
             return
         }
-        files = decoded.filter { FileManager.default.fileExists(atPath: $0.fileURL.path) }
+        guard let decoded = try? JSONDecoder().decode([RecentFile].self, from: data) else {
+            // A defaults entry that cannot be decoded says nothing about which files are
+            // still referenced. Reading it as "no rows, therefore nothing is referenced"
+            // would delete every import on disk, so `historyIsAuthoritative` stays false and
+            // collection is skipped rather than guessed at.
+            return
+        }
+        let live = decoded.filter { FileManager.default.fileExists(atPath: $0.fileURL.path) }
+        files = live
+        historyIsAuthoritative = true
+        // Rows whose file is gone used to stay in the defaults entry forever, re-filtered on
+        // every launch, which left the list the app shows and the list it stores as two
+        // different things. Persisting the filtered list is what makes the pruning real — and
+        // it has to happen before collection, which reads `files` as the set of paths that
+        // must survive.
+        if live.count != decoded.count { save() }
     }
 
     private func save() {
