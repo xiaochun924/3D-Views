@@ -59,7 +59,16 @@ final class ShareViewController: UIViewController {
         // the extension dies without running a line of this file — which looks exactly
         // like the extension never having been launched. This timestamp is what tells
         // those two apart from the app's side.
-        AppGroup.recordExtensionStart()
+        //
+        // The write is dispatched off the main thread deliberately. The *first* access to
+        // the App Group (which `UserDefaults(suiteName:)` triggers) mounts the shared
+        // container, and on a cold extension launch that mount is slow enough that the
+        // system watchdog can kill the extension — the "first share after install
+        // crashes, the second one works" symptom. The timestamp only needs to exist
+        // before the handoff record is read, so it is written asynchronously.
+        Task.detached {
+            AppGroup.recordExtensionStart()
+        }
 
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -112,10 +121,24 @@ final class ShareViewController: UIViewController {
         // anything. That failure used to look identical to success: "正在导入…" for a
         // second, then the sheet closes and nothing has happened anywhere. Saying it here
         // is the only place the user can see it, since the app has nothing to look at.
-        guard AppGroup.isAvailable else {
-            AppGroup.recordHandoff(names: [], failures: ["共享容器不可用"])
+        //
+        // The check itself is dispatched off the main actor. Reading `containerURL` is
+        // what mounts the shared container on first access; on a cold launch that mount
+        // can take long enough for the watchdog to kill the extension mid-`viewDidAppear`
+        // — the "first share after install crashes" symptom. `viewDidLoad` already
+        // started the mount through `recordExtensionStart`, so by the time this runs the
+        // container is usually warm; keeping the check off the main actor removes the
+        // remaining stall on the very first launch.
+        let containerAvailable = await Task.detached { AppGroup.isAvailable }.value
+        guard containerAvailable else {
+            // Recorded off the main actor for the same reason as the check above: the
+            // failure path still touches the shared container for the first time.
+            let message = "无法导入：共享容器不可用\n当前安装包的签名里没有 \(AppGroup.identifier)"
+            await Task.detached {
+                AppGroup.recordHandoff(names: [], failures: ["共享容器不可用"])
+            }.value
             await MainActor.run { [weak self] in
-                self?.statusLabel.text = "无法导入：共享容器不可用\n当前安装包的签名里没有 \(AppGroup.identifier)"
+                self?.statusLabel.text = message
                 self?.openButton.isHidden = false
                 self?.openButton.isEnabled = true
             }
@@ -284,6 +307,7 @@ final class ShareViewController: UIViewController {
     private func depositURL(from provider: NSItemProvider,
                             typeIdentifier: String) async -> String? {
         await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            let gate = ContinuationGate()
             provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, _ in
                 let url: URL?
                 if let itemURL = item as? NSURL {
@@ -294,11 +318,18 @@ final class ShareViewController: UIViewController {
                     url = nil
                 }
                 guard let url else {
-                    continuation.resume(returning: nil)
+                    gate.resume(continuation, value: nil)
                     return
                 }
                 // Copy while the provider owns the temporary/security-scoped URL.
-                continuation.resume(returning: AppGroup.deposit(fileAt: url))
+                gate.resume(continuation, value: AppGroup.deposit(fileAt: url))
+            }
+            // On a cold extension launch `loadItem` can be delayed or never fire. Without
+            // a deadline the extension stays suspended on the continuation and the system
+            // eventually kills it — the "first share after install crashes" symptom in its
+            // other form.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
+                gate.resume(continuation, value: nil)
             }
         }
     }
@@ -307,13 +338,17 @@ final class ShareViewController: UIViewController {
                                            typeIdentifier: String,
                                            suggestedName: String?) async -> String? {
         await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            let gate = ContinuationGate()
             provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, _ in
                 guard let url else {
-                    continuation.resume(returning: nil)
+                    gate.resume(continuation, value: nil)
                     return
                 }
-                continuation.resume(returning: AppGroup.deposit(fileAt: url,
-                                                               preferredName: suggestedName))
+                gate.resume(continuation, value: AppGroup.deposit(fileAt: url,
+                                                                  preferredName: suggestedName))
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
+                gate.resume(continuation, value: nil)
             }
         }
     }
@@ -336,5 +371,25 @@ final class ShareViewController: UIViewController {
         guard !handoffFinished else { return }
         handoffFinished = true
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+    }
+}
+
+/// Lets two racing sources (a provider callback and a deadline) resolve the same
+/// continuation exactly once. `CheckedContinuation` must be resumed precisely once;
+/// without this gate, a provider answering a tick after the 5s timeout fired would
+/// resume it twice and crash the extension.
+private final class ContinuationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+
+    func resume(_ continuation: CheckedContinuation<String?, Never>, value: String?) {
+        lock.lock()
+        if finished {
+            lock.unlock()
+            return
+        }
+        finished = true
+        lock.unlock()
+        continuation.resume(returning: value)
     }
 }
