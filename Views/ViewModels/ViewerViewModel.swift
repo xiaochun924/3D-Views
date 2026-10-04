@@ -184,11 +184,23 @@ enum ViewDirection: String, CaseIterable, Identifiable {
     /// The camera frame this preset should end on, as an orientation in the model's frame.
     ///
     /// The camera starts on +Z looking back at the origin, so these are the rotations that
-    /// carry that frame to the named view. Worth spelling out in full rather than going
-    /// through an azimuth/elevation pair: a frame names 俯视图 and 仰视图 *exactly*,
-    /// whereas the angle pair could only ever approach them — the clamp that kept its
-    /// cross product off zero held those two views a fraction of a degree short, and
-    /// that was the same clamp that made a horizontal drag stop responding up there.
+    /// carry that frame to the named view. Written as a frame rather than an
+    /// azimuth/elevation pair: a frame names 俯视图 and 仰视图 *exactly*, whereas the angle
+    /// pair could only ever approach them — the clamp that kept its cross product off zero
+    /// held those two views a fraction of a degree short, and that was the same clamp that
+    /// made a horizontal drag stop responding up there.
+    ///
+    /// Every X-axis tilt is **negative where it lifts the camera**. That was not true of
+    /// this table until now: a rotation about +X by a positive angle carries `(0, 0, 1)` to
+    /// `(0, -sin, cos)`, so `+.pi / 2` puts the camera *below* the model. The table was
+    /// written with all-positive X angles, so 俯视图 showed the underside, 仰视图 the top, and
+    /// 等轴测 was a bottom isometric — camera at `y = -0.577`, which is what
+    /// 「等轴测这个角度不对 根本不对」 was reporting. `orbit` had the sign right all along
+    /// (`-dx` yaw, `-dy` pitch), so presets and drags now agree.
+    ///
+    /// Y-axis cases were verified at the same time and are correct as written: with the
+    /// camera at +Z looking back, +X is the viewer's right, so the model's own right side is
+    /// at -X, which is where `.right` already placed the camera.
     var cameraOrientation: simd_quatf {
         switch self {
         case .front:
@@ -200,14 +212,29 @@ enum ViewDirection: String, CaseIterable, Identifiable {
         case .right:
             return simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(0, 1, 0))
         case .top:
-            return simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(1, 0, 0))
-        case .bottom:
+            // Above the model, looking down at its top face.
             return simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        case .bottom:
+            // Below the model, looking up at its underside.
+            return simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(1, 0, 0))
         case .iso:
             return simd_quatf(angle: .pi / 4, axis: SIMD3<Float>(0, 1, 0))
-                * simd_quatf(angle: 0.615, axis: SIMD3<Float>(1, 0, 0))
+                * simd_quatf(angle: Self.isometricElevation, axis: SIMD3<Float>(1, 0, 0))
         }
     }
+
+    /// The elevation of a true isometric: `asin(tan 30°) = asin(1/√3) ≈ 35.264°`.
+    ///
+    /// The angle at which the three principal axes foreshorten equally, so a cube's visible
+    /// faces read as the same size. It replaces a bare `0.615` literal, which is 35.237° —
+    /// only 0.027° short, invisible at that scale, but the literal said nothing about where
+    /// it came from, which is how its sign stayed wrong without anyone looking. The closed
+    /// form is the definition, and negating it is what puts the camera above the model.
+    ///
+    /// The `Float(...)` conversion is deliberate: `asin(1.0 / 3.0.squareRoot())` resolves to
+    /// `Double`, while `simd_quatf(angle:)` wants `Float`, and this file cannot be compiled
+    /// locally to catch that mistake otherwise.
+    private static let isometricElevation: Float = -Float(asin(1.0 / 3.0.squareRoot()))
 }
 
 /// How the model is drawn.
