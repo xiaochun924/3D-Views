@@ -12,7 +12,7 @@
 //    `Alternate`+`false`, `None`+`false`, and `Alternate`+`true`; none of the three ever
 //    delivered a URL, because the system routes that URL to the scene's
 //    `connectionOptions.urlContexts` and this app does not own its scene.
-//  * The wake-up URL scheme (`3dviews://import`). `extensionContext.open` returned
+//  * The wake-up URL scheme (`views://import`). `extensionContext.open` returned
 //    `didOpen == false` on every attempt, and Safari could not open the scheme either.
 //  So the extension stops waiting for a URL it does not control. It takes whatever the
 //  share sheet offered, copies it into the App Group inbox, and leaves a note there.

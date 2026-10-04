@@ -924,7 +924,7 @@ final class FileHistory: ObservableObject {
     /// It dispatches on scheme now. The sentence that used to stand here said there was
     /// nothing to special-case, on the reasoning that the scheme existed only to serve
     /// `extensionContext.open`; `CFBundleURLTypes` was restored to the plist afterwards, and
-    /// that sentence became false. An unhandled `3dviews://` URL fell through to the file
+    /// that sentence became false. An unhandled `views://` URL fell through to the file
     /// path, was found to carry no CAD extension, and was answered with 「只能打开 STEP、STP…」.
     func handleIncomingURL(_ url: URL, source: String) {
         if url.scheme?.lowercased() == Self.customScheme {
@@ -935,11 +935,11 @@ final class FileHistory: ObservableObject {
     }
 
     /// The scheme this app registers in `CFBundleURLSchemes` (`project.yml`).
-    static let customScheme = "3dviews"
+    static let customScheme = "views"
 
-    /// Handles `3dviews://…` — the one route here that is *addressed* rather than delivered.
+    /// Handles `views://…` — the one route here that is *addressed* rather than delivered.
     ///
-    /// Shape: `3dviews://import?file=<the model's address>`. The host is deliberately not
+    /// Shape: `views://import?file=<the model's address>`. The host is deliberately not
     /// checked, so `import`, `open` and an empty host all behave the same, and both `file`
     /// and `url` are accepted as the parameter name. That slack is the point: this route
     /// exists to be typed into a web page, a note or a shortcut, and refusing a link over a

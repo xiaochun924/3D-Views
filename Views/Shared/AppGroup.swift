@@ -22,7 +22,7 @@ enum AppGroup {
     /// The group the self-signed install is provisioned with.
     static let identifier = "group.ffcd1c12e1a9728e.1"
 
-    // The wake-up URL scheme that used to live here (`3dviews://import`) has been removed
+    // The wake-up URL scheme that used to live here (`views://import`) has been removed
     // along with `CFBundleURLTypes` from the app's `Info.plist`.
     //
     // It existed so the share extension could pull the host app forward after a share.

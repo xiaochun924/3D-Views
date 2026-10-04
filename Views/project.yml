@@ -348,21 +348,21 @@ targets:
         # 全能签有一条 CFBundleURLTypes（CFBundleURLName: nsk-sign.udid，schemes: [nsk-sign]）。
         # 既然要求全面复刻，就把它补上，让剩下的差异只剩真正可疑的那些。
         #
-        # scheme 用 3dviews，与历史上删掉的那条同名。当年它失败的原因是
+        # scheme 用 views，与历史上删掉的那条同名。当年它失败的原因是
         # extensionContext.open 在分享扩展里不被支持（Apple 文档：仅 Today 与 iMessage
         # 扩展点支持该方法），那是**扩展拉宿主**这条路失败，不是 scheme 本身有问题；
         # scheme 留着可以让 App 被 URL 唤起，而这条能力与文档路径并不冲突。
         #
         # 补充：这条 scheme 现在真的有处理逻辑了 —— 「声明了 scheme」和「能用」是两件事，
         # 之前只做了前半段。FileHistory.handleIncomingURL 现在按 scheme 分发：
-        # 3dviews://import?file=<地址> 会把地址解析出来，http(s) 先下载到临时目录再走已有的
+        # views://import?file=<地址> 会把地址解析出来，http(s) 先下载到临时目录再走已有的
         # 本地导入链路，file:// 直接当本地文件处理。在此之前 3dviews:// 会一路走到
         # receiveExternalFile，因文件名没有 CAD 扩展名而被拒绝，用户看到的是
         # 「只能打开 STEP、STP…」—— 一个「打开失败」的提示，而不是「没反应」。
         CFBundleURLTypes:
           - CFBundleURLName: com.xiaochun.Views
             CFBundleURLSchemes:
-              - 3dviews
+              - views
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiaochun.Views
