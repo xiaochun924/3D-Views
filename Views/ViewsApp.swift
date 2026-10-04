@@ -27,11 +27,11 @@
 //
 //  Why this buys automatic hand-off
 //  --------------------------------
-//  `extensionContext.open` is not supported in share extensions (Apple: "In iOS, the Today
-//  and iMessage app extension points support this method"), so an extension can never pull
-//  its host forward. The document-open path needs no pulling: when the user picks this app
-//  from a share sheet or an "Open in" list, *iOS* launches it and delivers the URL to the
-//  scene. The app is already in the foreground by the time the URL arrives.
+//  The share extension makes a best-effort `extensionContext.open` request with
+//  `views://import?handoff=1` after depositing the file. iOS may refuse that request, so the
+//  App Group inbox remains the source of truth and the host also scans it on every activation.
+//  When the request succeeds, the host receives the wake-up URL, consumes the inbox, and the
+//  existing pending-open state automatically navigates to the viewer.
 //
 //  The share extension has since been removed from the bundle (user's call: copy 全能签
 //  outright, and it carries no `.appex` at all). So this file is now the *only* import

@@ -970,9 +970,20 @@ final class FileHistory: ObservableObject {
             return
         }
 
-        let addressed = components.queryItems?
+        let queryItems = components.queryItems ?? []
+        let addressed = queryItems
             .first { $0.name == "file" || $0.name == "url" }?
             .value
+
+        // The share extension uses the same scheme as a wake-up signal after depositing
+        // the file into App Group/Inbox. There is deliberately no model URL here: the
+        // inbox is the payload, and the scan publishes pendingOpen after it finds it.
+        if queryItems.contains(where: { $0.name == "handoff" && $0.value == "1" }) {
+            note("  扩展唤起：扫描共享收件箱")
+            consumePendingShareImportIfNeeded(reason: "扩展唤起")
+            scheduleInboxSweep(reason: "扩展唤起")
+            return
+        }
 
         guard let addressed, !addressed.isEmpty else {
             importFailure = "链接里没有模型地址。正确写法：\(Self.customScheme)://import?file=https://…/part.step"

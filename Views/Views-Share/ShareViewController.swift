@@ -12,15 +12,14 @@
 //    `Alternate`+`false`, `None`+`false`, and `Alternate`+`true`; none of the three ever
 //    delivered a URL, because the system routes that URL to the scene's
 //    `connectionOptions.urlContexts` and this app does not own its scene.
-//  * The wake-up URL scheme (`views://import`). `extensionContext.open` returned
-//    `didOpen == false` on every attempt, and Safari could not open the scheme either.
-//  So the extension stops waiting for a URL it does not control. It takes whatever the
-//  share sheet offered, copies it into the App Group inbox, and leaves a note there.
-//  The app drains that inbox on every activation, so the handover completes whether or
-//  not the app was ever woken up — which is the one behaviour that was measured to work.
+//  * The wake-up URL scheme (`views://import`) was previously disabled after one device
+//    build returned `didOpen == false`. It is now used as a best-effort wake-up only: the
+//    file is copied to the App Group inbox first, then the host is asked to open the scheme.
+//    The inbox remains authoritative, so a rejected or ignored wake-up cannot lose the file.
 //
-//  The sheet reports the outcome and then closes itself. It does not try to launch the
-//  host app: it has no supported way to do that, and the file does not need it.
+//  The sheet reports the outcome, requests the host app, and then closes itself. The request
+//  is deliberately not awaited because a share extension is not guaranteed to receive the
+//  completion callback.
 //
 //  Three device-measured defects were removed from this file and must not come back:
 //
@@ -50,6 +49,7 @@ final class ShareViewController: UIViewController {
     private var handoffFinished = false
     /// Guards the auto-close so a slow handover cannot outlive the sheet's dismissal.
     private var closeScheduled = false
+    private var hostWakeupAttempted = false
 
     override func viewDidLoad() {
         // Left before anything else, including the label. `NSExtensionPrincipalClass`
@@ -148,6 +148,7 @@ final class ShareViewController: UIViewController {
                 // so the sheet has nothing left to wait for. Close it and let the app
                 // take over, instead of making the user tap 完成 on a finished job.
                 self.openButton.isHidden = true
+                self.requestHostWakeup()
                 self.scheduleAutoClose()
             }
         }
@@ -164,18 +165,16 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    /// 请求系统把已完成交接的分享返回到主 App。
-    ///
-    /// **已停用，不要恢复。** 这段代码曾在真机上造成「第二次分享直接闪退」：
-    /// `extensionContext.open` 在分享扩展里不被支持（Apple 只对 Today 与 iMessage
-    /// 扩展点开放该方法），回调不保证触发，于是 `withCheckedContinuation` 永久挂起，
-    /// 进程随后被系统回收。它也从没成功过——每次都是 `didOpen == false`。
-    /// 交接本身不需要它：文件在 App Group Inbox，主 App 激活时自己消费。
-    ///
-    /// 下面这段注释是它退役前的原始说明，保留以记录当时的判断：
-    /// 这不是把文件再传一次：文件已经在 App Group Inbox，深链只负责唤起宿主；
-    /// 主 App 启动后会按自己的生命周期消费 Inbox。若系统仍拒绝扩展发起的打开请求，
-    /// 仍保留当前可用的「完成」按钮，不能影响已经成功的导入。
+    /// Best-effort request to bring the host app forward after the file is safely in the
+    /// shared inbox. This is intentionally fire-and-forget: share extensions are not
+    /// guaranteed to receive the completion callback, so awaiting it can leave the extension
+    /// suspended forever. The host's Inbox sweep is the recovery path when iOS rejects this.
+    private func requestHostWakeup() {
+        guard !hostWakeupAttempted else { return }
+        hostWakeupAttempted = true
+        guard let url = URL(string: "views://import?handoff=1") else { return }
+        extensionContext?.open(url, completionHandler: nil)
+    }
     private func message(deposited: [String],
                          failures: [String]) -> String {
         switch (deposited.isEmpty, failures.isEmpty) {

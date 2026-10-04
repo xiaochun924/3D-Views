@@ -22,19 +22,10 @@ enum AppGroup {
     /// The group the self-signed install is provisioned with.
     static let identifier = "group.ffcd1c12e1a9728e.1"
 
-    // The wake-up URL scheme that used to live here (`views://import`) has been removed
-    // along with `CFBundleURLTypes` from the app's `Info.plist`.
-    //
-    // It existed so the share extension could pull the host app forward after a share.
-    // The extension has no supported way to do that: `extensionContext.open` reported
-    // `didOpen == false` on the device on every single attempt, and the scheme could not
-    // be opened from Safari either — so the URL was never once followed. Three separate
-    // crashes were also spent on building that URL, because both `URL(string:)` and
-    // `URLComponents.scheme` *trap* rather than return `nil` when they fail.
-    //
-    // None of that is needed for the handover to complete: the extension copies the file
-    // into the shared inbox, and the app drains that inbox on every activation. Removing
-    // the URL removes the only part of this flow that could crash the extension.
+    // `views://import?handoff=1` is a best-effort wake-up signal used after the extension
+    // deposits a file. It is not the data channel: the App Group inbox remains authoritative
+    // when iOS refuses or ignores `extensionContext.open`. The URL is kept out of this shared
+    // helper because only the extension initiates it and only the host consumes it.
 
     private static let inboxFolderName = "Inbox"
     private static let handoffAtKey = "SharedHandoffAt"
