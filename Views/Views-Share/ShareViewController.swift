@@ -180,26 +180,33 @@ final class ShareViewController: UIViewController {
         }
 
         // Some iOS versions return `false`; others never call the completion handler for
-        // a share extension. Both cases must remain visible instead of auto-closing the
-        // sheet and pretending that the host was opened.
-        extensionContext?.open(url) { [weak self] didOpen in
-            DispatchQueue.main.async {
-                guard let self, !self.hostWakeupResolved else { return }
-                self.hostWakeupResolved = true
-                if didOpen {
-                    self.scheduleAutoClose()
-                } else {
-                    self.showWakeupFailure()
-                }
-            }
+        // a share extension. Try immediately and once more after one second: the first call
+        // gives the system the normal hand-off opportunity, while the delayed call covers
+        // the interval in which the share sheet is finishing its own request.
+        openHostAppRequest(url)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, !self.hostWakeupResolved else { return }
+            self.openHostAppRequest(url)
         }
 
         guard !wakeupTimeoutScheduled else { return }
         wakeupTimeoutScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
             guard let self, !self.hostWakeupResolved else { return }
             self.hostWakeupResolved = true
             self.showWakeupFailure()
+        }
+    }
+
+    private func openHostAppRequest(_ url: URL) {
+        extensionContext?.open(url) { [weak self] didOpen in
+            DispatchQueue.main.async {
+                guard let self, !self.hostWakeupResolved else { return }
+                if didOpen {
+                    self.hostWakeupResolved = true
+                    self.scheduleAutoClose()
+                }
+            }
         }
     }
 
