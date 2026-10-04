@@ -701,6 +701,27 @@ final class FileHistory: ObservableObject {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         note("  安全作用域：\(scoped ? "已获得" : "未提供")")
 
+        // Keep a durable copy before importing. A document URL can become invalid as soon as
+        // the provider releases it, while the App Group queue survives a suspended or killed
+        // process and is consumed by the normal activation sweep. If this URL was already
+        // imported through another lifecycle hook, return the existing history row instead of
+        // creating a second copy with a suffixed name.
+        if let queuedName = AppGroup.queue(fileAt: url, preferredName: url.lastPathComponent),
+           let pending = AppGroup.pendingURL?.appendingPathComponent(queuedName) {
+            do {
+                let entry = try addFile(sourceURL: pending)
+                try? FileManager.default.removeItem(at: pending)
+                importFailure = nil
+                publishPendingOpen(entry)
+                note("  已导入：\(entry.fileName)")
+                return entry
+            } catch {
+                importFailure = "导入失败：\(error.localizedDescription)"
+                note("  导入失败：\(error.localizedDescription)")
+                return nil
+            }
+        }
+
         do {
             let entry = try addFile(sourceURL: url)
             importFailure = nil
@@ -750,6 +771,27 @@ final class FileHistory: ObservableObject {
         // which is why it is read before any of the routes that depend on iOS handing the
         // app a URL.
         var sharedCount = -1
+        if let pending = AppGroup.pendingURL {
+            let pendingNames = (try? manager.contentsOfDirectory(atPath: pending.path)) ?? []
+            for name in pendingNames.sorted() {
+                let source = pending.appendingPathComponent(name)
+                var isDirectory: ObjCBool = false
+                guard manager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+                      !isDirectory.boolValue
+                else { continue }
+                guard Self.supportedExtension(of: source) != nil else {
+                    park(source, in: pending)
+                    note("  待处理移出（格式不支持）：\(name)")
+                    continue
+                }
+                if let entry = importQueuedFile(at: source) {
+                    imported.append(entry)
+                } else {
+                    park(source, in: pending)
+                    note("  待处理移出（导入失败）：\(name)")
+                }
+            }
+        }
         if let shared = AppGroup.ensureInbox() {
             // Files only. The inbox also holds the `Unsupported` parking folder below, and
             // counting that folder made 「收件箱待取」 stick at 1 after a single share of a
@@ -1111,6 +1153,20 @@ final class FileHistory: ObservableObject {
             return entry
         } catch {
             note("  沙盒导入失败：\(source.lastPathComponent)（\(error.localizedDescription)）")
+            return nil
+        }
+    }
+
+    /// Imports a file already parked in the App Group. `addFile` stages into the app's
+    /// Documents/Imported directory, so this path must not queue the source again.
+    private func importQueuedFile(at source: URL) -> RecentFile? {
+        do {
+            let entry = try addFile(sourceURL: source)
+            try? FileManager.default.removeItem(at: source)
+            note("  待处理导入：\(entry.fileName)")
+            return entry
+        } catch {
+            note("  待处理导入失败：\(source.lastPathComponent)（\(error.localizedDescription)）")
             return nil
         }
     }

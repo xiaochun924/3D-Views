@@ -28,6 +28,7 @@ enum AppGroup {
     // helper because only the extension initiates it and only the host consumes it.
 
     private static let inboxFolderName = "Inbox"
+    private static let pendingFolderName = "Pending"
     private static let handoffAtKey = "SharedHandoffAt"
     private static let handoffNamesKey = "SharedHandoffNames"
     private static let handoffFailuresKey = "SharedHandoffFailures"
@@ -46,11 +47,47 @@ enum AppGroup {
         containerURL?.appendingPathComponent(inboxFolderName, isDirectory: true)
     }
 
+    static var pendingURL: URL? {
+        containerURL?.appendingPathComponent(pendingFolderName, isDirectory: true)
+    }
+
     @discardableResult
     static func ensureInbox() -> URL? {
         guard let inbox = inboxURL else { return nil }
         try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
         return inbox
+    }
+
+    @discardableResult
+    static func ensurePending() -> URL? {
+        guard let pending = pendingURL else { return nil }
+        try? FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
+        return pending
+    }
+
+    /// Copies a document received by the main app into a durable App Group queue. The source
+    /// URL may be security-scoped or temporary, so it is copied while the handover is live.
+    @discardableResult
+    static func queue(fileAt source: URL, preferredName: String? = nil) -> String? {
+        guard let pending = ensurePending() else { return nil }
+        let raw = preferredName.flatMap { $0.isEmpty ? nil : $0 } ?? source.lastPathComponent
+        let name = sanitize(raw)
+        let existing = pending.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: existing.path) {
+            let sourceValues = try? source.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let existingValues = try? existing.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            if sourceValues?.fileSize == existingValues?.fileSize,
+               sourceValues?.contentModificationDate == existingValues?.contentModificationDate {
+                return existing.lastPathComponent
+            }
+        }
+        let destination = uniqueURL(for: name, in: pending)
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            return destination.lastPathComponent
+        } catch {
+            return nil
+        }
     }
 
     /// The folder an inbox parks what the app cannot read, so the inbox itself can be

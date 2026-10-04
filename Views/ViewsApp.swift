@@ -76,6 +76,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         let keyText = keys.isEmpty ? "空" : keys
         if let url = launchOptions?[.url] as? URL {
             FileHistory.shared.note("冷启动，带 URL：\(url.lastPathComponent)｜键：\(keyText)")
+            FileHistory.shared.handleIncomingURL(url, source: "AppDelegate 冷启动")
         } else {
             FileHistory.shared.note("冷启动，无 URL｜键：\(keyText)")
         }
