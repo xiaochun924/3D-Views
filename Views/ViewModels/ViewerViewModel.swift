@@ -1,4 +1,4 @@
-﻿//
+//
 //  ViewerViewModel.swift
 //  Views
 //
@@ -1545,8 +1545,10 @@ final class ViewerViewModel: ObservableObject {
     /// `(0, 0, 1)` to the direction from the target out to the camera, so acting on any
     /// vector with it expresses that vector in the camera's own frame. Storing the frame
     /// outright rather than two angles is what allows a full tumble — see `orbit`.
-    /// The identity means "camera on +Z, looking back at the origin, no roll", which is
-    /// the same opening view the old `azimuth 0, elevation 0` pair gave.
+    /// The identity means "camera on +Z, looking back at the origin, no roll" — the front
+    /// view. It is only the value this variable holds before a model is loaded; a freshly
+    /// loaded part opens on `openingOrientation`, and `resetView` returns to that rather
+    /// than to this.
     private var cameraOrientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
     private var cameraOrbitDistance: Float = 24
     private var cameraTarget = SCNVector3(0, 0, 0)
@@ -1558,15 +1560,26 @@ final class ViewerViewModel: ObservableObject {
     /// screen's width, which is the pace every 3D viewer settles on.
     private let orbitRadiansPerPoint: Float = 0.007
 
-    /// The view a freshly loaded part opens on: slightly above dead level, looking down
-    /// a touch, and otherwise square-on.
+    /// The view a freshly loaded part opens on: the isometric preset, so the first frame
+    /// already shows three faces and reads as a solid rather than as a rectangle.
     ///
-    /// A dead-level view puts the horizon of a typical part exactly on its silhouette,
-    /// which is the one angle where a box reads as a flat rectangle; the small lift costs
-    /// nothing and shows the top face straight away. Composed about the camera's own
-    /// right axis, the same way a drag is, so the two keep agreeing.
-    private static let openingOrientation = simd_quatf(angle: 0.18,
-                                                       axis: SIMD3<Float>(1, 0, 0))
+    /// This used to be a bare 0.18 rad about the camera's own right axis — a ~10° lift with
+    /// no azimuth at all. That is the worst of the three cases it was chosen between: dead
+    /// level makes a box read as a flat rectangle, and the fix for *that* was written as if
+    /// the only alternative to zero were a small number. But a small lift off dead level is
+    /// still nearly dead level: the front face stays almost square-on and full-size, the top
+    /// face appears as a thin sliver at the top edge, and the third face is invisible
+    /// entirely. It is the one angle that shows the least about the form while looking
+    /// deliberately tilted — hence "有点难看".
+    ///
+    /// Isometric shows all three principal faces at once and at a foreshortening that makes
+    /// the three axes read as equal, which is the convention every CAD tool opens on for
+    /// exactly this reason. Written as `ViewDirection.iso.cameraOrientation` rather than a
+    /// second copy of the two angles: the toolbar's 等轴测 button and this opening view must
+    /// agree, and duplicating the quaternion is how they would drift apart.
+    private static var openingOrientation: simd_quatf {
+        ViewDirection.iso.cameraOrientation
+    }
 
     /// Positions the camera from the orbital state and re-sizes its depth range.
     ///
