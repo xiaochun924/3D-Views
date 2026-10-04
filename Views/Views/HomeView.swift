@@ -1,4 +1,4 @@
-﻿//
+//
 //  HomeView.swift
 //  Views
 //
@@ -110,6 +110,10 @@ struct HomeView: View {
                 // has to replace this with an `onChange` over a replayed value at the
                 // same time — not as a mechanical wrapper swap.
                 guard let entry else { return }
+                // Import completion is the navigation trigger for every route: URL, remote
+                // download, share Inbox, Files and the picker. Clear only after the destination
+                // has been appended so a cold-launch value cannot be lost between delivery and
+                // the first mounted HomeView.
                 navPath.append(entry)
                 history.pendingOpen = nil
             }
@@ -156,7 +160,7 @@ struct HomeView: View {
                 do {
                     let file = try history.addFile(sourceURL: url)
                     history.importFailure = nil
-                    navPath.append(file)
+                    history.publishPendingOpen(file)
                 } catch {
                     history.importFailure = "导入失败：\(error.localizedDescription)"
                 }

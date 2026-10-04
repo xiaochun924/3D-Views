@@ -28,7 +28,20 @@ final class FileHistory: ObservableObject {
 
     /// The file the system just handed the app (share sheet 「导入」/ open-in),
     /// awaiting navigation. `HomeView` consumes it and pushes the viewer.
+    ///
+    /// This is intentionally replayable state rather than a one-shot callback: a cold launch
+    /// can finish importing before `HomeView` has mounted. The view receives the current value
+    /// through Combine and clears it only after appending the destination.
     @Published var pendingOpen: RecentFile?
+
+    /// Publishes a successfully imported file for the home screen to open. Keeping this as
+    /// replayable state is important: URL delivery and the first Inbox scan can finish before
+    /// `HomeView` has mounted during a cold launch. Re-publishing the same history row is a
+    /// lifecycle duplicate, not a second import.
+    func publishPendingOpen(_ entry: RecentFile) {
+        guard pendingOpen?.id != entry.id else { return }
+        pendingOpen = entry
+    }
 
     /// Set when a handover from outside the app could not be carried out, so the
     /// reason can be shown instead of the user being left on the file list with no
@@ -691,7 +704,7 @@ final class FileHistory: ObservableObject {
         do {
             let entry = try addFile(sourceURL: url)
             importFailure = nil
-            pendingOpen = entry
+            publishPendingOpen(entry)
             note("  已导入：\(entry.fileName)")
             return entry
         } catch {
@@ -855,7 +868,7 @@ final class FileHistory: ObservableObject {
 
         if !imported.isEmpty {
             importFailure = nil
-            pendingOpen = imported[0]
+            publishPendingOpen(imported[0])
         }
         return imported
     }
