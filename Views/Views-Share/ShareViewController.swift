@@ -17,9 +17,9 @@
 //    file is copied to the App Group inbox first, then the host is asked to open the scheme.
 //    The inbox remains authoritative, so a rejected or ignored wake-up cannot lose the file.
 //
-//  The sheet reports the outcome, requests the host app, and then closes itself. The request
-//  is deliberately not awaited because a share extension is not guaranteed to receive the
-//  completion callback.
+//  The sheet reports the outcome and requests the host app. It closes itself only after iOS
+//  confirms the host was opened; if iOS rejects or ignores the request, the sheet stays open
+//  and shows a retry button instead of reporting a false success.
 //
 //  Three device-measured defects were removed from this file and must not come back:
 //
@@ -50,6 +50,8 @@ final class ShareViewController: UIViewController {
     /// Guards the auto-close so a slow handover cannot outlive the sheet's dismissal.
     private var closeScheduled = false
     private var hostWakeupAttempted = false
+    private var hostWakeupResolved = false
+    private var wakeupTimeoutScheduled = false
 
     override func viewDidLoad() {
         // Left before anything else, including the label. `NSExtensionPrincipalClass`
@@ -69,7 +71,7 @@ final class ShareViewController: UIViewController {
         statusLabel.numberOfLines = 0
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        openButton.setTitle("完成", for: .normal)
+        openButton.setTitle("打开 3D Views", for: .normal)
         openButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
         openButton.configuration = .borderedProminent()
         openButton.isHidden = true
@@ -149,7 +151,6 @@ final class ShareViewController: UIViewController {
                 // take over, instead of making the user tap 完成 on a finished job.
                 self.openButton.isHidden = true
                 self.requestHostWakeup()
-                self.scheduleAutoClose()
             }
         }
     }
@@ -172,8 +173,41 @@ final class ShareViewController: UIViewController {
     private func requestHostWakeup() {
         guard !hostWakeupAttempted else { return }
         hostWakeupAttempted = true
-        guard let url = URL(string: "views://import?handoff=1") else { return }
-        extensionContext?.open(url, completionHandler: nil)
+        hostWakeupResolved = false
+        guard let url = URL(string: "views://import?handoff=1") else {
+            showWakeupFailure()
+            return
+        }
+
+        // Some iOS versions return `false`; others never call the completion handler for
+        // a share extension. Both cases must remain visible instead of auto-closing the
+        // sheet and pretending that the host was opened.
+        extensionContext?.open(url) { [weak self] didOpen in
+            DispatchQueue.main.async {
+                guard let self, !self.hostWakeupResolved else { return }
+                self.hostWakeupResolved = true
+                if didOpen {
+                    self.scheduleAutoClose()
+                } else {
+                    self.showWakeupFailure()
+                }
+            }
+        }
+
+        guard !wakeupTimeoutScheduled else { return }
+        wakeupTimeoutScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, !self.hostWakeupResolved else { return }
+            self.hostWakeupResolved = true
+            self.showWakeupFailure()
+        }
+    }
+
+    private func showWakeupFailure() {
+        statusLabel.text = "文件已导入，但没有自动打开 3D Views\n请点击下方按钮重试"
+        openButton.setTitle("打开 3D Views", for: .normal)
+        openButton.isHidden = false
+        openButton.isEnabled = true
     }
     private func message(deposited: [String],
                          failures: [String]) -> String {
@@ -253,7 +287,12 @@ final class ShareViewController: UIViewController {
     /// 交接成功时由 `scheduleAutoClose()` 自动调用；只有“没有拿到文件”或
     /// “共享容器不可用”这两种需要用户阅读的失败，才把按钮留给用户点。
     @objc private func openHostApp() {
-        completeExtension()
+        // A successful callback closes the extension. If iOS refuses the request or never
+        // calls back, `requestHostWakeup` leaves this button available for another attempt.
+        hostWakeupAttempted = false
+        hostWakeupResolved = false
+        wakeupTimeoutScheduled = false
+        requestHostWakeup()
     }
 
     private func completeExtension() {
