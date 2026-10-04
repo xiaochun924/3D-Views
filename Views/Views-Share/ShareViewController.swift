@@ -146,12 +146,12 @@ final class ShareViewController: UIViewController {
                 self.openButton.isHidden = false
                 self.openButton.isEnabled = true
             } else {
-                // The file is already durable in the App Group inbox. Complete the
-                // extension now; host wake-up is only an optimization and must not gate
-                // the handoff because iOS may reject or omit its callback.
+                // The file is durable, but the handoff is not complete until iOS confirms
+                // that the host app accepted the wake-up request. Keep this controller alive
+                // while that request is in flight so the extension cannot be reaped before
+                // the main app is brought forward.
                 self.openButton.isHidden = true
                 self.requestHostWakeup()
-                self.scheduleAutoClose()
             }
         }
     }
@@ -172,28 +172,22 @@ final class ShareViewController: UIViewController {
     /// guaranteed to receive the completion callback, so awaiting it can leave the extension
     /// suspended forever. The host's Inbox sweep is the recovery path when iOS rejects this.
     private func requestHostWakeup() {
-        guard !hostWakeupAttempted else { return }
         hostWakeupAttempted = true
         hostWakeupResolved = false
+        wakeupTimeoutScheduled = false
         guard let url = URL(string: "views://import?handoff=1") else {
             showWakeupFailure()
             return
         }
 
-        // Some iOS versions return `false`; others never call the completion handler for
-        // a share extension. Try the supported extension API and an experimental responder
-        // chain fallback immediately, then repeat both after one second. The fallback is
-        // intentionally isolated here so it can be removed if the device rejects it or the
-        // App Store validation flags the extension-only call.
+        // Use the supported extension API. Keep one delayed retry for devices that
+        // momentarily reject the request while the share sheet is dismissing.
         openHostAppRequest(url)
-        _ = tryResponderChainOpen(url)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self, !self.hostWakeupResolved else { return }
             self.openHostAppRequest(url)
-            _ = self.tryResponderChainOpen(url)
         }
 
-        guard !wakeupTimeoutScheduled else { return }
         wakeupTimeoutScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
             guard let self, !self.hostWakeupResolved else { return }
@@ -212,28 +206,6 @@ final class ShareViewController: UIViewController {
                 }
             }
         }
-    }
-
-    /// Experimental fallback for device testing only.
-    ///
-    /// A share extension cannot reference `UIApplication.shared` directly because that API
-    /// is unavailable to application extensions. The selector is therefore resolved at runtime
-    /// while walking the responder chain. This is not a supported contract: a missing target
-    /// simply returns false, and a future OS can remove or ignore the selector without affecting
-    /// the normal `extensionContext.open` path.
-    private func tryResponderChainOpen(_ url: URL) -> Bool {
-        let openSelector = Selector(("openURL:"))
-        var responder: UIResponder? = self
-
-        while let current = responder {
-            if current.responds(to: openSelector) {
-                current.perform(openSelector, with: url)
-                return true
-            }
-            responder = current.next
-        }
-
-        return false
     }
 
     private func showWakeupFailure() {
