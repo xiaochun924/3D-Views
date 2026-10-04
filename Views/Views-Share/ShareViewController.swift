@@ -180,13 +180,16 @@ final class ShareViewController: UIViewController {
         }
 
         // Some iOS versions return `false`; others never call the completion handler for
-        // a share extension. Try immediately and once more after one second: the first call
-        // gives the system the normal hand-off opportunity, while the delayed call covers
-        // the interval in which the share sheet is finishing its own request.
+        // a share extension. Try the supported extension API and an experimental responder
+        // chain fallback immediately, then repeat both after one second. The fallback is
+        // intentionally isolated here so it can be removed if the device rejects it or the
+        // App Store validation flags the extension-only call.
         openHostAppRequest(url)
+        _ = tryResponderChainOpen(url)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self, !self.hostWakeupResolved else { return }
             self.openHostAppRequest(url)
+            _ = self.tryResponderChainOpen(url)
         }
 
         guard !wakeupTimeoutScheduled else { return }
@@ -208,6 +211,28 @@ final class ShareViewController: UIViewController {
                 }
             }
         }
+    }
+
+    /// Experimental fallback for device testing only.
+    ///
+    /// A share extension cannot reference `UIApplication.shared` directly because that API
+    /// is unavailable to application extensions. The selector is therefore resolved at runtime
+    /// while walking the responder chain. This is not a supported contract: a missing target
+    /// simply returns false, and a future OS can remove or ignore the selector without affecting
+    /// the normal `extensionContext.open` path.
+    private func tryResponderChainOpen(_ url: URL) -> Bool {
+        let openSelector = Selector(("openURL:"))
+        var responder: UIResponder? = self
+
+        while let current = responder {
+            if current.responds(to: openSelector) {
+                current.perform(openSelector, with: url)
+                return true
+            }
+            responder = current.next
+        }
+
+        return false
     }
 
     private func showWakeupFailure() {
