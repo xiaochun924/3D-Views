@@ -261,8 +261,8 @@ final class ShareViewController: UIViewController {
         // 1) A file URL — what the Files app hands over almost every time.
         for identifier in [UTType.fileURL.identifier, UTType.url.identifier] {
             guard provider.hasItemConformingToTypeIdentifier(identifier) else { continue }
-            if let url = await loadURL(from: provider, typeIdentifier: identifier),
-               let name = AppGroup.deposit(fileAt: url) {
+            if let name = await depositURL(from: provider, typeIdentifier: identifier),
+               !name.isEmpty {
                 return name
             }
         }
@@ -283,17 +283,24 @@ final class ShareViewController: UIViewController {
         return nil
     }
 
-    private func loadURL(from provider: NSItemProvider, typeIdentifier: String) async -> URL? {
-        await withCheckedContinuation { (continuation: CheckedContinuation<URL?, Never>) in
+    private func depositURL(from provider: NSItemProvider,
+                            typeIdentifier: String) async -> String? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
             provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, _ in
-                if let url = item as? NSURL {
-                    continuation.resume(returning: url as URL)
-                } else if let data = item as? Data,
-                          let url = URL(dataRepresentation: data, relativeTo: nil) {
-                    continuation.resume(returning: url)
+                let url: URL?
+                if let itemURL = item as? NSURL {
+                    url = itemURL as URL
+                } else if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
                 } else {
-                    continuation.resume(returning: nil)
+                    url = nil
                 }
+                guard let url else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                // Copy while the provider owns the temporary/security-scoped URL.
+                continuation.resume(returning: AppGroup.deposit(fileAt: url))
             }
         }
     }
