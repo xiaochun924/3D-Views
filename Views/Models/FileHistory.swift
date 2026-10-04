@@ -115,7 +115,16 @@ final class FileHistory: ObservableObject {
     /// otherwise. Case-insensitive: `PART.STEP` is the same format as `part.step`.
     static func supportedExtension(of url: URL) -> String? {
         let ext = url.pathExtension.lowercased()
-        return supportedExtensions.contains(ext) ? ext : nil
+        if supportedExtensions.contains(ext) { return ext }
+
+        // Some document providers hand over a security-scoped URL with no useful
+        // filename. The content type is still available from the URL resource values.
+        if let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType,
+           let inferred = type.preferredFilenameExtension?.lowercased(),
+           supportedExtensions.contains(inferred) {
+            return inferred
+        }
+        return nil
     }
 
     private init() {
@@ -701,29 +710,19 @@ final class FileHistory: ObservableObject {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         note("  安全作用域：\(scoped ? "已获得" : "未提供")")
 
-        // Keep a durable copy before importing. A document URL can become invalid as soon as
-        // the provider releases it, while the App Group queue survives a suspended or killed
-        // process and is consumed by the normal activation sweep. If this URL was already
-        // imported through another lifecycle hook, return the existing history row instead of
-        // creating a second copy with a suffixed name.
-        if let queuedName = AppGroup.queue(fileAt: url, preferredName: url.lastPathComponent),
-           let pending = AppGroup.pendingURL?.appendingPathComponent(queuedName) {
-            do {
-                let entry = try addFile(sourceURL: pending)
-                try? FileManager.default.removeItem(at: pending)
-                importFailure = nil
-                publishPendingOpen(entry)
-                note("  已导入：\(entry.fileName)")
-                return entry
-            } catch {
-                importFailure = "导入失败：\(error.localizedDescription)"
-                note("  导入失败：\(error.localizedDescription)")
-                return nil
-            }
+        // Always import the durable App Group copy. The provider URL may stop being readable
+        // as soon as the document-open callback returns, so falling back to the original URL
+        // after a queue failure only hides the real handoff error.
+        guard let queuedName = AppGroup.queue(fileAt: url, preferredName: url.lastPathComponent),
+              let pending = AppGroup.pendingURL?.appendingPathComponent(queuedName) else {
+            importFailure = "无法保存外部文件：系统提供的文件 URL 不可读取或共享容器不可用。"
+            note("  队列失败：无法复制外部文件")
+            return nil
         }
 
         do {
-            let entry = try addFile(sourceURL: url)
+            let entry = try addFile(sourceURL: pending)
+            try? FileManager.default.removeItem(at: pending)
             importFailure = nil
             publishPendingOpen(entry)
             note("  已导入：\(entry.fileName)")

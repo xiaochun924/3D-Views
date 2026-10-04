@@ -108,9 +108,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return configuration
     }
 
-    /// A URL that arrived through the non-scene door, kept wired as a second sighting.
-    /// `FileHistory.receiveExternalFile(at:source:)` recognises a repeat of the same URL,
-    /// so a lifecycle that knocks on both doors still imports once.
+    /// A URL that arrived through the non-scene door. Some document providers use this
+    /// callback even when a scene is already connected, while cold document launches use
+    /// `connectionOptions.urlContexts`; both must feed the same importer.
     func application(
         _ application: UIApplication,
         open url: URL,

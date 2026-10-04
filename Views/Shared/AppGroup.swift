@@ -71,7 +71,10 @@ enum AppGroup {
     static func queue(fileAt source: URL, preferredName: String? = nil) -> String? {
         guard let pending = ensurePending() else { return nil }
         let raw = preferredName.flatMap { $0.isEmpty ? nil : $0 } ?? source.lastPathComponent
-        let name = sanitize(raw)
+        var name = sanitize(raw)
+        if !source.pathExtension.isEmpty, (name as NSString).pathExtension.isEmpty {
+            name += "." + source.pathExtension
+        }
         let existing = pending.appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: existing.path) {
             let sourceValues = try? source.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
