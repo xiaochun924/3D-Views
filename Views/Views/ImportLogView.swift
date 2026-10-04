@@ -1,4 +1,4 @@
-﻿//
+//
 //  ImportLogView.swift
 //  Views
 //
@@ -24,6 +24,25 @@ struct HandoverLogEntry: Identifiable {
     let text: String
 }
 
+/// One line of the installed-bundle readout, with stable identity.
+///
+/// The same defect as `HandoverLogEntry` above, in the section right below it — and it
+/// survived the first fix because only the log rows were converted. `bundleFacts()` reads
+/// `Bundle.main` and returns a *variable-length* array: a declaration that is present adds
+/// a line, a `CFBundleDocumentTypes` block adds one per type, and the count differs between
+/// the build in the source tree and the build actually installed. Keyed by position, every
+/// row after an added or removed line shifts, so SwiftUI reuses the wrong rows.
+///
+/// `id: \.self` on the string is again not a substitute: `bundleFacts()` can legitimately
+/// emit the same text twice (an absent declaration repeated across sections), and duplicate
+/// ids are their own defect. The `UUID` is minted in `ImportLogView.reloadFacts()`, where the
+/// pairing is made once per refresh, rather than in `body` where it would change on every
+/// redraw and tear down rows that did not change.
+struct BundleFactEntry: Identifiable {
+    let id: UUID
+    let text: String
+}
+
 /// The import log, on its own screen.
 ///
 /// It used to sit at the top of the file list, which was the wrong place twice over: it
@@ -34,7 +53,6 @@ struct HandoverLogEntry: Identifiable {
 struct ImportLogView: View {
     @StateObject private var history = FileHistory.shared
     @State private var copied = false
-    @State private var refreshToken = 0
     /// The log paired with identity, held rather than derived.
     ///
     /// It has to live in `@State`: `HandoverLogEntry` mints a `UUID`, so building the
@@ -42,17 +60,40 @@ struct ImportLogView: View {
     /// on 复制, anything — and every row would be torn down and rebuilt. Held here, the
     /// ids are made once per refresh and survive until the log actually changes.
     @State private var logEntries: [HandoverLogEntry] = []
+    /// The installed-bundle readout, paired with identity for the same reason.
+    ///
+    /// `bundleFacts()` is not observable — it reads `Bundle.main` on every call — so this is
+    /// also what makes the section re-read at all. It replaced `.id(refreshToken)`, which
+    /// rebuilt the *entire* `List` from scratch on every refresh: correct, but it threw away
+    /// SwiftUI's diffing for all four sections to fix one, and every row was torn down and
+    /// recreated including the ones that had not changed.
+    @State private var factEntries: [BundleFactEntry] = []
 
-    /// Pairs the current log with fresh identity and forces the list to rebuild.
+    /// Pairs the current log with fresh identity and rebuilds the log rows.
     ///
     /// One function rather than two calls at each site, because the pairing and the
     /// rebuild have to happen together: `FileHistory` holds plain `[String]`, and a row
     /// whose identity is derived from its position in that array is the exact pattern
     /// `list-patterns` rejects — clearing the log or trimming it to its twelve-line
     /// window shifts every remaining row.
+    ///
+    /// It no longer bumps a token: the two paired arrays on this screen are each enough to
+    /// rebuild their own section, and `.id(refreshToken)` forced the whole `List` to
+    /// re-evaluate instead.
     private func reloadLog() {
         logEntries = history.handoverLog.map { HandoverLogEntry(id: UUID(), text: $0) }
-        refreshToken += 1
+    }
+
+    /// Pairs the installed-bundle readout with fresh identity.
+    ///
+    /// Separate from `reloadLog()` because the two read different things and change on
+    /// different occasions: the log lives in `UserDefaults` and changes when a handover
+    /// happens *or* when 清空 is tapped, while the bundle facts live in the installed binary
+    /// and change only when a different build is installed. So this is called on two of the
+    /// three occasions `reloadLog()` is — entry and 重新扫描 — and deliberately not on 清空,
+    /// which cannot alter what `Bundle.main` declares.
+    private func reloadFacts() {
+        factEntries = FileHistory.bundleFacts().map { BundleFactEntry(id: UUID(), text: $0) }
     }
 
     var body: some View {
@@ -110,11 +151,20 @@ struct ImportLogView: View {
             }
 
             Section("安装包状态") {
-                // `bundleFacts()` reads `Bundle.main` — it is not observable and cannot
-                // tell the list it changed. It is rebuilt with `refreshToken` for the same
-                // reason the log is: 重新扫描 is the button that asks for a fresh reading.
-                ForEach(Array(FileHistory.bundleFacts().enumerated()), id: \.offset) { _, line in
-                    Text(line)
+                // The `ForEach` here used to be
+                // `ForEach(Array(FileHistory.bundleFacts().enumerated()), id: \.offset)` —
+                // position identity, the same defect the log rows above carried, and it
+                // outlived the first fix because only the log was converted. It also had
+                // two problems beyond the wrong identity: `bundleFacts()` was called from
+                // `body`, so the whole `Bundle.main` reading was redone on every redraw
+                // (a tap on 复制 was enough), and the section had no way to rebuild at all
+                // except the `.id(refreshToken)` that recreated the entire `List`.
+                //
+                // Now paired in `@State` by `reloadFacts()`, for the same reason the log
+                // is: position identity breaks as soon as an added or removed declaration
+                // shifts every row below it.
+                ForEach(factEntries) { entry in
+                    Text(entry.text)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -132,7 +182,6 @@ struct ImportLogView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .id(refreshToken)
         .navigationTitle("导入诊断")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -148,16 +197,20 @@ struct ImportLogView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     // The sweep is asynchronous, with retries at 300/1000/2500 ms
-                    // (`FileHistory.scheduleInboxSweep`). Bumping the token *before*
-                    // starting it rebuilt the list from data the sweep had not yet
-                    // produced, so the button looked dead until it was pressed a second
-                    // time. It stays a single bump — the retries exist precisely because
+                    // (`FileHistory.scheduleInboxSweep`). The two reloads used to run the
+                    // other way round — the token was bumped *before* the sweep started —
+                    // which rebuilt the rows from data the sweep had not produced yet, so
+                    // the button looked dead until it was pressed a second time. They now
+                    // follow the synchronous first pass, so what is read back is what the
+                    // sweep just found.
+                    //
+                    // The retries are deliberately not awaited: they exist precisely because
                     // the file may not have landed yet, and waiting for them would put a
-                    // 2.5-second pause behind the button. What changed is *where* the bump
-                    // happens: after the synchronous first pass, so the list is rebuilt
-                    // from the reading the button just took.
+                    // 2.5-second pause behind the button. Pressing it again after they fire
+                    // picks up a late arrival, which is what the button is for.
                     history.scheduleInboxSweep(reason: "手动刷新")
                     reloadLog()
+                    reloadFacts()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -171,6 +224,7 @@ struct ImportLogView: View {
             // synchronous, so what is read back is what the sweep just found.
             history.scheduleInboxSweep(reason: "查看诊断")
             reloadLog()
+            reloadFacts()
         }
     }
 }
