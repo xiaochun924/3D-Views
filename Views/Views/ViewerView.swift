@@ -1,4 +1,4 @@
-﻿//
+//
 //  ViewerView.swift
 //  Views
 //
@@ -54,14 +54,28 @@ struct ViewerView: View {
             .ignoresSafeArea()
 
             if viewModel.isLoading {
+                // Full-screen scrim so the loading state is unmistakable on large files
+                // (a parse can take many seconds) and the user does not mistake a busy
+                // app for a frozen one. The spinner actually animates now because the
+                // OCCT parse runs in a detached task instead of blocking the main actor.
+                Color.black.opacity(0.25)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
                 VStack(spacing: 12) {
-                    ProgressView().scaleEffect(1.2)
+                    ProgressView()
+                        .controlSize(.large)
+                        .scaleEffect(1.4)
                     Text("加载中...")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.primary)
+                    Text("大文件解析可能需要一些时间")
+                        .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
-                .padding(24)
-                .liquidGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(.horizontal, 28)
+                .padding(.vertical, 22)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
             }
 
             // Kept up until the measurement has all the picks it needs, not just until
