@@ -203,8 +203,36 @@ final class ShareViewController: UIViewController {
                 if didOpen {
                     self.hostWakeupResolved = true
                     self.scheduleAutoClose()
+                } else {
+                    // 官方 API 被拒时，走社区验证的 responder chain 兜底再试一次
+                    // （iOS 26/27 实测有效，非官方 API、尽力而为）。失败无副作用：
+                    // 重试按钮与主 App 的收件箱扫描仍是恢复路径。
+                    self.openViaResponderChain(url)
                 }
             }
+        }
+    }
+
+    /// 社区方案：沿 responder chain 找 UIApplication 调用 open 拉起主 App。
+    /// 官方 `extensionContext.open` 在分享扩展里多数版本返回 false，此路是社区实测
+    /// 有效的兜底。非官方 API，有审核风险，且仍可能被系统拒绝——被拒或无人响应时
+    /// 什么都不做，交给重试按钮与收件箱扫描兜底。
+    private func openViaResponderChain(_ url: URL) {
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let app = current as? UIApplication {
+                app.open(url, options: [:]) { [weak self] success in
+                    DispatchQueue.main.async {
+                        guard let self, !self.hostWakeupResolved else { return }
+                        if success {
+                            self.hostWakeupResolved = true
+                            self.scheduleAutoClose()
+                        }
+                    }
+                }
+                return
+            }
+            responder = current.next
         }
     }
 
