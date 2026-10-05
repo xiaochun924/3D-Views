@@ -37,8 +37,6 @@ targets:
     sources:
       - path: .
         excludes:
-          - Models/STEP/**
-          - Models/Mesh/**
           # 分享扩展是独立 target，它的源码不能混进主 App
           - Views-Share/**
           - Views.entitlements
