@@ -344,20 +344,22 @@ final class FileHistory: ObservableObject {
         //   停在「请求唤醒主 App」        → 死在这一步之后
         //   走到「提交 completeRequest」  → 收尾是完整的，问题在别处
         //
-        // 轨迹跨次累积（封顶 40 条），所以只显示本次启动之后的记录。不过滤就会把上一次分享的
-        // 收尾混进来，那最后一条就不再是答案。
-        if let started = AppGroup.lastExtensionStart {
-            let thisRun = AppGroup.finishTrail.filter { $0.at >= started }
-            if thisRun.isEmpty {
-                lines.append("收尾轨迹：无（扩展未走到收尾阶段）")
-            } else {
-                lines.append("收尾轨迹：")
-                for entry in thisRun {
+        // 按运行切分显示，只留最近三次。切分靠轨迹里的「扩展启动」标记，而不是按
+        // `lastExtensionStart` 过滤——后者只保存最近一次启动时间，而这条轨迹的典型用法正是
+        // 「分享 → 闪退 → 再分享一次把文件导进来 → 才来看诊断」：那一刻闪退那次已经比
+        // `lastExtensionStart` 更早，一过滤就恰好把要读的那一次丢掉。
+        let runs = AppGroup.finishTrailRuns
+        if runs.isEmpty {
+            lines.append("收尾轨迹：无（扩展从未启动）")
+        } else {
+            let shown = runs.suffix(3)
+            lines.append("收尾轨迹（最近 \(shown.count) 次运行，旧→新）：")
+            for (index, run) in shown.enumerated() {
+                if index > 0 { lines.append("  ---") }
+                for entry in run {
                     lines.append("  \(trailFormatter.string(from: entry.at)) \(entry.step)")
                 }
             }
-        } else {
-            lines.append("收尾轨迹：无（扩展从未启动）")
         }
 
         // The scene-delegate and declared-name blocks that used to print here are gone along

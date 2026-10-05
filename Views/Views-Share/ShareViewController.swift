@@ -270,8 +270,17 @@ final class ShareViewController: UIViewController {
     /// failure path itself.
     private func openViaResponderChain(_ url: URL, isFallback: Bool = false) {
         AppGroup.recordFinishStep(isFallback ? "兜底 open（超时触发）" : "兜底 open（官方拒绝）")
+        // The chain is finite in principle and unguarded in practice: `next` is whatever
+        // the hierarchy says it is, and during a dismissal it can point back into the chain
+        // it came from. A cycle here is a main-thread spin, which the watchdog ends by
+        // killing the extension — the same symptom this walk exists to avoid. Capping the
+        // walk turns "hung forever" into "gave up", and the failure path below already
+        // handles giving up. 200 hops is far past any real chain.
+        let hopLimit = 200
+        var hops = 0
         var responder: UIResponder? = self
-        while let current = responder {
+        while let current = responder, hops < hopLimit {
+            hops += 1
             if let app = current as? UIApplication {
                 app.open(url, options: [:]) { [weak self] success in
                     DispatchQueue.main.async {
@@ -300,11 +309,14 @@ final class ShareViewController: UIViewController {
             responder = current.next
         }
 
-        // No `UIApplication` anywhere along the chain: fall back to asking nothing of it
-        // and tell the user, rather than leaving the sheet waiting for a callback that
-        // cannot come.
+        // Two ways to reach here: the chain really has no `UIApplication` on it, or the walk
+        // hit its cap. Both leave the user in the same place, so they share the failure path
+        // — but the trail records them apart, because a chain that spun and a chain that was
+        // merely short are not the same finding.
         if isFallback {
-            AppGroup.recordFinishStep("兜底：链上找不到 UIApplication")
+            AppGroup.recordFinishStep(hops >= hopLimit
+                ? "兜底：responder 链超过 \(hopLimit) 跳（疑似成环）"
+                : "兜底：链上找不到 UIApplication")
             hostWakeupResolved = true
             showWakeupFailure()
         }

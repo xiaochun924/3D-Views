@@ -197,8 +197,16 @@ enum AppGroup {
     /// from "iOS launched it and it died before it could record anything" — and those
     /// two need completely different fixes. This is the earliest line the extension is
     /// able to leave, so the two cases stop looking the same from the app's side.
+    ///
+    /// It also marks the start of a run *inside* the finishing trail. The trail carrying
+    /// its own boundaries is what keeps a reader from having to consult
+    /// `lastExtensionStart` — which only ever holds the latest start, so reproducing a
+    /// crash and then sharing once more to get the file in would leave the crashed run
+    /// older than that date. Called off the main actor (see `viewDidLoad`), so this second
+    /// write adds no main-thread work.
     static func recordExtensionStart() {
         UserDefaults(suiteName: identifier)?.set(Date(), forKey: extensionStartKey)
+        recordFinishStep(extensionStartStep)
     }
 
     /// When the share extension last came up, or nil if it never has.
@@ -209,6 +217,12 @@ enum AppGroup {
     // MARK: - Finishing trail
 
     private static let finishTrailKey = "SharedFinishTrail"
+
+    /// The line `recordExtensionStart` writes, and the one `finishTrailRuns` splits on.
+    /// It is a constant rather than a literal in two places because the two have to match
+    /// exactly: a typo in either would not fail to compile, it would just silently stop
+    /// splitting the trail.
+    private static let extensionStartStep = "扩展启动"
 
     /// Every step the extension takes *after* the handover, in order, newest last.
     ///
@@ -242,8 +256,10 @@ enum AppGroup {
         defaults.set(trail, forKey: finishTrailKey)
     }
 
-    /// The finishing trail, oldest first. Entries accumulate across shares, so a reader that
-    /// wants a single run filters by `lastExtensionStart`.
+    /// The finishing trail, oldest first, every run end to end.
+    ///
+    /// A caller almost always wants `finishTrailRuns` instead: one run is what answers
+    /// "where did it die", and this flat list mixes runs together.
     static var finishTrail: [(at: Date, step: String)] {
         guard let defaults = UserDefaults(suiteName: identifier),
               let trail = defaults.stringArray(forKey: finishTrailKey)
@@ -253,6 +269,29 @@ enum AppGroup {
             guard parts.count == 2, let seconds = TimeInterval(parts[0]) else { return nil }
             return (Date(timeIntervalSince1970: seconds), String(parts[1]))
         }
+    }
+
+    /// The trail split into one array per extension launch, oldest run first.
+    ///
+    /// Splitting on the marker rather than filtering by `lastExtensionStart` is what makes
+    /// the trail survive the reproduction it exists for. `lastExtensionStart` is a single
+    /// date, and the ordinary way to use this page is "share → it crashes → share once more
+    /// to actually get the file in → now go read the diagnostics": by then the crashed run
+    /// is older than that date, so a filter drops precisely the run worth reading.
+    ///
+    /// Entries written before the marker existed (an older build wrote to the same key) are
+    /// kept as their own leading run rather than discarded, so upgrading does not silently
+    /// empty the page.
+    static var finishTrailRuns: [[(at: Date, step: String)]] {
+        var runs: [[(at: Date, step: String)]] = []
+        for entry in finishTrail {
+            if entry.step == extensionStartStep || runs.isEmpty {
+                runs.append([entry])
+            } else {
+                runs[runs.count - 1].append(entry)
+            }
+        }
+        return runs
     }
 
     // MARK: - Helpers
