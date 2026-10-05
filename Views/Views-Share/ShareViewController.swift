@@ -37,9 +37,21 @@
 import UIKit
 import UniformTypeIdentifiers
 
-/// Declared with an explicit Objective-C name because the extension's `Info.plist`
-/// names this class directly in `NSExtensionPrincipalClass`, and a Swift mangled name
-/// there is a class the runtime cannot find.
+/// The class the share sheet instantiates, named from the extension's `Info.plist`.
+///
+/// `NSExtensionPrincipalClass` now reads `$(PRODUCT_MODULE_NAME).ShareViewController`
+/// (see `project.yml`'s `NSExtensionPrincipalClass`), so the runtime is handed a
+/// module-qualified name it can resolve without waiting on Swift's Objective-C name
+/// registration. The `@objc` attribute is kept as the second route: it also lets the
+/// class be found under the bare `ShareViewController`, which is what a plist that has
+/// not been through the build-variable expansion would ask for. Both names resolve to
+/// this same class, so neither path can land on a class the runtime cannot find.
+///
+/// This pairing is the fix for the cold-launch crash. A bare `ShareViewController` in
+/// the plist was measured on device to fail exactly this way: the share sheet still
+/// listed the row and the .appex was still bundled and signed, but the process never
+/// came up at all — no line of this file ran, so the 「扩展启动于」 timestamp stayed
+/// frozen at its previous value.
 @objc(ShareViewController)
 final class ShareViewController: UIViewController {
 
@@ -52,11 +64,11 @@ final class ShareViewController: UIViewController {
     private var hostWakeupResolved = false
 
     override func viewDidLoad() {
-        // Left before anything else, including the label. `NSExtensionPrincipalClass`
-        // names this class as a plain Objective-C string, and if that lookup ever fails
-        // the extension dies without running a line of this file — which looks exactly
-        // like the extension never having been launched. This timestamp is what tells
-        // those two apart from the app's side.
+        // Left before anything else, including the label. If the principal-class
+        // lookup ever fails the extension dies without running a line of this file —
+        // which looks exactly like the extension never having been launched. This
+        // timestamp is what tells those two apart from the app's side, so it stays the
+        // first thing the extension does.
         //
         // The write is dispatched off the main thread deliberately. The *first* access to
         // the App Group (which `UserDefaults(suiteName:)` triggers) mounts the shared
