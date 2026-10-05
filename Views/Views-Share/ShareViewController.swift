@@ -185,7 +185,12 @@ final class ShareViewController: UIViewController {
         //
         // Awaited rather than fired off, because the record has to be durable before the
         // host is asked to wake up — the app reads it to report what arrived.
-        await Task.detached {
+        //
+        // The `@Sendable` closure annotation is required by the strict Swift 6.2 build
+        // (`NonisolatedNonsendingByDefault`): this method is `@MainActor`-isolated, so the
+        // captured `deposited`/`failures` would otherwise be treated as non-sending values
+        // crossing into the detached task, and the compiler rejects the closure outright.
+        await Task.detached { @Sendable in
             AppGroup.recordHandoff(names: deposited, failures: failures)
         }.value
         await MainActor.run { [weak self] in
