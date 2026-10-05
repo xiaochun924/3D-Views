@@ -126,6 +126,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         FileHistory.shared.consumePendingShareImportIfNeeded(reason: "回到前台")
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
     }
+
+    /// 面板关掉的那一刻，前台到底在谁手里 —— 这条读数就是为它准备的。
+    /// 分享面板盖上来时 App 只会「退到非活跃」，不会进后台，所以是这一条
+    /// 而不是 `sceneDidEnterBackground` 才是那个能分辨的信号。
+    func applicationWillResignActive(_ application: UIApplication) {
+        FileHistory.shared.note("离开前台：App 退到非活跃")
+    }
 }
 
 /// Builds the window and takes the URL.
@@ -173,6 +180,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func sceneDidBecomeActive(_ scene: UIScene) {
         FileHistory.shared.consumePendingShareImportIfNeeded(reason: "回到前台")
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
+    }
+
+    /// 与上面的 `sceneDidBecomeActive` 成对。两者相隔多久、中间插了什么，
+    /// 就是「拉起来之后有没有留住」的直接读数。
+    func sceneWillResignActive(_ scene: UIScene) {
+        FileHistory.shared.note("离开前台：scene 退到非活跃")
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        FileHistory.shared.note("离开前台：scene 进后台")
     }
 
     private func handle(_ contexts: Set<UIOpenURLContext>, source: String) {

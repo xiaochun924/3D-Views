@@ -219,12 +219,14 @@ final class FileHistory: ObservableObject {
         pruneStorage(verbose: false)
     }
 
-    /// Records one line of handover evidence. Kept to a short window so the 诊断
-    /// section stays readable and the defaults entry stays small.
+    /// Records one line of handover evidence. The window has to hold a whole share
+    /// round-trip, because that round-trip is exactly what this log exists to show:
+    /// leaving the app, the extension handing over, and the return each write lines,
+    /// and a window that only holds part of them hides the part being asked about.
     func note(_ line: String) {
         let stamp = Self.stampFormatter.string(from: Date())
         handoverLog.insert("\(stamp) \(line)", at: 0)
-        if handoverLog.count > 12 { handoverLog = Array(handoverLog.prefix(12)) }
+        if handoverLog.count > 30 { handoverLog = Array(handoverLog.prefix(30)) }
         UserDefaults.standard.set(handoverLog, forKey: handoverLogKey)
     }
 
