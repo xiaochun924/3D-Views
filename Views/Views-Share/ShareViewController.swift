@@ -309,7 +309,12 @@ final class ShareViewController: UIViewController {
                 : "已导入 \(deposited.count) 个文件"
         case (false, false):
             return "已导入 \(deposited.count) 个文件，另有 \(failures.count) 个未能读取"
-        case (true, _):
+        case (true, false):
+            // Everything handed over failed to read. The count is what separates this from
+            // the case below, where nothing was handed over at all — and it is the only
+            // thing that tells the user the share itself did arrive.
+            return "没有拿到可导入的文件\n\(failures.count) 个附件未能读取"
+        case (true, true):
             return "没有拿到可导入的文件\n请试试从「文件」App 里分享"
         }
     }
@@ -317,7 +322,6 @@ final class ShareViewController: UIViewController {
     /// One attachment, one copy into the shared inbox. Returns the name it landed
     /// under, or `nil` when nothing usable came out of the provider.
     private func deposit(from provider: NSItemProvider) async -> String? {
-        // 1) A file URL — what the Files app hands over almost every time.
         for identifier in [UTType.fileURL.identifier, UTType.url.identifier] {
             guard provider.hasItemConformingToTypeIdentifier(identifier) else { continue }
             if let name = await depositURL(from: provider, typeIdentifier: identifier),
@@ -326,9 +330,9 @@ final class ShareViewController: UIViewController {
             }
         }
 
-        // 2) Anything else: ask for a file representation. These providers hand over a
-        //    URL into a temporary directory the system reclaims the moment the callback
-        //    returns, which is why the copy happens inside it and not after an await.
+        // These providers hand over a URL into a temporary directory the system reclaims
+        // the moment the callback returns, which is why the copy happens inside it and not
+        // after an await.
         let suggested = provider.suggestedName
         for identifier in [UTType.data.identifier, UTType.item.identifier, UTType.content.identifier] {
             guard provider.hasItemConformingToTypeIdentifier(identifier) else { continue }
