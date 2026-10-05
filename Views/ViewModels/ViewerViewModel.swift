@@ -745,7 +745,7 @@ final class ViewerViewModel: ObservableObject {
     /// The format facts (`isBrep`, `label`, `ext`) are passed in as plain values rather
     /// than the `ModelFormat` enum, so this function's signature does not depend on a
     /// type that nests inside the `@MainActor` enclosing class.
-    nonisolated(unsafe) private static func performBackgroundLoad(
+    nonisolated private static func performBackgroundLoad(
         url: URL,
         ext: String,
         isBrep: Bool,
@@ -1518,7 +1518,15 @@ final class ViewerViewModel: ObservableObject {
         // Built here rather than loaded so the app carries no asset: a bright zenith, a
         // mid horizon and a dark nadir, which is the same job a three.js hemisphere light
         // does in the reference viewer.
-        scene.lightingEnvironment.contents = await Self.environmentCube()
+        // `[CGImage]`, not the `[UIImage]` this used to hand back: the result has to cross
+        // out of the main actor into this `nonisolated` function, and `UIImage` is not
+        // `Sendable`. See the note on `environmentCube`. An empty array means the drawing
+        // failed; assigning it would replace the environment with nothing, so keep the
+        // unset state and let `intensity` alone light the scene.
+        let environment = await Self.environmentCube()
+        if !environment.isEmpty {
+            scene.lightingEnvironment.contents = environment
+        }
         // Minimal environment: just enough fill to keep the shadow side from going
         // pure black. Anything higher washes out the directional key and the part goes
         // flat — which is exactly what the screenshots show. The form must come from
@@ -1721,21 +1729,30 @@ final class ViewerViewModel: ObservableObject {
     /// installed, so paying a main-actor hop for them costs nothing next to the OCCT parse
     /// that dominates the load. Callers on a background task must `await` it; a
     /// `nonisolated` version would have been faster and wrong.
+    ///
+    /// Returns `CGImage`, not `UIImage`, because the *caller* is `nonisolated`:
+    /// a main-actor-isolated method cannot hand a non-`Sendable` `[UIImage]` back out to a
+    /// nonisolated context (that is exactly what CI rejected in
+    /// `error: non-Sendable '[UIImage]'-typed result can not be returned from main
+    /// actor-isolated static method 'environmentCube()'`). `CGImage` is `@unchecked
+    /// Sendable` in the SDK, so the array crosses the boundary legally, and SceneKit
+    /// accepts `[CGImage]` for `lightingEnvironment.contents` exactly as it does
+    /// `[UIImage]` — the cube-face order and orientation are unchanged.
     @MainActor
-    static func environmentCube() -> [UIImage] {
+    static func environmentCube() -> [CGImage] {
         let size = CGSize(width: 32, height: 32)
         let renderer = UIGraphicsImageRenderer(size: size)
         let sky = UIColor(white: 0.98, alpha: 1.0)
         let ground = UIColor(white: 0.34, alpha: 1.0)
 
-        func uniform(_ color: UIColor) -> UIImage {
+        func uniform(_ color: UIColor) -> CGImage? {
             renderer.image { context in
                 color.setFill()
                 context.fill(CGRect(origin: .zero, size: size))
-            }
+            }.cgImage
         }
 
-        func gradient(from top: UIColor, to bottom: UIColor) -> UIImage {
+        func gradient(from top: UIColor, to bottom: UIColor) -> CGImage? {
             renderer.image { context in
                 let colors = [top.cgColor, bottom.cgColor] as CFArray
                 guard let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -1747,13 +1764,17 @@ final class ViewerViewModel: ObservableObject {
                     end: CGPoint(x: 0, y: size.height),
                     options: []
                 )
-            }
+            }.cgImage
         }
 
         let side = gradient(from: sky, to: ground)
-        return [side, side,
-                uniform(sky), uniform(ground),
-                side, side]
+        // Every face must be present: SceneKit treats a short array as a malformed cube map
+        // and silently drops the environment, which would undo the lighting fix this exists
+        // for. Bailing to an empty array leaves `lightingEnvironment.contents` untouched
+        // (`Intensity 0.15` alone), which is the pre-fix behaviour rather than a crash.
+        let faces = [side, side, uniform(sky), uniform(ground), side, side]
+        guard faces.allSatisfy({ $0 != nil }) else { return [] }
+        return faces.compactMap { $0 }
     }
 
     // MARK: - Camera control
