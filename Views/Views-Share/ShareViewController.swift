@@ -227,16 +227,21 @@ final class ShareViewController: UIViewController {
 
         // Only a deadline on the *total* attempt, and it deliberately does not set
         // `hostWakeupResolved` before the fallback has had its turn. The previous version
-        // set it here, which silently disabled the one path that works on device: if
-        // `extensionContext.open` called back after 2.5 s (or never, which is its usual
-        // behaviour on iOS 26), the flag was already true, so `openViaResponderChain` was
-        // never reached and the sheet gave up while the documented working route sat idle.
+        // set it here, which silently disabled the only path that runs on device: the flag
+        // was already true, so `openViaResponderChain` was never reached and the sheet gave
+        // up while the working route sat idle.
+        //
+        // 真机读数（10-05 21:25，iOS 26，`f2b2338`）：`extensionContext.open` 在 **1 毫秒**
+        // 后回调，`didOpen = false`。既不是 2.5 秒后，也不是「永不回调」—— 这段注释原本断言
+        // 后者是 iOS 26 上的常态（"or never, which is its usual behaviour on iOS 26"），
+        // 被实测推翻。所以这个 deadline 正常情况下根本没有在等官方 API；它剩下的意义只是
+        // 「兜底那条路连回调都没来」时的最后一道网。
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
             guard let self, !self.hostWakeupResolved else { return }
             // Official API has not answered in time. Try the fallback rather than
             // declaring failure; `showWakeupFailure` only runs if that also stays silent
             // for its own grace period.
-            self.openViaResponderChain(url, isFallback: true)
+            self.openViaResponderChain(url, trigger: .deadlineExpired)
         }
     }
 
@@ -254,22 +259,40 @@ final class ShareViewController: UIViewController {
                     // 官方 API 被拒时，走社区验证的 responder chain 兜底再试一次
                     // （iOS 26/27 实测有效，非官方 API、尽力而为）。失败无副作用：
                     // 重试按钮与主 App 的收件箱扫描仍是恢复路径。
-                    self.openViaResponderChain(url)
+                    //
+                    // 这条路和 2.5 秒 deadline 那条路一样，必须自己收尾：官方 API 已经明确
+                    // 回了 `false`，不会再有第二次回调来解开状态，所以从这里进去的兜底要把
+                    // 失败处理走完（1.5 秒宽限 → 失败提示）。
+                    //
+                    // 早先这里走的是默认参数 `isFallback = false`，那会让下面三条失败处理
+                    // （open 回调回 false、回调根本不来、链上找不到 UIApplication）全部失效：
+                    // 面板会一直挂着，直到 2.5 秒后 deadline 再发第二次 `UIApplication.open`。
+                    // 真机读数显示，正常分享走的**就是**这条路 —— 官方 API 1 毫秒回 false，
+                    // 兜底从此进。所以「默认关掉失败处理」等于把唯一在跑的路径的收尾关掉。
+                    self.openViaResponderChain(url, trigger: .officialRefused)
                 }
             }
         }
     }
 
+    /// Why the walk is running. Both triggers mean the same thing for control flow — the
+    /// official API is finished with this attempt and no further callback will resolve the
+    /// state, so the walk owns the failure path — but they say different things about iOS,
+    /// and the trail is only worth keeping if it records which one happened. An earlier
+    /// version used a single `isFallback` flag for both jobs, which forced one of the two
+    /// reasons to be logged wrongly and, at the official-refusal call site, quietly switched
+    /// the entire failure path off.
+    private enum WakeupTrigger: String {
+        case officialRefused = "兜底 open（官方拒绝）"
+        case deadlineExpired = "兜底 open（超时触发）"
+    }
+
     /// 社区方案：沿 responder chain 找 UIApplication 调用 open 拉起主 App。
     /// 官方 `extensionContext.open` 在分享扩展里多数版本返回 false，此路是社区实测
     /// 有效的兜底。非官方 API，有审核风险，且仍可能被系统拒绝——被拒或无人响应时
-    /// 什么都不做，交给重试按钮与收件箱扫描兜底。
-    ///
-    /// `isFallback` marks the call made *after* the official API's deadline expired, where
-    /// no second callback will ever arrive to resolve the state — so this one owns the
-    /// failure path itself.
-    private func openViaResponderChain(_ url: URL, isFallback: Bool = false) {
-        AppGroup.recordFinishStep(isFallback ? "兜底 open（超时触发）" : "兜底 open（官方拒绝）")
+    /// 走失败提示，交给重试按钮与收件箱扫描兜底。
+    private func openViaResponderChain(_ url: URL, trigger: WakeupTrigger) {
+        AppGroup.recordFinishStep(trigger.rawValue)
         // The chain is finite in principle and unguarded in practice: `next` is whatever
         // the hierarchy says it is, and during a dismissal it can point back into the chain
         // it came from. A cycle here is a main-thread spin, which the watchdog ends by
@@ -288,21 +311,23 @@ final class ShareViewController: UIViewController {
                         if success {
                             self.hostWakeupResolved = true
                             self.scheduleAutoClose()
-                        } else if isFallback {
+                        } else {
+                            // 官方 API 已经拒过一次，兜底也拒了，没有第三条路可试 ——
+                            // 直接给用户一个可操作的出口，而不是让面板继续挂着。
                             self.hostWakeupResolved = true
                             self.showWakeupFailure()
                         }
                     }
                 }
-                if isFallback {
-                    // `open`'s completion is not guaranteed to arrive either; give it its
-                    // own grace period so the sheet cannot sit unresolved forever.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                        guard let self, !self.hostWakeupResolved else { return }
-                        AppGroup.recordFinishStep("兜底宽限到期")
-                        self.hostWakeupResolved = true
-                        self.showWakeupFailure()
-                    }
+                // `open`'s completion is not guaranteed to arrive either; give it its own
+                // grace period so the sheet cannot sit unresolved forever. Now that the
+                // failure path is no longer optional, this timer is the only thing between
+                // "the walk found a UIApplication" and a sheet that hangs until iOS gives up.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    guard let self, !self.hostWakeupResolved else { return }
+                    AppGroup.recordFinishStep("兜底宽限到期")
+                    self.hostWakeupResolved = true
+                    self.showWakeupFailure()
                 }
                 return
             }
@@ -313,13 +338,11 @@ final class ShareViewController: UIViewController {
         // hit its cap. Both leave the user in the same place, so they share the failure path
         // — but the trail records them apart, because a chain that spun and a chain that was
         // merely short are not the same finding.
-        if isFallback {
-            AppGroup.recordFinishStep(hops >= hopLimit
-                ? "兜底：responder 链超过 \(hopLimit) 跳（疑似成环）"
-                : "兜底：链上找不到 UIApplication")
-            hostWakeupResolved = true
-            showWakeupFailure()
-        }
+        AppGroup.recordFinishStep(hops >= hopLimit
+            ? "兜底：responder 链超过 \(hopLimit) 跳（疑似成环）"
+            : "兜底：链上找不到 UIApplication")
+        hostWakeupResolved = true
+        showWakeupFailure()
     }
 
     private func showWakeupFailure() {
