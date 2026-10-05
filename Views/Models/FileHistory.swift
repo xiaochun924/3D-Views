@@ -236,65 +236,21 @@ final class FileHistory: ObservableObject {
     /// the device. Temporary, alongside `handoverLog`.
     static func bundleFacts() -> [String] {
         var lines: [String] = []
-        let info = Bundle.main.infoDictionary ?? [:]
-
-        if let scene = info["UIApplicationSceneManifest"] as? [String: Any] {
-            let multiple = scene["UIApplicationSupportsMultipleScenes"] as? Bool
-            let text = multiple.map { $0 ? "是" : "否" } ?? "未声明"
-            lines.append("场景清单：有（多场景=\(text)）")
-        } else {
-            lines.append("场景清单：无")
-        }
-
-        // The document-type and exported-UTI blocks that used to print here were deleted
-        // when the declarations themselves were, on the reasoning that a row of 无 only
-        // invites another round of tuning a path that is not in use. That reasoning no
-        // longer holds: the document-open path IS the only path now, and these declarations
-        // are its entire entry point. They also live only in the *installed* bundle —
-        // `Info.plist` is merged from `project.yml` at build time, and a side-loaded build
-        // need not be the one in the source tree, so what is compiled here proves nothing
-        // about what is running on the device.
+        // The scene-manifest, document-type, exported-UTI and open-in-place blocks that used
+        // to print here are gone, and their absence is deliberate.
         //
-        // Printed raw rather than summarised. The question being asked is precisely
-        // "did the declaration survive into the binary", and a count would hide a
-        // declaration that arrived with the wrong rank or the wrong type list.
-        if let types = info["CFBundleDocumentTypes"] as? [[String: Any]] {
-            lines.append("文档类型：\(types.count) 条")
-            for type in types {
-                let name = type["CFBundleTypeName"] as? String ?? "?"
-                let rank = type["LSHandlerRank"] as? String ?? "未声明"
-                let contents = (type["LSItemContentTypes"] as? [String]) ?? []
-                lines.append("  \(name)｜rank=\(rank)｜\(contents.joined(separator: ","))")
-            }
-        } else {
-            lines.append("文档类型：未声明")
-        }
-
-        if let exported = info["UTExportedTypeDeclarations"] as? [[String: Any]] {
-            lines.append("自定义类型：\(exported.count) 条")
-            for type in exported {
-                let id = type["UTTypeIdentifier"] as? String ?? "?"
-                let tags = (type["UTTypeTagSpecification"] as? [String: Any])?["public.filename-extension"]
-                let exts = (tags as? [String])?.joined(separator: ",") ?? "?"
-                lines.append("  \(id)｜\(exts)")
-            }
-        } else {
-            lines.append("自定义类型：未声明")
-        }
-
-        // Whether the app is willing to open a document in place, which is what decides
-        // whether Files hands over a copy it made or a URL pointing at the original. It is
-        // the setting most likely to be the difference between "the app opened and the file
-        // did not arrive" and "the file arrived under a name we did not expect".
-        let inPlace = (info["LSSupportsOpeningDocumentsInPlace"] as? Bool)
-            .map { $0 ? "true" : "false" } ?? "未声明"
-        lines.append("就地打开：\(inPlace)")
-
-        // Kept for the same reason as the App Group block above, and reworded because the
-        // extension is no longer the thing that fills this container: the document-open
-        // path does not touch the App Group at all, so `未安装` here is the expected value
-        // rather than a finding. It is still worth a line, because it is what tells a
-        // reader that the build on the device is the one this source tree describes.
+        // All four existed to answer one question: why a file opened from Files reached the
+        // app but never arrived. That question is closed. Note the declarations themselves are
+        // **still in `project.yml`** — `CFBundleDocumentTypes`, `UTExportedTypeDeclarations`,
+        // `LSSupportsOpeningDocumentsInPlace` and `UISceneDelegateClassName` were all kept, not
+        // deleted — so this is not a case of the lines having nothing left to read. It is that
+        // what they would read has stopped moving: the path was measured with `Alternate`+false,
+        // `None`+false and `Alternate`+true and never once delivered a URL, while sharing into
+        // the extension does. A column of constants is worse than no line at all, because a
+        // constant that reads like a finding invites another round of tuning a path that has
+        // never brought a file in.
+        //
+        // What remains below are the facts that still move when the share chain breaks.
 
         let bundleID = Bundle.main.bundleIdentifier ?? "?"
         lines.append("Bundle ID：\(bundleID)")
@@ -325,14 +281,13 @@ final class FileHistory: ObservableObject {
             lines.append("App Group：不可用（签名未带 \(AppGroup.identifier)）")
         }
 
-        // The extension is deliberately not embedded any more, so "未安装" is the expected
-        // reading and must not be mistaken for a fault. Saying which of the two it is here
-        // keeps the diagnostic page honest: the same line, two opposite meanings.
+        // The extension is embedded again — `project.yml` restored it in 91ca1bc — so 未安装
+        // is a fault here, not an expected reading: it means the .appex did not survive into
+        // the installed bundle, and no share can reach the app at all.
         //
-        // This is only ever shown, never acted on. The document-open path below does not
-        // consult it, so a missing .appex changes what the reader should conclude — not
-        // what the app does.
-        lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装（按当前方案，正常）")")
+        // This is only ever shown, never acted on. Nothing in the import path consults it, so
+        // a missing .appex changes what the reader should conclude — not what the app does.
+        lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装（故障）")")
 
         // Whether the signing tool signed the nested pieces, not just the outer app.
         //
@@ -405,79 +360,17 @@ final class FileHistory: ObservableObject {
             lines.append("收尾轨迹：无（扩展从未启动）")
         }
 
-        // Whether the scene the app is running in was built by us or by SwiftUI. This is the
-        // one fact that decides whether a handed-over URL can be received at all: the
-        // document-open path delivers into `connectionOptions.urlContexts` on the scene, so
-        // with no `SceneDelegate` of our own there is nothing to receive it and the app is
-        // launched for a file it then never sees. Reporting the delegate's own class name
-        // answers it directly, instead of inferring it from the absence of a log line.
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let delegate = scene.delegate {
-            lines.append("场景代理：\(type(of: delegate))")
-        } else {
-            lines.append("场景代理：无（场景未连接）")
-        }
-
-        // ---- 声明名 vs 运行时名：这条比对本身曾经是错的（2026-10-04 修）----
+        // The scene-delegate and declared-name blocks that used to print here are gone along
+        // with the document-open path they served. They answered one question — whether the
+        // scene that would receive a handed-over URL was ours or SwiftUI's — and `project.yml`
+        // records that it was answered: both spellings of `UISceneDelegateClassName` were
+        // tried, and the build whose declared name matched the runtime name still received no
+        // URL. The key was ruled out as the blocker, so a line that only ever printed 一致
+        // said nothing about whether a file would arrive.
         //
-        // 早先这里把「plist 里声明的类名」与 `"\(模块名).\(type(of: delegate))"` 相比。
-        // 那是**两套不同规则**的名字，恒不相等：
-        //   * `type(of:)` 走 Swift 反射，`String(describing:)` 拿到的是 **Objective-C 运行时名**，
-        //     对 `PRODUCT_NAME = 3D-Views` 它是 `_D_Views`（ObjC 标识符不能以数字开头，补前缀）；
-        //   * `Self.moduleName` 取的是 **Swift 模块名**，同一个 PRODUCT_NAME 下是 `3D_Views`
-        //     （非标识符字符换成下划线）。
-        // 于是诊断页永远打印「场景代理名：**不一致**」，无论 plist 写的是哪一个 —— 那是假警报，
-        // 会把人引向一个不是阻塞点的键。更名成 `Views` 后两边恰好都是 `Views`，假警报自动消失，
-        // 但比对逻辑本身仍然是拿两种名字在比，换个 PRODUCT_NAME 就会复发，所以这里改成
-        // **两侧都用 ObjC 运行时名**。
-        //
-        // 声明名（plist 里那个字符串）按 ObjC 语义解析：`Views.SceneDelegate` 的模块段就是
-        // ObjC 模块名。运行时名用 `NSStringFromClass`/`object_getClassName` 取真实注册名。
-        //
-        // 注意：即使这里显示「一致」，也**不代表导入能work** —— 实测过两版都收不到 URL
-        // （见图 project.yml 里 UISceneDelegateClassName 的注释）。这一行只回答「plist 有没有
-        // 指名一个真实存在的类」，不回答「这个键是不是阻塞点」。
-        lines.append("模块名（Swift）：\(Self.moduleName)")
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let delegate = scene.delegate {
-            // 真实的 ObjC 运行时名；`object_getClassName` 对桥接过的 delegate 实例最直接。
-            let runtimeName = String(cString: object_getClassName(delegate))
-            let declared = Bundle.main.object(
-                forInfoDictionaryKey: "UIApplicationSceneManifest"
-            ) as? [String: Any]
-            let declaredName = ((declared?["UISceneConfigurations"] as? [String: Any])?[
-                "UIWindowSceneSessionRoleApplication"
-            ] as? [[String: Any]])?.first?["UISceneDelegateClassName"] as? String
-            lines.append("声明名：\(declaredName ?? "未声明")｜运行时名：\(runtimeName)")
-            if let declaredName {
-                // 同时按两种写法判等：plist 写 Swift 模块名（Views.SceneDelegate）或
-                // ObjC 名（_D_Views.SceneDelegate）都算命中，只要类真实存在。
-                let swiftStyle = "\(Self.moduleName).\(runtimeName.split(separator: ".").last ?? "")"
-                let objcStyle = runtimeName
-                let matches = (declaredName == objcStyle) || (declaredName == swiftStyle)
-                lines.append(
-                    matches
-                        ? "场景代理名：一致（plist 的 \(declaredName) 指向真实注册的 \(runtimeName)）"
-                        : "场景代理名：**不一致**（plist 写的是 \(declaredName)，运行时注册的是 \(runtimeName)）"
-                )
-            }
-        }
+        // The extension's own trail, printed above, is what replaced it.
 
         return lines
-    }
-
-    /// 这个二进制编译成的 **Swift 模块名**，取自运行时而不是构建设置。
-    ///
-    /// 注意它与 **ObjC 运行时名不是一回事**：`PRODUCT_NAME` 为 `3D-Views` 时，Swift 模块名是
-    /// `3D_Views`（非标识符字符换下划线），而 ObjC 名是 `_D_Views`（不能以数字开头，补前缀）。
-    /// 早先诊断页把这两者放在一起比较，于是恒报「不一致」——详见调用处的注释。
-    /// 更名成 `Views` 后两者恰好相同，但这个 helper 返回的**始终是 Swift 侧的名字**，
-    /// 要 ObjC 名请用 `object_getClassName`。
-    ///
-    /// `String(reflecting:)` 作用于一个类型会给出完全限定名，所以第一个点之前就是模块名。
-    /// `FileHistory` 正是本模块内的一个类型，这让它成为一个合法的取样对象。
-    private static var moduleName: String {
-        String(reflecting: FileHistory.self).split(separator: ".").first.map(String.init) ?? "?"
     }
 
     /// Empties the record. The log is meant to be read right after something failed, and a
@@ -512,7 +405,7 @@ final class FileHistory: ObservableObject {
         lines.append("=== 3D Views 导入诊断 ===")
         lines.append("生成时间：\(Self.stampFormatter.string(from: Date()))")
         lines.append("")
-        lines.append("--- 安装包声明 ---")
+        lines.append("--- 构建与分享链路 ---")
         lines.append(contentsOf: Self.bundleFacts())
         lines.append("")
         lines.append("--- 导入记录（新→旧）---")
@@ -1248,11 +1141,11 @@ final class FileHistory: ObservableObject {
     /// The type the system actually tags a file with — path extension plus the UTI from
     /// `contentType` — for a file that reached the app through the in-app picker.
     ///
-    /// That path works, which makes it the only way to learn what UTI Files tags a
-    /// `.step`/`.stl` with on the real device. It is what the catch-all `public.data`
-    /// entry in `CFBundleDocumentTypes` is currently standing in for: once the real UTI
-    /// is known, the declaration can be narrowed from "any data file" back to the
-    /// specific type, which is what it ought to name.
+    /// The picker path works, which makes this the only way to learn what UTI Files tags a
+    /// `.step`/`.stl` with on the real device. It used to be recorded so that the catch-all
+    /// `public.data` entry in `CFBundleDocumentTypes` could be narrowed from "any data file"
+    /// back to the real type. That declaration went with the document-open path, so the value
+    /// is now simply what the log line says it is: the extension and the UTI, side by side.
     static func describeType(of url: URL) -> String {
         let ext = url.pathExtension.isEmpty ? "无扩展名" : url.pathExtension
         let identifier = (try? url.resourceValues(forKeys: [.contentTypeKey]))?

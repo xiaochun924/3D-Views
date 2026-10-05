@@ -142,14 +142,14 @@ extension HandoverLogEntry {
     }
 }
 
-/// One line of the installed-bundle readout, with stable identity.
+/// One line of the build-and-share readout, with stable identity.
 ///
-/// The same defect as `HandoverLogEntry` above: `bundleFacts()` reads `Bundle.main` and
-/// returns a *variable-length* array — a declaration that is present adds a line, a
-/// `CFBundleDocumentTypes` block adds one per type — so position identity shifts every row
-/// below an added or removed line. `id: \.self` is again not a substitute: `bundleFacts()`
-/// can legitimately emit the same text twice. The `UUID` is minted in
-/// `ImportLogView.reloadFacts()`, once per refresh.
+/// The same defect as `HandoverLogEntry` above: `bundleFacts()` reads the installed bundle
+/// and the share chain's own records, and returns a *variable-length* array — the handoff
+/// record adds a line, and the finishing trail adds one per step it took — so position
+/// identity shifts every row below an added or removed line. `id: \.self` is again not a
+/// substitute: `bundleFacts()` can legitimately emit the same text twice. The `UUID` is
+/// minted in `ImportLogView.reloadFacts()`, once per refresh.
 struct BundleFactEntry: Identifiable {
     let id: UUID
     let text: String
@@ -213,12 +213,12 @@ struct ImportLogView: View {
     @State private var copied = false
     /// The log paired with identity, held rather than derived — see `HandoverLogEntry`.
     @State private var logEntries: [HandoverLogEntry] = []
-    /// The installed-bundle readout, paired with identity for the same reason.
+    /// The build-and-share readout, paired with identity for the same reason.
     ///
-    /// `bundleFacts()` is not observable — it reads `Bundle.main` on every call — so this is
-    /// also what makes the section re-read at all. It replaced `.id(refreshToken)`, which
-    /// rebuilt the *entire* `List` from scratch on every refresh: correct, but it threw away
-    /// SwiftUI's diffing for every section to fix one.
+    /// `bundleFacts()` is not observable — it reads the installed bundle and `UserDefaults`
+    /// on every call — so this is also what makes the section re-read at all. It replaced
+    /// `.id(refreshToken)`, which rebuilt the *entire* `List` from scratch on every refresh:
+    /// correct, but it threw away SwiftUI's diffing for every section to fix one.
     @State private var factEntries: [BundleFactEntry] = []
 
     /// Pairs the current log with fresh identity and rebuilds the log rows.
@@ -231,14 +231,14 @@ struct ImportLogView: View {
         logEntries = history.handoverLog.map { HandoverLogEntry(line: $0) }
     }
 
-    /// Pairs the installed-bundle readout with fresh identity.
+    /// Pairs the build-and-share readout with fresh identity.
     ///
     /// Separate from `reloadLog()` because the two read different things and change on
     /// different occasions: the log lives in `UserDefaults` and changes when a handover
-    /// happens *or* when 清空 is tapped, while the bundle facts live in the installed binary
-    /// and change only when a different build is installed. So this is called on two of the
-    /// three occasions `reloadLog()` is — entry and 重新扫描 — and deliberately not on 清空,
-    /// which cannot alter what `Bundle.main` declares.
+    /// happens *or* when 清空 is tapped, while the facts come from the installed binary plus
+    /// the share chain's own records and change when a different build is installed or a
+    /// share is attempted. So this is called on two of the three occasions `reloadLog()` is —
+    /// entry and 重新扫描 — and deliberately not on 清空, which cannot alter either.
     private func reloadFacts() {
         factEntries = FileHistory.bundleFacts().map { BundleFactEntry(id: UUID(), text: $0) }
     }
@@ -381,11 +381,12 @@ struct ImportLogView: View {
             }
 
             Section {
-                // Collapsed, and counted rather than listed. `bundleFacts()` is the densest
-                // thing on this screen — a declaration per line plus a path per document type
-                // — and it is the one part that is not asked about until the two sections
-                // above have failed to explain something. The count says whether it is worth
-                // opening; 复制全部 still copies every line whether it is open or not.
+                // Collapsed, and counted rather than listed. `bundleFacts()` is the longest
+                // thing on this screen — the finishing trail alone adds a line per step the
+                // extension took — and it is the one part that is not asked about until the
+                // two sections above have failed to explain something. The count says whether
+                // it is worth opening; 复制全部 still copies every line whether it is open or
+                // not.
                 DisclosureGroup {
                     ForEach(factEntries) { entry in
                         Text(entry.text)
@@ -394,7 +395,7 @@ struct ImportLogView: View {
                             .textSelection(.enabled)
                     }
                 } label: {
-                    Text("安装包声明（\(factEntries.count) 项）")
+                    Text("构建与分享链路（\(factEntries.count) 项）")
                 }
             }
 
