@@ -212,8 +212,18 @@ final class ShareViewController: UIViewController {
                 // that the host app accepted the wake-up request. Keep this controller alive
                 // while that request is in flight so the extension cannot be reaped before
                 // the main app is brought forward.
+                //
+                // The wake-up is delayed a beat on purpose. On a cold extension launch the
+                // sheet has not finished presenting when the copy lands; opening the host
+                // app that instant switches away before the result panel was ever rendered —
+                // the "first share jumps straight to the app, no panel" report. Waiting here
+                // lets the label show first, then hands over.
                 self.openButton.isHidden = true
-                self.requestHostWakeup()
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard let self, !self.handoffFinished else { return }
+                    self.requestHostWakeup()
+                }
             }
         }
     }
