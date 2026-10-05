@@ -206,6 +206,55 @@ enum AppGroup {
         UserDefaults(suiteName: identifier)?.object(forKey: extensionStartKey) as? Date
     }
 
+    // MARK: - Finishing trail
+
+    private static let finishTrailKey = "SharedFinishTrail"
+
+    /// Every step the extension takes *after* the handover, in order, newest last.
+    ///
+    /// This exists for one reason: the extension writes nothing at all before calling
+    /// `completeRequest`, so the app could previously say "the extension came up" and "the
+    /// file was handed over" and still not tell these two apart —
+    ///
+    ///   * the extension was killed, so `completeRequest` never ran;
+    ///   * it finished normally and the sheet closed, it just never brought the host app
+    ///     forward.
+    ///
+    /// They look identical on screen — the sheet goes away, the home screen appears — so
+    /// the symptom cannot separate them, and the two need different fixes. With this trail,
+    /// **which step the last entry names** is the answer.
+    ///
+    /// Each entry is `"<epoch seconds>|<text>"`. The moment and the text are kept in one
+    /// string rather than two parallel arrays because the only thing this trail is good for
+    /// is order and timing, and two arrays can drift apart.
+    ///
+    /// The finishing path calls this from the main actor, which is safe: the container is
+    /// already mounted by then (`recordExtensionStart` and `recordHandoff` both ran first),
+    /// so this is a warm in-memory defaults write and not another first mount — the mount is
+    /// the one thing in this file that must not be moved onto the main thread.
+    static func recordFinishStep(_ step: String) {
+        guard let defaults = UserDefaults(suiteName: identifier) else { return }
+        var trail = defaults.stringArray(forKey: finishTrailKey) ?? []
+        trail.append("\(Date().timeIntervalSince1970)|\(step)")
+        // One share takes a dozen steps at most. The cap exists only so no odd path can grow
+        // this into an unbounded array; the trail is never this long.
+        if trail.count > 40 { trail.removeFirst(trail.count - 40) }
+        defaults.set(trail, forKey: finishTrailKey)
+    }
+
+    /// The finishing trail, oldest first. Entries accumulate across shares, so a reader that
+    /// wants a single run filters by `lastExtensionStart`.
+    static var finishTrail: [(at: Date, step: String)] {
+        guard let defaults = UserDefaults(suiteName: identifier),
+              let trail = defaults.stringArray(forKey: finishTrailKey)
+        else { return [] }
+        return trail.compactMap { entry in
+            let parts = entry.split(separator: "|", maxSplits: 1)
+            guard parts.count == 2, let seconds = TimeInterval(parts[0]) else { return nil }
+            return (Date(timeIntervalSince1970: seconds), String(parts[1]))
+        }
+    }
+
     // MARK: - Helpers
 
     /// Strips the path separators and the traversal a share sheet's file name could

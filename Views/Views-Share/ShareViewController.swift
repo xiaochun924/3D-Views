@@ -113,10 +113,15 @@ final class ShareViewController: UIViewController {
         super.viewDidAppear(animated)
         guard !hasStarted else { return }
         hasStarted = true
-        // Detached on purpose: `handOverEverything` copies the shared file, and a
-        // multi-megabyte STEP model copied on the main actor holds the share sheet at
-        // its launch moment, which is where iOS kills an extension. The body hops back
-        // to the main actor by itself whenever it touches the label or the button.
+        // Detached so the sheet is not held at its launch moment while the providers are
+        // asked for their files. Note what this does *not* do: `handOverEverything` is a
+        // method of a `UIViewController`, so the whole class is `@MainActor` and the body
+        // runs on the main actor regardless — `Task.detached` cannot move it off. What
+        // actually keeps the copy off the main thread is that it happens inside the
+        // provider callbacks below: those are non-isolated escaping closures called on the
+        // provider's own queue, and `AppGroup.deposit` is non-isolated too. Moving the copy
+        // out of those callbacks (to after an `await`, say) would put it back on the main
+        // actor, and this wrapper would not prevent that.
         Task.detached { [weak self] in
             await self?.handOverEverything()
         }
@@ -194,6 +199,7 @@ final class ShareViewController: UIViewController {
     private func scheduleAutoClose() {
         guard !closeScheduled else { return }
         closeScheduled = true
+        AppGroup.recordFinishStep("已安排自动关闭")
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(600))
             await MainActor.run { self?.completeExtension() }
@@ -206,6 +212,10 @@ final class ShareViewController: UIViewController {
     /// suspended forever. The host's Inbox sweep is the recovery path when iOS rejects this.
     private func requestHostWakeup() {
         hostWakeupResolved = false
+        // 飞行记录仪的起点。这一步之前的一切都已经有据可查（`recordExtensionStart` 与
+        // `recordHandoff`），之后的一切此前完全没有记录——而收尾正是唯一一段「扩展被杀了，
+        // 还是正常走完了」无法分辨的区间。这里就是那段区间的开头。
+        AppGroup.recordFinishStep("请求唤醒主 App")
         guard let url = URL(string: "views://import?handoff=1") else {
             showWakeupFailure()
             return
@@ -233,6 +243,9 @@ final class ShareViewController: UIViewController {
     private func openHostAppRequest(_ url: URL) {
         extensionContext?.open(url) { [weak self] didOpen in
             DispatchQueue.main.async {
+                // 记在 guard 之前：这条要回答的是「官方 API 到底回没回调、回了什么」，而
+                // `hostWakeupResolved` 已经为真时下面的 guard 会直接返回，那就什么都记不下。
+                AppGroup.recordFinishStep("官方 open 回调 didOpen=\(didOpen)")
                 guard let self, !self.hostWakeupResolved else { return }
                 if didOpen {
                     self.hostWakeupResolved = true
@@ -256,6 +269,7 @@ final class ShareViewController: UIViewController {
     /// no second callback will ever arrive to resolve the state — so this one owns the
     /// failure path itself.
     private func openViaResponderChain(_ url: URL, isFallback: Bool = false) {
+        AppGroup.recordFinishStep(isFallback ? "兜底 open（超时触发）" : "兜底 open（官方拒绝）")
         var responder: UIResponder? = self
         while let current = responder {
             if let app = current as? UIApplication {
@@ -276,6 +290,7 @@ final class ShareViewController: UIViewController {
                     // own grace period so the sheet cannot sit unresolved forever.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                         guard let self, !self.hostWakeupResolved else { return }
+                        AppGroup.recordFinishStep("兜底宽限到期")
                         self.hostWakeupResolved = true
                         self.showWakeupFailure()
                     }
@@ -289,12 +304,14 @@ final class ShareViewController: UIViewController {
         // and tell the user, rather than leaving the sheet waiting for a callback that
         // cannot come.
         if isFallback {
+            AppGroup.recordFinishStep("兜底：链上找不到 UIApplication")
             hostWakeupResolved = true
             showWakeupFailure()
         }
     }
 
     private func showWakeupFailure() {
+        AppGroup.recordFinishStep("显示失败提示")
         statusLabel.text = "文件已导入，但没有自动打开 3D Views\n请点击下方按钮重试"
         openButton.setTitle("打开 3D Views", for: .normal)
         openButton.isHidden = false
@@ -415,6 +432,11 @@ final class ShareViewController: UIViewController {
     private func completeExtension() {
         guard !handoffFinished else { return }
         handoffFinished = true
+        // 整条轨迹的终点，也是它存在的理由：`completeRequest` 一旦返回，扩展随时可能被系统
+        // 拆掉，而在此之前它一个字节都没写过。有了这一条，诊断页第一次能回答「扩展是被杀了，
+        // 还是正常走完了」——记录停在上一条＝收尾没走完；记录里有这一条＝收尾是完整的，
+        // 闪退另有原因，别再往这条路径上找。
+        AppGroup.recordFinishStep("提交 completeRequest")
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
 }

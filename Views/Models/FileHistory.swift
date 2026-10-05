@@ -381,6 +381,30 @@ final class FileHistory: ObservableObject {
             lines.append("上次分享：无")
         }
 
+        // 收尾路径的飞行记录仪：扩展在**交接完成之后**走到的每一步。
+        //
+        // 上面两行只说明「扩展起来了」和「文件交接了」，分不清「扩展被杀」与「扩展正常走完、
+        // 只是没能把主 App 拉起来」——这两者在用户眼里一模一样（面板消失、回到桌面），而修法
+        // 完全不同。轨迹的**最后一条**就是答案：
+        //   停在「请求唤醒主 App」        → 死在这一步之后
+        //   走到「提交 completeRequest」  → 收尾是完整的，问题在别处
+        //
+        // 轨迹跨次累积（封顶 40 条），所以只显示本次启动之后的记录。不过滤就会把上一次分享的
+        // 收尾混进来，那最后一条就不再是答案。
+        if let started = AppGroup.lastExtensionStart {
+            let thisRun = AppGroup.finishTrail.filter { $0.at >= started }
+            if thisRun.isEmpty {
+                lines.append("收尾轨迹：无（扩展未走到收尾阶段）")
+            } else {
+                lines.append("收尾轨迹：")
+                for entry in thisRun {
+                    lines.append("  \(trailFormatter.string(from: entry.at)) \(entry.step)")
+                }
+            }
+        } else {
+            lines.append("收尾轨迹：无（扩展从未启动）")
+        }
+
         // Whether the scene the app is running in was built by us or by SwiftUI. This is the
         // one fact that decides whether a handed-over URL can be received at all: the
         // document-open path delivers into `connectionOptions.urlContexts` on the scene, so
@@ -467,6 +491,14 @@ final class FileHistory: ObservableObject {
     private static let stampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd HH:mm:ss"
+        return formatter
+    }()
+
+    /// 收尾轨迹专用。秒级精度在这里不够用：整条收尾路径只有 2.5 秒与 1.5 秒两个定时器，
+    /// 「官方 open 回调」和「兜底 open」很可能落在同一秒里，那样轨迹就白记了。
+    private static let trailFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
         return formatter
     }()
 
