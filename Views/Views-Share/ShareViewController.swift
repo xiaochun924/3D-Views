@@ -190,8 +190,14 @@ final class ShareViewController: UIViewController {
         // (`NonisolatedNonsendingByDefault`): this method is `@MainActor`-isolated, so the
         // captured `deposited`/`failures` would otherwise be treated as non-sending values
         // crossing into the detached task, and the compiler rejects the closure outright.
+        //
+        // Snapshotting into `let` bindings before the task is also mandatory: a @Sendable
+        // closure may not capture the mutable `var` themselves (they are appended to in the
+        // loop above), only immutable copies of their current values.
+        let depositedSnapshot = deposited
+        let failuresSnapshot = failures
         await Task.detached { @Sendable in
-            AppGroup.recordHandoff(names: deposited, failures: failures)
+            AppGroup.recordHandoff(names: depositedSnapshot, failures: failuresSnapshot)
         }.value
         await MainActor.run { [weak self] in
             guard let self else { return }
