@@ -174,7 +174,20 @@ final class ShareViewController: UIViewController {
             }
         }
 
-        AppGroup.recordHandoff(names: deposited, failures: failures)
+        // Dispatched off the main actor for the same reason as the check above.
+        // `recordHandoff` writes through `UserDefaults(suiteName:)` (AppGroup.swift), and
+        // that call is what mounts the shared container on first access. Left bare here,
+        // it ran synchronously on the main actor — the exact stall the check above exists
+        // to avoid, and the reason this file dispatches its other App Group writes.
+        // On a cold launch the mount is slow enough for the watchdog to kill the extension,
+        // which is why the first share after install crashed and the second one worked: by
+        // then the container was already mounted and this line returned instantly.
+        //
+        // Awaited rather than fired off, because the record has to be durable before the
+        // host is asked to wake up — the app reads it to report what arrived.
+        await Task.detached {
+            AppGroup.recordHandoff(names: deposited, failures: failures)
+        }.value
         await MainActor.run { [weak self] in
             guard let self else { return }
             self.statusLabel.text = self.message(deposited: deposited, failures: failures)
