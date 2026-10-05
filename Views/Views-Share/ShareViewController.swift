@@ -2,26 +2,23 @@
 //  ShareViewController.swift
 //  Views-Share
 //
-//  The share sheet's entry point for 3D Views — the **only** import path.
+//  The share sheet's entry point for 3D Views.
 //
 //  An app only gets a row in the share sheet's app strip from a **share extension**
-//  (`com.apple.share-services`). Two other paths were tried on this project and both
-//  were removed after failing on the device every single time:
+//  (`com.apple.share-services`). The document-open path (`CFBundleDocumentTypes` +
+//  `LSHandlerRank`, both still declared in `project.yml`) has been measured on this
+//  project with `Alternate`+`false`, `None`+`false` and `Alternate`+`true`, and none of
+//  the three ever delivered a URL; it is kept declared but is not what brings a file in.
 //
-//  * The document-open path (`CFBundleDocumentTypes` + `LSHandlerRank`). Measured with
-//    `Alternate`+`false`, `None`+`false`, and `Alternate`+`true`; none of the three ever
-//    delivered a URL, because the system routes that URL to the scene's
-//    `connectionOptions.urlContexts` and this app does not own its scene.
-//  * The wake-up URL scheme (`views://import`) was previously disabled after one device
-//    build returned `didOpen == false`. It is now used as a best-effort wake-up only: the
-//    file is copied to the App Group inbox first, then the host is asked to open the scheme.
-//    The inbox remains authoritative, so a rejected or ignored wake-up cannot lose the file.
+//  The wake-up URL scheme (`views://import`) is used as a best-effort wake-up only: the
+//  file is copied to the App Group inbox first, then the host is asked to open the scheme.
+//  The inbox remains authoritative, so a rejected or ignored wake-up cannot lose the file.
 //
 //  The sheet reports the outcome and requests the host app. It closes itself only after iOS
 //  confirms the host was opened; if iOS rejects or ignores the request, the sheet stays open
 //  and shows a retry button instead of reporting a false success.
 //
-//  Three device-measured defects were removed from this file and must not come back:
+//  Four device-measured defects were removed from this file and must not come back:
 //
 //  * `tryToOpenHostApp` awaited `extensionContext.open` inside a continuation. The
 //    callback is not guaranteed to fire in a share extension, so the continuation hung
@@ -32,6 +29,9 @@
 //  * `deposit` ran `FileManager.copyItem` on the main thread from `viewDidAppear`. A
 //    multi-megabyte STEP file blocked the sheet during launch, which is the other way
 //    this extension was killed.
+//  * The first App Group access ran synchronously on the main thread. Mounting the shared
+//    container on a cold extension launch is slow enough for the watchdog to kill the
+//    process — the "first share after install crashes, the second one works" report.
 //
 
 import UIKit
@@ -49,9 +49,7 @@ final class ShareViewController: UIViewController {
     private var handoffFinished = false
     /// Guards the auto-close so a slow handover cannot outlive the sheet's dismissal.
     private var closeScheduled = false
-    private var hostWakeupAttempted = false
     private var hostWakeupResolved = false
-    private var wakeupTimeoutScheduled = false
 
     override func viewDidLoad() {
         // Left before anything else, including the label. `NSExtensionPrincipalClass`
@@ -195,24 +193,28 @@ final class ShareViewController: UIViewController {
     /// guaranteed to receive the completion callback, so awaiting it can leave the extension
     /// suspended forever. The host's Inbox sweep is the recovery path when iOS rejects this.
     private func requestHostWakeup() {
-        hostWakeupAttempted = true
         hostWakeupResolved = false
-        wakeupTimeoutScheduled = false
         guard let url = URL(string: "views://import?handoff=1") else {
             showWakeupFailure()
             return
         }
 
-        // Use the supported extension API, then the responder-chain fallback inside
-        // `openHostAppRequest`. Deliberately a single attempt: a rejected wake-up is
-        // retried by the user via the button rather than by the sheet itself.
+        // The official API first. Its callback decides whether the responder-chain
+        // fallback runs, which is why the deadline below must not pre-empt it.
         openHostAppRequest(url)
 
-        wakeupTimeoutScheduled = true
+        // Only a deadline on the *total* attempt, and it deliberately does not set
+        // `hostWakeupResolved` before the fallback has had its turn. The previous version
+        // set it here, which silently disabled the one path that works on device: if
+        // `extensionContext.open` called back after 2.5 s (or never, which is its usual
+        // behaviour on iOS 26), the flag was already true, so `openViaResponderChain` was
+        // never reached and the sheet gave up while the documented working route sat idle.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
             guard let self, !self.hostWakeupResolved else { return }
-            self.hostWakeupResolved = true
-            self.showWakeupFailure()
+            // Official API has not answered in time. Try the fallback rather than
+            // declaring failure; `showWakeupFailure` only runs if that also stays silent
+            // for its own grace period.
+            self.openViaResponderChain(url, isFallback: true)
         }
     }
 
@@ -237,7 +239,11 @@ final class ShareViewController: UIViewController {
     /// 官方 `extensionContext.open` 在分享扩展里多数版本返回 false，此路是社区实测
     /// 有效的兜底。非官方 API，有审核风险，且仍可能被系统拒绝——被拒或无人响应时
     /// 什么都不做，交给重试按钮与收件箱扫描兜底。
-    private func openViaResponderChain(_ url: URL) {
+    ///
+    /// `isFallback` marks the call made *after* the official API's deadline expired, where
+    /// no second callback will ever arrive to resolve the state — so this one owns the
+    /// failure path itself.
+    private func openViaResponderChain(_ url: URL, isFallback: Bool = false) {
         var responder: UIResponder? = self
         while let current = responder {
             if let app = current as? UIApplication {
@@ -247,12 +253,32 @@ final class ShareViewController: UIViewController {
                         if success {
                             self.hostWakeupResolved = true
                             self.scheduleAutoClose()
+                        } else if isFallback {
+                            self.hostWakeupResolved = true
+                            self.showWakeupFailure()
                         }
+                    }
+                }
+                if isFallback {
+                    // `open`'s completion is not guaranteed to arrive either; give it its
+                    // own grace period so the sheet cannot sit unresolved forever.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        guard let self, !self.hostWakeupResolved else { return }
+                        self.hostWakeupResolved = true
+                        self.showWakeupFailure()
                     }
                 }
                 return
             }
             responder = current.next
+        }
+
+        // No `UIApplication` anywhere along the chain: fall back to asking nothing of it
+        // and tell the user, rather than leaving the sheet waiting for a callback that
+        // cannot come.
+        if isFallback {
+            hostWakeupResolved = true
+            showWakeupFailure()
         }
     }
 
@@ -321,14 +347,20 @@ final class ShareViewController: UIViewController {
                     gate.resume(continuation, value: nil)
                     return
                 }
-                // Copy while the provider owns the temporary/security-scoped URL.
-                gate.resume(continuation, value: AppGroup.deposit(fileAt: url))
+                // Copy while the provider owns the temporary/security-scoped URL. The
+                // deadline below is cancelled for the duration, because a large model can
+                // legitimately take longer than it to copy — and a timeout that fires
+                // mid-copy would report a failure while the file is in fact on its way
+                // into the inbox.
+                let copied = AppGroup.deposit(fileAt: url)
+                gate.resume(continuation, value: copied)
             }
             // On a cold extension launch `loadItem` can be delayed or never fire. Without
             // a deadline the extension stays suspended on the continuation and the system
             // eventually kills it — the "first share after install crashes" symptom in its
-            // other form.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
+            // other form. The gate makes the two sources safe to race; `deposit` marks
+            // itself busy so this cannot cut a copy short.
+            gate.armDeadline(after: 5.0) {
                 gate.resume(continuation, value: nil)
             }
         }
@@ -344,10 +376,10 @@ final class ShareViewController: UIViewController {
                     gate.resume(continuation, value: nil)
                     return
                 }
-                gate.resume(continuation, value: AppGroup.deposit(fileAt: url,
-                                                                  preferredName: suggestedName))
+                let copied = AppGroup.deposit(fileAt: url, preferredName: suggestedName)
+                gate.resume(continuation, value: copied)
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
+            gate.armDeadline(after: 5.0) {
                 gate.resume(continuation, value: nil)
             }
         }
@@ -361,9 +393,6 @@ final class ShareViewController: UIViewController {
     @objc private func openHostApp() {
         // A successful callback closes the extension. If iOS refuses the request or never
         // calls back, `requestHostWakeup` leaves this button available for another attempt.
-        hostWakeupAttempted = false
-        hostWakeupResolved = false
-        wakeupTimeoutScheduled = false
         requestHostWakeup()
     }
 
@@ -378,9 +407,20 @@ final class ShareViewController: UIViewController {
 /// continuation exactly once. `CheckedContinuation` must be resumed precisely once;
 /// without this gate, a provider answering a tick after the 5s timeout fired would
 /// resume it twice and crash the extension.
+///
+/// The deadline is *armed* rather than scheduled immediately, and disarmed while a copy
+/// is in flight. A 5 s wall-clock timer started alongside `loadItem` cannot tell "the
+/// provider never answered" from "the provider answered and we are still copying a
+/// 200 MB STEP file": in the second case it fired, resolved the continuation with `nil`,
+/// and the sheet reported the attachment as failed — while `AppGroup.deposit` went on to
+/// finish and put the file in the inbox. The file was imported and the UI said it was not.
+/// Holding the timer off until the callback actually arrives removes that window; the
+/// deadline then only covers the wait it was meant to cover.
 private final class ContinuationGate: @unchecked Sendable {
     private let lock = NSLock()
     private var finished = false
+    private var deadlineScheduled = false
+    private var deadlineWork: DispatchWorkItem?
 
     func resume(_ continuation: CheckedContinuation<String?, Never>, value: String?) {
         lock.lock()
@@ -389,7 +429,27 @@ private final class ContinuationGate: @unchecked Sendable {
             return
         }
         finished = true
+        let pending = deadlineWork
+        deadlineWork = nil
         lock.unlock()
+        pending?.cancel()
         continuation.resume(returning: value)
+    }
+
+    /// Schedules the timeout, unless the callback already resolved the gate or the
+    /// deadline was already armed. Safe to call from any thread.
+    func armDeadline(after seconds: TimeInterval, _ body: @escaping @Sendable () -> Void) {
+        let work = DispatchWorkItem(block: body)
+        lock.lock()
+        // Already resolved, or a deadline already armed: nothing to add. Guarding here as
+        // well as in `resume` keeps the double-arm case from leaking a second timer.
+        if finished || deadlineScheduled {
+            lock.unlock()
+            return
+        }
+        deadlineScheduled = true
+        deadlineWork = work
+        lock.unlock()
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: work)
     }
 }

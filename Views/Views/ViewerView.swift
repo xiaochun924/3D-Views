@@ -1,4 +1,4 @@
-﻿//
+//
 //  ViewerView.swift
 //  Views
 //
@@ -58,6 +58,11 @@ struct ViewerView: View {
                 // (a parse can take many seconds) and the user does not mistake a busy
                 // app for a frozen one. The spinner actually animates now because the
                 // OCCT parse runs in a detached task instead of blocking the main actor.
+                //
+                // The fade is driven by the `.animation(_:value:)` attached to this ZStack
+                // below. A `.transition` alone does nothing: a transition only plays inside
+                // an animated transaction, and nothing here called `withAnimation`, so the
+                // scrim used to pop in and out regardless.
                 Color.black.opacity(0.25)
                     .ignoresSafeArea()
                     .transition(.opacity)
@@ -76,6 +81,7 @@ struct ViewerView: View {
                 .padding(.vertical, 22)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+                .transition(.opacity)
             }
 
             // Kept up until the measurement has all the picks it needs, not just until
@@ -130,6 +136,12 @@ struct ViewerView: View {
                 }
             }
         }
+        // The driver for the loading overlay's `.transition(.opacity)`. Scoped to
+        // `value: viewModel.isLoading` rather than a bare `.animation`, so it only ever
+        // animates the overlay appearing and disappearing — an unvalued `.animation` on
+        // this ZStack would also animate the toolbar, the result panel and every
+        // measurement update, which is not what the fade is for.
+        .animation(.easeInOut(duration: 0.2), value: viewModel.isLoading)
         .navigationTitle(file.fileName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)

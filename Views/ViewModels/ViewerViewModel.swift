@@ -672,26 +672,59 @@ final class ViewerViewModel: ObservableObject {
     /// detached task and handed to the main actor in one piece, after which it is never
     /// touched from the background again. Boxing it in this single final class is the
     /// established pattern for exactly that one-shot hand-off, and the alternative (making
-    /// every SceneKit type Sendable) is impossible. The fields are written on the
-    /// background thread during `performBackgroundLoad` and read on the main actor after
-    /// the `await`, so there is no data race in practice.
+    /// every SceneKit type Sendable) is impossible.
     ///
-    /// `nonisolated` keeps the box free of the enclosing class's main-actor isolation:
-    /// a nested type in a `@MainActor` class inherits it otherwise, which would make the
-    /// background write of every field a compile error.
+    /// Every field is `let` and set exactly once, by the memberwise initialiser, on the
+    /// background thread. The main actor reads them only after `Task.value` returns, and
+    /// that await is the happens-before edge: nothing is written after the hand-off, and
+    /// nothing on the main actor can observe a partial box. Keeping the fields immutable
+    /// is what makes that claim structural rather than documentary — there is no setter
+    /// for a later background touch to reach for. `@unchecked` is still required, because
+    /// the checker cannot see through the one-shot discipline; it is the *only* thing
+    /// `@unchecked` covers here.
+    ///
+    /// `nonisolated` is deliberate: it keeps the box out of the enclosing class's
+    /// main-actor isolation, so the background load can construct it without hopping back
+    /// to the main actor.
     private nonisolated final class LoadedModel: @unchecked Sendable {
-        var scene: SCNScene?
-        var shape: OCCTSwift.Shape?
-        var isBrep = false
-        var triangleToFace: [Int32] = []
-        var modelVertices: [SCNVector3] = []
-        var modelTriangleIndices: [UInt32] = []
-        var edgeWorldPolylines: [(edgeIndex: Int, points: [SCNVector3])] = []
-        var vertexWorld: [(index: Int, position: SCNVector3)] = []
-        var modelNode: SCNNode?
-        var modelDim: Float = 1
-        var modelRadius: Float = 1
-        var cameraDistance: Float = 1
+        let scene: SCNScene?
+        let shape: OCCTSwift.Shape?
+        let isBrep: Bool
+        let triangleToFace: [Int32]
+        let modelVertices: [SCNVector3]
+        let modelTriangleIndices: [UInt32]
+        let edgeWorldPolylines: [(edgeIndex: Int, points: [SCNVector3])]
+        let vertexWorld: [(index: Int, position: SCNVector3)]
+        let modelNode: SCNNode?
+        let modelDim: Float
+        let modelRadius: Float
+        let cameraDistance: Float
+
+        init(scene: SCNScene?,
+             shape: OCCTSwift.Shape?,
+             isBrep: Bool,
+             triangleToFace: [Int32],
+             modelVertices: [SCNVector3],
+             modelTriangleIndices: [UInt32],
+             edgeWorldPolylines: [(edgeIndex: Int, points: [SCNVector3])],
+             vertexWorld: [(index: Int, position: SCNVector3)],
+             modelNode: SCNNode?,
+             modelDim: Float,
+             modelRadius: Float,
+             cameraDistance: Float) {
+            self.scene = scene
+            self.shape = shape
+            self.isBrep = isBrep
+            self.triangleToFace = triangleToFace
+            self.modelVertices = modelVertices
+            self.modelTriangleIndices = modelTriangleIndices
+            self.edgeWorldPolylines = edgeWorldPolylines
+            self.vertexWorld = vertexWorld
+            self.modelNode = modelNode
+            self.modelDim = modelDim
+            self.modelRadius = modelRadius
+            self.cameraDistance = cameraDistance
+        }
     }
 
     /// Runs the whole OCCT parse + meshing + scene build on a background thread.
@@ -704,16 +737,20 @@ final class ViewerViewModel: ObservableObject {
     /// the box. The helper functions used here are all `nonisolated` pure functions that
     /// read only their arguments (verified one by one); none of them touch `self`.
     ///
+    /// The one exception is `buildScene`, which is `async` because installing the
+    /// lighting environment needs UIKit drawing on the main actor — see
+    /// `environmentCube`. Everything expensive (parse, tessellate, edge extraction) still
+    /// runs on the calling background thread.
+    ///
     /// The format facts (`isBrep`, `label`, `ext`) are passed in as plain values rather
-    /// than the `ModelFormat` enum: that type nests inside this `@MainActor` class, so
-    /// its members inherit main-actor isolation and would be unreadable here.
+    /// than the `ModelFormat` enum, so this function's signature does not depend on a
+    /// type that nests inside the `@MainActor` enclosing class.
     nonisolated(unsafe) private static func performBackgroundLoad(
         url: URL,
         ext: String,
         isBrep: Bool,
         label: String
-    ) throws -> LoadedModel {
-        let result = LoadedModel()
+    ) async throws -> LoadedModel {
         var loadedShape: OCCTSwift.Shape?
         var meshTrianglesWithFaces: [OCCTSwift.Triangle] = []
 
@@ -771,13 +808,13 @@ final class ViewerViewModel: ObservableObject {
         let sizeY = bbMax.y - bbMin.y
         let sizeZ = bbMax.z - bbMin.z
         let maxDim = max(max(sizeX, sizeY), sizeZ)
-        result.modelDim = max(maxDim, 1)
+        let modelDim = max(maxDim, 1)
         // Half the box diagonal, i.e. a sphere that holds the whole part whichever way
         // it is turned. Framing against this rather than a single side is what keeps a
         // long, flat part from being cropped when the camera happens to look down its
         // length.
-        result.modelRadius = max(0.5 * sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ), 1)
-        result.cameraDistance = result.modelDim * 2.4
+        let modelRadius = max(0.5 * sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ), 1)
+        let cameraDistance = modelDim * 2.4
 
         let center = SCNVector3(
             (bbMin.x + bbMax.x) / 2,
@@ -798,8 +835,8 @@ final class ViewerViewModel: ObservableObject {
 
         // Retained before the scene is built, because the outline hull below is cut
         // from this very vertex buffer and the triangle list above it.
-        result.modelVertices = Self.extractVertices(from: geometry)
-        result.modelTriangleIndices = Self.extractTriangleIndices(from: geometry)
+        let modelVertices = Self.extractVertices(from: geometry)
+        let modelTriangleIndices = Self.extractTriangleIndices(from: geometry)
 
         // Sharp edges extracted from the mesh itself. This is the fallback that
         // guarantees feature lines show up even when the B-rep edge query returns
@@ -807,65 +844,73 @@ final class ViewerViewModel: ObservableObject {
         // differ by more than the threshold is a sharp (feature) edge; edges shared
         // smoothly are skipped.
         let meshEdges = Self.makeSharpEdgeGeometry(
-            vertices: result.modelVertices,
+            vertices: modelVertices,
             triangles: meshTrianglesWithFaces,
             edgeWidth: Float(max(maxDim * 0.005, 0.005))
         )
 
         let outlineGeometry = Self.makeOutlineGeometry(
             vertexSource: geometry.sources(for: .vertex).first,
-            vertices: result.modelVertices,
+            vertices: modelVertices,
             triangles: meshTrianglesWithFaces
         )
 
-        let built = Self.buildScene(
+        let built = await Self.buildScene(
             geometry: geometry,
             edgeGeometry: meshEdges,
             outlineGeometry: outlineGeometry,
             center: center,
-            cameraDistance: result.cameraDistance
+            cameraDistance: cameraDistance
         )
-        result.scene = built
-
-        // Publish the kernel state for entity measurement.
-        result.shape = isBrep ? loadedShape : nil
-        result.isBrep = isBrep
-        result.triangleToFace = isBrep ? meshTrianglesWithFaces.map(\.faceIndex) : []
 
         let mNode = built.rootNode.childNode(withName: "model", recursively: true)
-        result.modelNode = mNode
 
+        // Snap sources. B-rep edges are the ideal one, but `allEdgePolylinesIndexed`
+        // returns empty for some STEP files (this one included). When that happens, fall
+        // back to the same mesh sharp-edge extraction used for rendering so vertex/edge
+        // snapping still works for point-based measurement. Vertices follow the same
+        // pattern, B-rep first: a tap that cannot snap to a vertex still snaps to a
+        // face, so this only needs the corners.
+        let edgeWorldPolylines: [(edgeIndex: Int, points: [SCNVector3])]
+        let vertexWorld: [(index: Int, position: SCNVector3)]
         if let mNode {
-            // B-rep edges are the ideal snap source, but `allEdgePolylinesIndexed`
-            // returns empty for some STEP files (this one included). When that
-            // happens, fall back to the same mesh sharp-edge extraction used for
-            // rendering so vertex/edge snapping still works for point-based
-            // measurement.
             let brepEdges = isBrep ? Self.buildEdgePolylines(edgePolylines, modelNode: mNode) : []
-            result.edgeWorldPolylines = brepEdges.isEmpty
+            edgeWorldPolylines = brepEdges.isEmpty
                 ? Self.buildMeshEdgePolylines(
-                    vertices: result.modelVertices,
+                    vertices: modelVertices,
                     triangles: meshTrianglesWithFaces,
                     modelNode: mNode,
                     sharpAngleDeg: 35)
                 : brepEdges
-            // Same fallback for vertices: B-rep vertices first, then the mesh
-            // vertices that sit on sharp edges. A tap that cannot snap to a vertex
-            // still snaps to a face, so this only needs the corners.
             let brepVerts = isBrep ? Self.buildVertexWorld(loadedShape, modelNode: mNode) : []
-            result.vertexWorld = brepVerts.isEmpty
+            vertexWorld = brepVerts.isEmpty
                 ? Self.buildMeshVertexWorld(
-                    vertices: result.modelVertices,
+                    vertices: modelVertices,
                     triangles: meshTrianglesWithFaces,
                     modelNode: mNode,
                     sharpAngleDeg: 35)
                 : brepVerts
         } else {
-            result.edgeWorldPolylines = []
-            result.vertexWorld = []
+            edgeWorldPolylines = []
+            vertexWorld = []
         }
 
-        return result
+        // Every field is set here, once, in the initialiser — nothing writes to the box
+        // after this point, which is what lets the main actor read it without a lock.
+        return LoadedModel(
+            scene: built,
+            shape: isBrep ? loadedShape : nil,
+            isBrep: isBrep,
+            triangleToFace: isBrep ? meshTrianglesWithFaces.map(\.faceIndex) : [],
+            modelVertices: modelVertices,
+            modelTriangleIndices: modelTriangleIndices,
+            edgeWorldPolylines: edgeWorldPolylines,
+            vertexWorld: vertexWorld,
+            modelNode: mNode,
+            modelDim: modelDim,
+            modelRadius: modelRadius,
+            cameraDistance: cameraDistance
+        )
     }
 
     /// Errors thrown by `performBackgroundLoad`, kept distinct from the trailing catch
@@ -889,10 +934,37 @@ final class ViewerViewModel: ObservableObject {
         }
     }
 
+    /// The load currently in flight, if any.
+    ///
+    /// Two things depend on knowing this. Re-entrancy: `loadFile` is reachable from the
+    /// document-open path and from a share hand-off at the same time, and two OCCT parses
+    /// racing to publish into the same published properties would leave whichever finished
+    /// last owning the viewer regardless of which file the user actually asked for last.
+    /// Cancellation: the parse runs in a `Task.detached`, which does **not** inherit
+    /// cancellation from the caller, so cancelling this handle has to be what stops the
+    /// work — the `Task` returned here is the only reference that can do it.
+    private var loadTask: Task<LoadedModel, Error>?
+
+    /// Serialises loads: a newer file supersedes the one in flight.
+    ///
+    /// Without this, opening A then B quickly can settle on A when A's parse finishes
+    /// last. Cancelling A first makes B the only load that can publish. Cancellation is
+    /// cooperative, so this only sets the flag; the parse below checks it at its publish
+    /// points, and the guard in `loadFile` is what actually keeps a superseded result out
+    /// of the published state.
+    private func cancelInFlightLoad() {
+        loadTask?.cancel()
+        loadTask = nil
+    }
+
     func loadFile(url: URL) async {
+        // Supersede whatever is loading. The previous task unwinds on its own; it can no
+        // longer touch published state because every publish below is gated on this
+        // handler still being the current one.
+        cancelInFlightLoad()
+
         isLoading = true
         loadError = nil
-        defer { isLoading = false }
 
         let ext = url.pathExtension.lowercased()
         guard let format = Self.format(for: ext) else {
@@ -904,29 +976,52 @@ final class ViewerViewModel: ObservableObject {
             } else {
                 loadError = "不支持的文件格式。"
             }
+            isLoading = false
             return
         }
 
         let needsAccess = url.startAccessingSecurityScopedResource()
-        defer { if needsAccess { url.stopAccessingSecurityScopedResource() } }
+
+        // Give the UI a few frames to start rendering the "加载中" overlay before the
+        // heavy work begins. `Task.detached` then runs the parse on a background
+        // thread, so the progress spinner actually animates instead of freezing —
+        // the whole point of this refactor. The small sleep is what lets SwiftUI
+        // commit the `isLoading` state; without it the overlay can be queued behind
+        // the detached task and never shown for very large files.
+        //
+        // Deliberately *not* `try?`: swallowing `CancellationError` here is what made the
+        // old cancellation a no-op — the `try?` returned normally, the code walked on and
+        // started a parse for a file the user had already navigated away from.
+        do {
+            try await Task.sleep(for: .milliseconds(80))
+        } catch {
+            if needsAccess { url.stopAccessingSecurityScopedResource() }
+            return  // cancelled before the parse started; nothing to undo
+        }
+
+        // `Task.detached` keeps the parse off the main actor — that is the fix for the
+        // frozen spinner. The trade-off is that it does not inherit cancellation, so the
+        // handle stored here is the only way to stop it, which `cancelInFlightLoad` does.
+        let task = Task.detached(priority: .userInitiated) {
+            try await Self.performBackgroundLoad(
+                url: url,
+                ext: ext,
+                isBrep: format.isBrep,
+                label: format.label
+            )
+        }
+        loadTask = task
 
         do {
-            // Give the UI a few frames to start rendering the "加载中" overlay before the
-            // heavy work begins. `Task.detached` then runs the parse on a background
-            // thread, so the progress spinner actually animates instead of freezing —
-            // the whole point of this refactor. The small sleep is what lets SwiftUI
-            // commit the `isLoading` state; without it the overlay can be queued behind
-            // the detached task and never shown for very large files.
-            try? await Task.sleep(for: .milliseconds(80))
+            let loaded = try await task.value
 
-            let loaded = try await Task.detached(priority: .userInitiated) {
-                try Self.performBackgroundLoad(
-                    url: url,
-                    ext: ext,
-                    isBrep: format.isBrep,
-                    label: format.label
-                )
-            }.value
+            // A newer load (or a cancel) superseded us while the parse ran. Dropping the
+            // result here is the whole point: without it the slower of two concurrent
+            // parses would win the viewer.
+            guard !Task.isCancelled, loadTask.map({ $0 == task }) ?? false else {
+                if needsAccess { url.stopAccessingSecurityScopedResource() }
+                return
+            }
 
             scene = loaded.scene
             fileName = url.lastPathComponent
@@ -968,10 +1063,27 @@ final class ViewerViewModel: ObservableObject {
             // display mode has to be re-applied to the new materials rather than only
             // set once at init.
             applyDisplayMode()
+        } catch is CancellationError {
+            // Superseded by a newer load, or the view went away. Not an error the user
+            // should see, and `isLoading` belongs to whichever load replaced this one.
         } catch let error as LoadError {
             loadError = error.localizedDescription
         } catch {
-            loadError = "加载失败：\(error.localizedDescription)"
+            // A URLError here is how a cancelled `URLSession`/security-scoped read
+            // usually surfaces; treat it as cancellation rather than as a load failure.
+            if (error as? URLError)?.code == .cancelled {
+                // fall through to cleanup only
+            } else {
+                loadError = "加载失败：\(error.localizedDescription)"
+            }
+        }
+
+        if needsAccess { url.stopAccessingSecurityScopedResource() }
+        // Only the current load may clear the spinner. A superseded load must not, or it
+        // would hide the overlay belonging to the file that replaced it.
+        if loadTask.map({ $0 == task }) ?? false {
+            isLoading = false
+            loadTask = nil
         }
     }
 
@@ -1391,7 +1503,7 @@ final class ViewerViewModel: ObservableObject {
                                        edgeGeometry: SCNGeometry?,
                                        outlineGeometry: SCNGeometry?,
                                        center: SCNVector3,
-                                       cameraDistance: Float) -> SCNScene {
+                                       cameraDistance: Float) async -> SCNScene {
         let scene = SCNScene()
 
         // A sky-over-ground environment image, used as the scene's light source.
@@ -1406,7 +1518,7 @@ final class ViewerViewModel: ObservableObject {
         // Built here rather than loaded so the app carries no asset: a bright zenith, a
         // mid horizon and a dark nadir, which is the same job a three.js hemisphere light
         // does in the reference viewer.
-        scene.lightingEnvironment.contents = Self.environmentCube()
+        scene.lightingEnvironment.contents = await Self.environmentCube()
         // Minimal environment: just enough fill to keep the shadow side from going
         // pure black. Anything higher washes out the directional key and the part goes
         // flat — which is exactly what the screenshots show. The form must come from
@@ -1601,7 +1713,16 @@ final class ViewerViewModel: ObservableObject {
     /// SceneKit's face order is +X, -X, +Y, -Y, +Z, -Z, and for the four side faces the
     /// top of the image is +Y — so a plain top-to-bottom gradient is a gradient from sky
     /// to ground, which is what makes upward-facing surfaces brighter than downward ones.
-    nonisolated static func environmentCube() -> [UIImage] {
+    ///
+    /// `@MainActor` despite being a pure image build: this reaches `UIGraphicsImageRenderer`
+    /// and `UIColor`, both UIKit. It is called from `buildScene`, which runs inside the
+    /// background load task — the one place in the app where UIKit drawing was happening
+    /// off the main thread. The six 32×32 faces are trivial and cached by SceneKit once
+    /// installed, so paying a main-actor hop for them costs nothing next to the OCCT parse
+    /// that dominates the load. Callers on a background task must `await` it; a
+    /// `nonisolated` version would have been faster and wrong.
+    @MainActor
+    static func environmentCube() -> [UIImage] {
         let size = CGSize(width: 32, height: 32)
         let renderer = UIGraphicsImageRenderer(size: size)
         let sky = UIColor(white: 0.98, alpha: 1.0)
