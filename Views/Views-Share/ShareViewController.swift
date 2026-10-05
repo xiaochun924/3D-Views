@@ -239,10 +239,14 @@ final class ShareViewController: UIViewController {
     private func scheduleAutoClose() {
         guard !closeScheduled else { return }
         closeScheduled = true
-        AppGroup.recordFinishStep("已安排自动关闭")
-        Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            await MainActor.run { self?.completeExtension() }
+        // Written off the main thread for the same reason every other trail write is:
+        // the main thread must never touch the App Group container in this extension.
+        Task.detached { AppGroup.recordFinishStep("已安排自动关闭") }
+        // GCD rather than Task.sleep — the extension lifecycle's concurrency scheduler
+        // is not something we can verify, and this file's known-good timers are GCD.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            self.completeExtension()
         }
     }
 
@@ -255,7 +259,15 @@ final class ShareViewController: UIViewController {
         // 飞行记录仪的起点。这一步之前的一切都已经有据可查（`recordExtensionStart` 与
         // `recordHandoff`），之后的一切此前完全没有记录——而收尾正是唯一一段「扩展被杀了，
         // 还是正常走完了」无法分辨的区间。这里就是那段区间的开头。
-        AppGroup.recordFinishStep("请求唤醒主 App")
+        //
+        // Dispatched off the main thread deliberately. `recordFinishStep` goes through
+        // `UserDefaults(suiteName:)`, and this is the first App Group access the main
+        // thread would otherwise make. Cold-start it can still contend on the suite's
+        // initialization even after the background writes above — the watchdog kills the
+        // extension if that happens on the main thread, which is the "first share after
+        // install crashes, the second one works" symptom. The trail is diagnostic only, so
+        // nothing depends on it landing before the wake-up request goes out.
+        Task.detached { AppGroup.recordFinishStep("请求唤醒主 App") }
         guard let url = URL(string: "views://import?handoff=1") else {
             showWakeupFailure()
             return
@@ -287,10 +299,12 @@ final class ShareViewController: UIViewController {
 
     private func openHostAppRequest(_ url: URL) {
         extensionContext?.open(url) { [weak self] didOpen in
+            // 记在 guard 之前：这条要回答的是「官方 API 到底回没回调、回了什么」，而
+            // `hostWakeupResolved` 已经为真时下面的 guard 会直接返回，那就什么都记不下。
+            // The callback arrives on a non-main thread; write the trail here instead of
+            // hopping to the main queue first, so the main thread never touches App Group.
+            AppGroup.recordFinishStep("官方 open 回调 didOpen=\(didOpen)")
             DispatchQueue.main.async {
-                // 记在 guard 之前：这条要回答的是「官方 API 到底回没回调、回了什么」，而
-                // `hostWakeupResolved` 已经为真时下面的 guard 会直接返回，那就什么都记不下。
-                AppGroup.recordFinishStep("官方 open 回调 didOpen=\(didOpen)")
                 guard let self, !self.hostWakeupResolved else { return }
                 if didOpen {
                     self.hostWakeupResolved = true
@@ -332,7 +346,10 @@ final class ShareViewController: UIViewController {
     /// 有效的兜底。非官方 API，有审核风险，且仍可能被系统拒绝——被拒或无人响应时
     /// 走失败提示，交给重试按钮与收件箱扫描兜底。
     private func openViaResponderChain(_ url: URL, trigger: WakeupTrigger) {
-        AppGroup.recordFinishStep(trigger.rawValue)
+        // Off the main thread; the trail writes are the one thing in this file the main
+        // thread must never do (App Group access on the cold-launch main thread is what
+        // the watchdog kills).
+        Task.detached { AppGroup.recordFinishStep(trigger.rawValue) }
         // The chain is finite in principle and unguarded in practice: `next` is whatever
         // the hierarchy says it is, and during a dismissal it can point back into the chain
         // it came from. A cycle here is a main-thread spin, which the watchdog ends by
@@ -365,7 +382,7 @@ final class ShareViewController: UIViewController {
                 // "the walk found a UIApplication" and a sheet that hangs until iOS gives up.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                     guard let self, !self.hostWakeupResolved else { return }
-                    AppGroup.recordFinishStep("兜底宽限到期")
+                    Task.detached { AppGroup.recordFinishStep("兜底宽限到期") }
                     self.hostWakeupResolved = true
                     self.showWakeupFailure()
                 }
@@ -378,15 +395,16 @@ final class ShareViewController: UIViewController {
         // hit its cap. Both leave the user in the same place, so they share the failure path
         // — but the trail records them apart, because a chain that spun and a chain that was
         // merely short are not the same finding.
-        AppGroup.recordFinishStep(hops >= hopLimit
+        let trailMessage = hops >= hopLimit
             ? "兜底：responder 链超过 \(hopLimit) 跳（疑似成环）"
-            : "兜底：链上找不到 UIApplication")
+            : "兜底：链上找不到 UIApplication"
+        Task.detached { AppGroup.recordFinishStep(trailMessage) }
         hostWakeupResolved = true
         showWakeupFailure()
     }
 
     private func showWakeupFailure() {
-        AppGroup.recordFinishStep("显示失败提示")
+        Task.detached { AppGroup.recordFinishStep("显示失败提示") }
         statusLabel.text = "文件已导入，但没有自动打开 3D Views\n请点击下方按钮重试"
         openButton.setTitle("打开 3D Views", for: .normal)
         openButton.isHidden = false
@@ -511,6 +529,11 @@ final class ShareViewController: UIViewController {
         // 拆掉，而在此之前它一个字节都没写过。有了这一条，诊断页第一次能回答「扩展是被杀了，
         // 还是正常走完了」——记录停在上一条＝收尾没走完；记录里有这一条＝收尾是完整的，
         // 闪退另有原因，别再往这条路径上找。
+        //
+        // This is the one trail write deliberately kept on the main thread: it runs only
+        // after a successful host wake-up plus the 600 ms auto-close delay, so the container
+        // is long mounted (no cold-launch risk), and it must land *before* `completeRequest`
+        // returns because the process can be torn down immediately after.
         AppGroup.recordFinishStep("提交 completeRequest")
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
