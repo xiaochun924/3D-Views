@@ -218,9 +218,15 @@ final class ShareViewController: UIViewController {
                 // app that instant switches away before the result panel was ever rendered —
                 // the "first share jumps straight to the app, no panel" report. Waiting here
                 // lets the label show first, then hands over.
+                //
+                // DispatchQueue.main.asyncAfter instead of `Task.sleep` deliberately: a
+                // `Task {}` in an app extension rides the process's concurrency scheduler,
+                // whose behaviour under the extension lifecycle is not something we can
+                // verify here, and the measured symptom after switching to it was a
+                // regression of the cold-launch crash. GCD timers are what the rest of this
+                // file already uses on the wake-up path and are known-good on device.
                 self.openButton.isHidden = true
-                Task { [weak self] in
-                    try? await Task.sleep(for: .milliseconds(500))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self, !self.handoffFinished else { return }
                     self.requestHostWakeup()
                 }
