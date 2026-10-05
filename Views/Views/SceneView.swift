@@ -1,4 +1,4 @@
-﻿//
+//
 //  SceneView.swift
 //  Views
 //
@@ -7,6 +7,9 @@ import SwiftUI
 import SceneKit
 
 struct SceneView: UIViewRepresentable {
+    /// Read from the environment, not from `UIScreen.main`, so the renderer matches the
+    /// display it is actually on. See `makeUIView` for why the scale matters at all.
+    @Environment(\.displayScale) private var displayScale
     let scene: SCNScene?
     /// Screen point plus the live renderer. Picking is done in the view model, in
     /// screen space, so the tap must not be resolved to a world point here.
@@ -61,7 +64,12 @@ struct SceneView: UIViewRepresentable {
         // edge becomes a soft smear regardless of AA or mesh quality. UIView's default
         // would eventually be right, but for an SCNView created off-window it is not,
         // and the first frame (and every screenshot) renders at the wrong scale.
-        scnView.contentScaleFactor = UIScreen.main.scale
+        //
+        // The value comes from the environment rather than `UIScreen.main.scale`: the
+        // global screen is the wrong answer under a split screen or an external display,
+        // and it is deprecated. The first frame uses the screen the view is being built
+        // for, and `updateUIView` re-applies the environment value once it is available.
+        scnView.contentScaleFactor = displayScale
         scnView.scene = scene
 
         // With camera control off nothing else would pick a camera, and a scene handed over
@@ -138,6 +146,12 @@ struct SceneView: UIViewRepresentable {
     }
 
     func updateUIView(_ scnView: SCNView, context: Context) {
+        // Re-applied here as well as in `makeUIView`, because `makeUIView` runs before the
+        // view is in a window and can only guess; this is the pass that carries the real
+        // environment value, and it also covers a move between displays.
+        if scnView.contentScaleFactor != displayScale {
+            scnView.contentScaleFactor = displayScale
+        }
         // Resolved from the environment rather than from a dynamic `UIColor` because
         // SceneKit does not re-resolve a dynamic colour once it has been handed the
         // background: the viewport would keep the light value after the system switched

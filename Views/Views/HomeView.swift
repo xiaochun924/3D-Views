@@ -51,8 +51,15 @@ struct HomeView: View {
                             .buttonStyle(.plain)
                         }
                         .onDelete { indexSet in
-                            for index in indexSet {
-                                history.removeFile(history.files[index])
+                            // Snapshot the doomed entries first. Removing straight through
+                            // the set would index into `history.files` while it is being
+                            // shortened by the previous removal, so a multi-select delete
+                            // would take the wrong files — or go out of bounds.
+                            let doomed = indexSet.compactMap { index in
+                                history.files.indices.contains(index) ? history.files[index] : nil
+                            }
+                            for file in doomed {
+                                history.removeFile(file)
                             }
                         }
                     }
