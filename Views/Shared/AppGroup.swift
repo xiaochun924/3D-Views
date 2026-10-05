@@ -29,9 +29,6 @@ enum AppGroup {
 
     private static let inboxFolderName = "Inbox"
     private static let pendingFolderName = "Pending"
-    private static let handoffAtKey = "SharedHandoffAt"
-    private static let handoffNamesKey = "SharedHandoffNames"
-    private static let handoffFailuresKey = "SharedHandoffFailures"
 
     /// The shared container, or `nil` when the entitlement did not survive signing.
     static var containerURL: URL? {
@@ -138,25 +135,6 @@ enum AppGroup {
         }
     }
 
-    /// What the extension left for the app, so the app can say "the share arrived"
-    /// even when nothing else about it is observable.
-    static func recordHandoff(names: [String], failures: [String] = []) {
-        guard let defaults = UserDefaults(suiteName: identifier) else { return }
-        defaults.set(Date().timeIntervalSince1970, forKey: handoffAtKey)
-        defaults.set(names, forKey: handoffNamesKey)
-        defaults.set(failures, forKey: handoffFailuresKey)
-    }
-
-    static var lastHandoff: (at: Date, names: [String], failures: [String])? {
-        guard let defaults = UserDefaults(suiteName: identifier),
-              let stamp = defaults.object(forKey: handoffAtKey) as? TimeInterval
-        else { return nil }
-        return (
-            Date(timeIntervalSince1970: stamp),
-            defaults.stringArray(forKey: handoffNamesKey) ?? [],
-            defaults.stringArray(forKey: handoffFailuresKey) ?? []
-        )
-    }
 
     /// Whether anything is waiting in the shared inbox — the count `SettingsView`
     /// shows and the app uses to decide whether a sweep is worth logging.
@@ -186,113 +164,6 @@ enum AppGroup {
         }
     }
 
-    // MARK: - Extension liveness
-
-    private static let extensionStartKey = "SharedExtensionStartedAt"
-
-    /// Written by the share extension the moment it is up, before it has looked at a
-    /// single attachment.
-    ///
-    /// A missing handoff record cannot tell "iOS never launched the extension at all"
-    /// from "iOS launched it and it died before it could record anything" — and those
-    /// two need completely different fixes. This is the earliest line the extension is
-    /// able to leave, so the two cases stop looking the same from the app's side.
-    ///
-    /// It also marks the start of a run *inside* the finishing trail. The trail carrying
-    /// its own boundaries is what keeps a reader from having to consult
-    /// `lastExtensionStart` — which only ever holds the latest start, so reproducing a
-    /// crash and then sharing once more to get the file in would leave the crashed run
-    /// older than that date. Called off the main actor (see `viewDidLoad`), so this second
-    /// write adds no main-thread work.
-    static func recordExtensionStart() {
-        UserDefaults(suiteName: identifier)?.set(Date(), forKey: extensionStartKey)
-        recordFinishStep(extensionStartStep)
-    }
-
-    /// When the share extension last came up, or nil if it never has.
-    static var lastExtensionStart: Date? {
-        UserDefaults(suiteName: identifier)?.object(forKey: extensionStartKey) as? Date
-    }
-
-    // MARK: - Finishing trail
-
-    private static let finishTrailKey = "SharedFinishTrail"
-
-    /// The line `recordExtensionStart` writes, and the one `finishTrailRuns` splits on.
-    /// It is a constant rather than a literal in two places because the two have to match
-    /// exactly: a typo in either would not fail to compile, it would just silently stop
-    /// splitting the trail.
-    private static let extensionStartStep = "扩展启动"
-
-    /// Every step the extension takes *after* the handover, in order, newest last.
-    ///
-    /// This exists for one reason: the extension writes nothing at all before calling
-    /// `completeRequest`, so the app could previously say "the extension came up" and "the
-    /// file was handed over" and still not tell these two apart —
-    ///
-    ///   * the extension was killed, so `completeRequest` never ran;
-    ///   * it finished normally and the sheet closed, it just never brought the host app
-    ///     forward.
-    ///
-    /// They look identical on screen — the sheet goes away, the home screen appears — so
-    /// the symptom cannot separate them, and the two need different fixes. With this trail,
-    /// **which step the last entry names** is the answer.
-    ///
-    /// Each entry is `"<epoch seconds>|<text>"`. The moment and the text are kept in one
-    /// string rather than two parallel arrays because the only thing this trail is good for
-    /// is order and timing, and two arrays can drift apart.
-    ///
-    /// The finishing path calls this from the main actor, which is safe: the container is
-    /// already mounted by then (`recordExtensionStart` and `recordHandoff` both ran first),
-    /// so this is a warm in-memory defaults write and not another first mount — the mount is
-    /// the one thing in this file that must not be moved onto the main thread.
-    static func recordFinishStep(_ step: String) {
-        guard let defaults = UserDefaults(suiteName: identifier) else { return }
-        var trail = defaults.stringArray(forKey: finishTrailKey) ?? []
-        trail.append("\(Date().timeIntervalSince1970)|\(step)")
-        // One share takes a dozen steps at most. The cap exists only so no odd path can grow
-        // this into an unbounded array; the trail is never this long.
-        if trail.count > 40 { trail.removeFirst(trail.count - 40) }
-        defaults.set(trail, forKey: finishTrailKey)
-    }
-
-    /// The finishing trail, oldest first, every run end to end.
-    ///
-    /// A caller almost always wants `finishTrailRuns` instead: one run is what answers
-    /// "where did it die", and this flat list mixes runs together.
-    static var finishTrail: [(at: Date, step: String)] {
-        guard let defaults = UserDefaults(suiteName: identifier),
-              let trail = defaults.stringArray(forKey: finishTrailKey)
-        else { return [] }
-        return trail.compactMap { entry in
-            let parts = entry.split(separator: "|", maxSplits: 1)
-            guard parts.count == 2, let seconds = TimeInterval(parts[0]) else { return nil }
-            return (Date(timeIntervalSince1970: seconds), String(parts[1]))
-        }
-    }
-
-    /// The trail split into one array per extension launch, oldest run first.
-    ///
-    /// Splitting on the marker rather than filtering by `lastExtensionStart` is what makes
-    /// the trail survive the reproduction it exists for. `lastExtensionStart` is a single
-    /// date, and the ordinary way to use this page is "share → it crashes → share once more
-    /// to actually get the file in → now go read the diagnostics": by then the crashed run
-    /// is older than that date, so a filter drops precisely the run worth reading.
-    ///
-    /// Entries written before the marker existed (an older build wrote to the same key) are
-    /// kept as their own leading run rather than discarded, so upgrading does not silently
-    /// empty the page.
-    static var finishTrailRuns: [[(at: Date, step: String)]] {
-        var runs: [[(at: Date, step: String)]] = []
-        for entry in finishTrail {
-            if entry.step == extensionStartStep || runs.isEmpty {
-                runs.append([entry])
-            } else {
-                runs[runs.count - 1].append(entry)
-            }
-        }
-        return runs
-    }
 
     // MARK: - Helpers
 

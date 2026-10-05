@@ -9,7 +9,6 @@ struct HomeView: View {
     @StateObject private var history = FileHistory.shared
     @State private var navPath = NavigationPath()
     @State private var showSettings = false
-    @State private var showImportLog = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -81,23 +80,9 @@ struct HomeView: View {
                         Image(systemName: "folder.badge.plus")
                     }
                 }
-                ToolbarItem(placement: .topBarLeading) {
-                    // Out of the list and behind a button of its own. Kept in the toolbar
-                    // rather than buried in Settings because it is needed at exactly the
-                    // moment something fails to arrive, which is on this screen.
-                    Button {
-                        showImportLog = true
-                    } label: {
-                        Image(systemName: "list.bullet.rectangle")
-                    }
-                    .accessibilityLabel("导入诊断")
-                }
             }
             .navigationDestination(for: RecentFile.self) { file in
                 ViewerView(file: file)
-            }
-            .navigationDestination(isPresented: $showImportLog) {
-                ImportLogView()
             }
             .sheet(isPresented: $showSettings) {
                 NavigationStack {
@@ -161,9 +146,6 @@ struct HomeView: View {
                 // way the import fails is a genuine file-system problem — which is
                 // worth saying out loud rather than navigating to a file that is not
                 // there.
-                // This picker path is the one that works, so it is also the only way to
-                // see what UTI the system tags a real STEP/STL with on this device.
-                history.note("文件选择器拿到：\(url.lastPathComponent)（\(FileHistory.describeType(of: url))）")
                 do {
                     let file = try history.addFile(sourceURL: url)
                     history.importFailure = nil

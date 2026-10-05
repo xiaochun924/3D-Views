@@ -57,18 +57,6 @@ final class FileHistory: ObservableObject {
     /// importing the same document twice.
     private var lastHandover: (path: String, at: Date)?
 
-    /// What the system has actually told this app about documents opened from outside
-    /// it, newest first, persisted so it survives the relaunch it may be reporting on.
-    ///
-    /// This exists because the failure being chased — the app comes forward and nothing
-    /// else happens — reads identically whether the URL was never delivered, was
-    /// delivered to a hook that was never installed, or arrived and was rejected. Two
-    /// rounds were spent guessing between those; this is the evidence instead. The
-    /// 诊断 section in `HomeView` shows it. Temporary: remove with that section once
-    /// the handover is confirmed working.
-    @Published private(set) var handoverLog: [String] = []
-
-    private let handoverLogKey = "HandoverLog"
 
     /// What `importFromSandbox` has already taken from under `Documents`, so a file the
     /// user copied in is imported once rather than on every scan.
@@ -128,11 +116,6 @@ final class FileHistory: ObservableObject {
     }
 
     private init() {
-        // The persisted log is read *before* anything below, not after. `load()` and the
-        // storage collection that follows it report through `note()`, which writes the whole
-        // array back — so reading the log afterwards would hand this build the line it had
-        // just written instead of the history it inherited.
-        handoverLog = UserDefaults.standard.stringArray(forKey: handoverLogKey) ?? []
         // Recovery before `load()`, deliberately: a file restored here is back on disk by the
         // time the history is filtered for missing files, so a row that names it is not
         // dropped a moment before the file reappears.
@@ -186,12 +169,10 @@ final class FileHistory: ObservableObject {
                     )
                 )
                 ownedImportNames.insert(name)
-                note("  恢复中断的导入：\(name)")
             } catch {
                 // Left where it is, and the folder is then left alone: a crumb that cannot be
                 // moved is still the only complete copy of that file.
                 stranded += 1
-                note("  恢复失败：\(name)（\(error.localizedDescription)）")
             }
         }
 
@@ -217,298 +198,6 @@ final class FileHistory: ObservableObject {
         // collectable — a dropped row, a restored file, a file the user deleted from Files —
         // has happened by the time this runs.
         pruneStorage(verbose: false)
-    }
-
-    /// Records one line of handover evidence. The window has to hold a whole share
-    /// round-trip, because that round-trip is exactly what this log exists to show:
-    /// leaving the app, the extension handing over, and the return each write lines,
-    /// and a window that only holds part of them hides the part being asked about.
-    func note(_ line: String) {
-        let stamp = Self.stampFormatter.string(from: Date())
-        handoverLog.insert("\(stamp) \(line)", at: 0)
-        if handoverLog.count > 30 { handoverLog = Array(handoverLog.prefix(30)) }
-        UserDefaults.standard.set(handoverLog, forKey: handoverLogKey)
-    }
-
-    /// What the **installed** bundle declares, read back from `Bundle.main` rather than
-    /// from the repository. That distinction is the whole point: `Info.plist` is merged
-    /// into the built product from `project.yml` at build time, and a side-loaded build
-    /// need not be the one in the source tree. If the declarations never made it into
-    /// the binary the user is running, no amount of care in the source will show up on
-    /// the device. Temporary, alongside `handoverLog`.
-    static func bundleFacts() -> [String] {
-        var lines: [String] = []
-        // The scene-manifest, document-type, exported-UTI and open-in-place blocks that used
-        // to print here are gone, and their absence is deliberate.
-        //
-        // All four existed to answer one question: why a file opened from Files reached the
-        // app but never arrived. That question is closed. Note the declarations themselves are
-        // **still in `project.yml`** — `CFBundleDocumentTypes`, `UTExportedTypeDeclarations`,
-        // `LSSupportsOpeningDocumentsInPlace` and `UISceneDelegateClassName` were all kept, not
-        // deleted — so this is not a case of the lines having nothing left to read. It is that
-        // what they would read has stopped moving: the path was measured with `Alternate`+false,
-        // `None`+false and `Alternate`+true and never once delivered a URL, while sharing into
-        // the extension does. A column of constants is worse than no line at all, because a
-        // constant that reads like a finding invites another round of tuning a path that has
-        // never brought a file in.
-        //
-        // What remains below are the facts that still move when the share chain breaks.
-
-        let bundleID = Bundle.main.bundleIdentifier ?? "?"
-        lines.append("Bundle ID：\(bundleID)")
-
-        // When the installed binary was written. Side-loading is how this app is installed,
-        // and a stale build behaves exactly like a broken one — six rounds were run against
-        // devices whose build could not be identified from the app itself. The executable's
-        // timestamp changes on every rebuild, so it names the build well enough to tell
-        // "the new one is not on the device" from "it is, and still fails".
-        if let executable = Bundle.main.executableURL {
-            let written = (try? FileManager.default.attributesOfItem(atPath: executable.path))?[.modificationDate] as? Date
-            let text = written.map { stampFormatter.string(from: $0) } ?? "未知"
-            lines.append("构建于：\(text)")
-        }
-
-        // The App Group is what the share extension and the app use to see each other, and
-        // it is the one piece of this that the build cannot verify: the IPA is produced
-        // with CODE_SIGNING_ALLOWED=NO, so the entitlement is absent from the package and
-        // has to be re-applied by whatever signs it for the device. If that did not
-        // happen, the container silently does not exist and the handover fails with no
-        // error anywhere — so the state is reported here rather than left to be inferred.
-        if AppGroup.isAvailable, let container = AppGroup.containerURL {
-            lines.append("App Group：可用")
-            lines.append("  \(AppGroup.identifier)")
-            lines.append("  收件箱待取：\(AppGroup.pendingFileCount()) 个")
-            lines.append("  \(container.path)")
-        } else {
-            lines.append("App Group：不可用（签名未带 \(AppGroup.identifier)）")
-        }
-
-        // The extension is embedded again — `project.yml` restored it in 91ca1bc — so 未安装
-        // is a fault here, not an expected reading: it means the .appex did not survive into
-        // the installed bundle, and no share can reach the app at all.
-        //
-        // This is only ever shown, never acted on. Nothing in the import path consults it, so
-        // a missing .appex changes what the reader should conclude — not what the app does.
-        lines.append("分享扩展：\(shareExtensionInstalled ? "已安装" : "未安装（故障）")")
-
-        // Whether the signing tool signed the nested pieces, not just the outer app.
-        //
-        // The CI package is built with `CODE_SIGNING_ALLOWED=NO`, so every `_CodeSignature`
-        // in it is the work of whatever signed it for the device. A signed main bundle
-        // with an unsigned `.appex` is the one failure that is indistinguishable from
-        // "the extension is installed but the system never starts it": iOS refuses to
-        // load an extension whose signature it cannot verify, and tells the app nothing.
-        // Reading the seal back is the only way to tell those two apart from in here.
-        func sealState(of url: URL) -> String {
-            let seal = url.appendingPathComponent("_CodeSignature/CodeResources")
-            guard FileManager.default.fileExists(atPath: seal.path) else { return "无" }
-            let size = (try? FileManager.default.attributesOfItem(atPath: seal.path))?[.size] as? Int ?? 0
-            return "有（\(size) 字节）"
-        }
-
-        lines.append("主包签名：\(sealState(of: Bundle.main.bundleURL))")
-        // The extension is embedded again, so this line is load-bearing rather than
-        // forward-looking: an unsigned `.appex` inside a self-signed IPA is a real failure
-        // mode, and this is the only place it would show. `无` now means the extension is
-        // missing or was not signed, not that none was expected.
-        lines.append("扩展签名：\(sealState(of: Bundle.main.bundleURL.appendingPathComponent("PlugIns/Views-Share.appex")))")
-
-        // Whether the extension has ever actually been brought up. "Not installed",
-        // "installed but never started" and "started but never finished" are three
-        // different faults, and a missing handoff record only rules out the third — this
-        // line is what separates the other two.
-        //
-        // With the extension back in the bundle this should read a fresh timestamp after
-        // every share. 从未 on a build whose 扩展签名 line reads 有 means the share sheet
-        // never launched the extension at all, which is a different bug from the extension
-        // running and failing to hand anything over — the handoff lines below split those.
-        if let started = AppGroup.lastExtensionStart {
-            lines.append("扩展启动于：\(stampFormatter.string(from: started))")
-        } else {
-            lines.append("扩展启动于：从未")
-        }
-
-        // A record left by the extension, so it goes quiet along with it. Kept for the same
-        // reason as the line above.
-        if let handoff = AppGroup.lastHandoff {
-            let names = handoff.names.isEmpty ? "无" : handoff.names.joined(separator: ",")
-            let failures = handoff.failures.isEmpty ? "" : "｜失败 \(handoff.failures.count) 个"
-            lines.append("上次分享：\(stampFormatter.string(from: handoff.at)) \(names)\(failures)")
-        } else {
-            lines.append("上次分享：无")
-        }
-
-        // 收尾路径的飞行记录仪：扩展在**交接完成之后**走到的每一步。
-        //
-        // 上面两行只说明「扩展起来了」和「文件交接了」，分不清「扩展被杀」与「扩展正常走完、
-        // 只是没能把主 App 拉起来」——这两者在用户眼里一模一样（面板消失、回到桌面），而修法
-        // 完全不同。轨迹的**最后一条**就是答案：
-        //   停在「请求唤醒主 App」        → 死在这一步之后
-        //   走到「提交 completeRequest」  → 收尾是完整的，问题在别处
-        //
-        // 按运行切分显示，只留最近三次。切分靠轨迹里的「扩展启动」标记，而不是按
-        // `lastExtensionStart` 过滤——后者只保存最近一次启动时间，而这条轨迹的典型用法正是
-        // 「分享 → 闪退 → 再分享一次把文件导进来 → 才来看诊断」：那一刻闪退那次已经比
-        // `lastExtensionStart` 更早，一过滤就恰好把要读的那一次丢掉。
-        let runs = AppGroup.finishTrailRuns
-        if runs.isEmpty {
-            lines.append("收尾轨迹：无（扩展从未启动）")
-        } else {
-            let shown = runs.suffix(3)
-            lines.append("收尾轨迹（最近 \(shown.count) 次运行，旧→新）：")
-            for (index, run) in shown.enumerated() {
-                if index > 0 { lines.append("  ---") }
-                for entry in run {
-                    lines.append("  \(trailFormatter.string(from: entry.at)) \(entry.step)")
-                }
-            }
-        }
-
-        // The scene-delegate and declared-name blocks that used to print here are gone along
-        // with the document-open path they served. They answered one question — whether the
-        // scene that would receive a handed-over URL was ours or SwiftUI's — and `project.yml`
-        // records that it was answered: both spellings of `UISceneDelegateClassName` were
-        // tried, and the build whose declared name matched the runtime name still received no
-        // URL. The key was ruled out as the blocker, so a line that only ever printed 一致
-        // said nothing about whether a file would arrive.
-        //
-        // The extension's own trail, printed above, is what replaced it.
-
-        return lines
-    }
-
-    /// Empties the record. The log is meant to be read right after something failed, and a
-    /// twelve-line window fills up fast; without a way to clear it, a fresh attempt is
-    /// indistinguishable from an old one still sitting there.
-    func clearLog() {
-        handoverLog = []
-        UserDefaults.standard.removeObject(forKey: handoverLogKey)
-    }
-
-    private static let stampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MM-dd HH:mm:ss"
-        return formatter
-    }()
-
-    /// 收尾轨迹专用。秒级精度在这里不够用：整条收尾路径只有 2.5 秒与 1.5 秒两个定时器，
-    /// 「官方 open 回调」和「兜底 open」很可能落在同一秒里，那样轨迹就白记了。
-    private static let trailFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter
-    }()
-
-    /// Everything the diagnostics screen shows, as one block of text.
-    ///
-    /// The screen exists because this has to be read on a device that cannot be attached to
-    /// a debugger — so the fastest way to see it is to copy it out in one piece rather than
-    /// transcribe a dozen rows of a monospaced list by hand.
-    func diagnosticsReport() -> String {
-        var lines: [String] = []
-        lines.append("=== 3D Views 导入诊断 ===")
-        lines.append("生成时间：\(Self.stampFormatter.string(from: Date()))")
-        lines.append("")
-        lines.append("--- 构建与分享链路 ---")
-        lines.append(contentsOf: Self.bundleFacts())
-        lines.append("")
-        lines.append("--- 导入记录（新→旧）---")
-        if handoverLog.isEmpty {
-            lines.append("（空）")
-        } else {
-            lines.append(contentsOf: handoverLog)
-        }
-        lines.append("")
-        lines.append("--- 目录实况 ---")
-        lines.append(contentsOf: Self.directoryFacts())
-        return lines.joined(separator: "\n")
-    }
-
-    /// What is actually sitting in the folders that matter, listed by hand rather than
-    /// inferred. The scan reports how many candidates it saw; this reports their names,
-    /// which is what tells "the file never arrived" apart from "it arrived under a name
-    /// the extension gate does not accept".
-    static func directoryFacts() -> [String] {
-        let manager = FileManager.default
-        var lines: [String] = []
-
-        func describe(_ label: String, _ url: URL?) {
-            guard let url else {
-                lines.append("\(label)：路径不可得")
-                return
-            }
-            guard let names = try? manager.contentsOfDirectory(atPath: url.path) else {
-                lines.append("\(label)：目录不存在")
-                lines.append("  \(url.path)")
-                return
-            }
-            lines.append("\(label)：\(names.count) 项")
-            lines.append("  \(url.path)")
-            for name in names.sorted().prefix(20) {
-                lines.append("    \(name)")
-            }
-        }
-
-        let docs = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        describe("共享收件箱", AppGroup.inboxURL)
-        describe("Documents/Inbox", docs.appendingPathComponent("Inbox", isDirectory: true))
-        describe("Documents/Imported", docs.appendingPathComponent("Imported", isDirectory: true))
-        describe("Documents", docs)
-
-        // The container-wide sweep. Every round so far has assumed the file lands in one
-        // of the four folders above; if iOS hands it over some other way it would be
-        // invisible here and we would keep "fixing" the wrong layer. Walk the container
-        // and name any model file sitting outside those folders, whatever its depth.
-        let container = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .deletingLastPathComponent()   // …/Library
-            .deletingLastPathComponent()   // …（容器根）
-        lines.append("")
-        lines.append("--- 容器全域扫描（\(container.path)）---")
-        let strays = Self.strayModelFiles(in: container)
-        if strays.isEmpty {
-            lines.append("未发现散落的模型文件")
-        } else {
-            for stray in strays.prefix(30) {
-                lines.append("  \(stray)")
-            }
-        }
-
-        return lines
-    }
-
-    /// Model-extension files anywhere under the container, minus the folders the scan
-    /// already sweeps and minus the app's own `Imported` copies (which are the *result*
-    /// of a successful import, not evidence of a delivery we missed).
-    private static func strayModelFiles(in container: URL, depth: Int = 0) -> [String] {
-        guard depth < 4 else { return [] }
-        let manager = FileManager.default
-        let containerPath = container.standardizedFileURL.path
-        guard let entries = try? manager.contentsOfDirectory(
-            at: container,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        var found: [String] = []
-        for entry in entries {
-            let path = entry.standardizedFileURL.path
-            let relative = path.hasPrefix(containerPath)
-                ? String(path.dropFirst(containerPath.count))
-                : path
-            // `Imported` holds the *results* of successful imports, so reporting them
-            // would drown the one signal that matters: a file somewhere we never look.
-            if relative.hasPrefix("/Documents/Imported") { continue }
-
-            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            if isDirectory {
-                // `Library/Preferences` is plists only; skipping it saves depth.
-                if relative == "/Library/Preferences" { continue }
-                found.append(contentsOf: Self.strayModelFiles(in: entry, depth: depth + 1))
-            } else if Self.supportedExtensions.contains(entry.pathExtension.lowercased()) {
-                found.append(relative)
-            }
-        }
-        return found
     }
 
     /// Copies a file into `Documents/Imported` and makes it the newest history entry.
@@ -601,11 +290,6 @@ final class FileHistory: ObservableObject {
     /// for STEP/STL, but the share sheet can still offer it for neighbouring types.
     @discardableResult
     func receiveExternalFile(at url: URL, source: String) -> RecentFile? {
-        // Logged before the dedup check below, so a lifecycle that knocks on both doors
-        // still leaves evidence of both knocks — that is the reading that says which
-        // door the system is actually using, and its absence says the URL never arrived.
-        note("\(source) 收到：\(url.lastPathComponent)")
-
         // Both delivery hooks lead here, and the system may use either or both
         // depending on the app's lifecycle mode. The first sighting wins; a repeat of
         // the same file within a couple of seconds is the second hook carrying the
@@ -631,13 +315,11 @@ final class FileHistory: ObservableObject {
                     .map { $0.uppercased() }
                     .joined(separator: "、") + " 文件。"
             }
-            note("  拒绝：类型不支持（扩展名「\(url.pathExtension)」）")
             return nil
         }
 
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        note("  安全作用域：\(scoped ? "已获得" : "未提供")")
 
         // Always import the durable App Group copy. The provider URL may stop being readable
         // as soon as the document-open callback returns, so falling back to the original URL
@@ -645,7 +327,6 @@ final class FileHistory: ObservableObject {
         guard let queuedName = AppGroup.queue(fileAt: url, preferredName: url.lastPathComponent),
               let pending = AppGroup.pendingURL?.appendingPathComponent(queuedName) else {
             importFailure = "无法保存外部文件：系统提供的文件 URL 不可读取或共享容器不可用。"
-            note("  队列失败：无法复制外部文件")
             return nil
         }
 
@@ -654,11 +335,9 @@ final class FileHistory: ObservableObject {
             try? FileManager.default.removeItem(at: pending)
             importFailure = nil
             publishPendingOpen(entry)
-            note("  已导入：\(entry.fileName)")
             return entry
         } catch {
             importFailure = "导入失败：\(error.localizedDescription)"
-            note("  导入失败：\(error.localizedDescription)")
             return nil
         }
     }
@@ -698,7 +377,6 @@ final class FileHistory: ObservableObject {
         // deposited. It asks nothing of the system — the extension did the copy itself —
         // which is why it is read before any of the routes that depend on iOS handing the
         // app a URL.
-        var sharedCount = -1
         if let pending = AppGroup.pendingURL {
             let pendingNames = (try? manager.contentsOfDirectory(atPath: pending.path)) ?? []
             for name in pendingNames.sorted() {
@@ -709,14 +387,12 @@ final class FileHistory: ObservableObject {
                 else { continue }
                 guard Self.supportedExtension(of: source) != nil else {
                     park(source, in: pending)
-                    note("  待处理移出（格式不支持）：\(name)")
                     continue
                 }
                 if let entry = importQueuedFile(at: source) {
                     imported.append(entry)
                 } else {
                     park(source, in: pending)
-                    note("  待处理移出（导入失败）：\(name)")
                 }
             }
         }
@@ -725,7 +401,6 @@ final class FileHistory: ObservableObject {
             // counting that folder made 「收件箱待取」 stick at 1 after a single share of a
             // format the viewer cannot read.
             let names = AppGroup.pendingFileNames()
-            sharedCount = names.count
             for name in names.sorted() {
                 let source = shared.appendingPathComponent(name)
                 // Folders are skipped before anything else, and that guard is not
@@ -747,7 +422,6 @@ final class FileHistory: ObservableObject {
                     // the inbox honest: the file is still there if it is ever wanted, but
                     // it no longer stands in the way of the ones that can be imported.
                     park(source, in: shared)
-                    note("  收件箱移出（格式不支持）：\(name)")
                     continue
                 }
                 if let entry = importSandboxCopy(at: source, removeSource: true) {
@@ -758,7 +432,6 @@ final class FileHistory: ObservableObject {
 
         let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
         let inboxNames = (try? manager.contentsOfDirectory(atPath: inbox.path)) ?? []
-        var inboxFileCount = 0
         for name in inboxNames.sorted() {
             let source = inbox.appendingPathComponent(name)
             // Same guard as the shared inbox above: a folder here is not a handover,
@@ -767,7 +440,6 @@ final class FileHistory: ObservableObject {
             guard manager.fileExists(atPath: source.path, isDirectory: &isDirectory),
                   !isDirectory.boolValue
             else { continue }
-            inboxFileCount += 1
             guard Self.supportedExtension(of: source) != nil else {
                 // The same treatment the shared inbox gives an unreadable format. Leaving it
                 // in place is what made this Inbox undrainable: iOS expects an app to take
@@ -776,7 +448,6 @@ final class FileHistory: ObservableObject {
                 // inboxes used to disagree about this, which is the kind of difference that
                 // only shows up as "the count is stuck" months later.
                 park(source, in: inbox)
-                note("  Documents/Inbox 移出（格式不支持）：\(name)")
                 continue
             }
             if let entry = importSandboxCopy(at: source, removeSource: true) {
@@ -784,7 +455,6 @@ final class FileHistory: ObservableObject {
             }
         }
 
-        var docCandidates = 0
         if let names = try? manager.contentsOfDirectory(atPath: docs.path) {
             for name in names.sorted() {
                 let source = docs.appendingPathComponent(name)
@@ -793,7 +463,6 @@ final class FileHistory: ObservableObject {
                       !isDirectory.boolValue,
                       Self.supportedExtension(of: source) != nil
                 else { continue }
-                docCandidates += 1
 
                 let mark = Self.fingerprint(of: source)
                 guard !fingerprints.contains(mark) else { continue }
@@ -806,30 +475,6 @@ final class FileHistory: ObservableObject {
         }
 
         if gainedFingerprint { sandboxScanFingerprints = fingerprints }
-
-        // Unconditional, and that is the whole point of this line. Six rounds of
-        // configuration guessing were run against a log that only spoke when an import
-        // *succeeded* — so "the scan ran and found nothing", "the scan never ran" and
-        // "the new build was never installed" all looked identical, and whichever one
-        // was assumed drove the next wrong change. One line now tells them apart.
-        // Also speaks on a quiet pass when it actually found something. The sweep's later
-        // retries are exactly where a file that landed after launch turns up, and an
-        // import happening there must not be the one event the log omits.
-        if verbose || !imported.isEmpty {
-            let sharedText = sharedCount < 0 ? "不可用" : "\(sharedCount) 个"
-            // Which pass this was. Several scans run within a second of each other —
-            // launch, return to the foreground, the sweep's retries, this screen opening —
-            // and without the reason they are identical rows that cannot be told apart,
-            // which is how a real handover gets misread as a refresh.
-            let origin = reason.map { "（\($0)）" } ?? ""
-            // One number per folder and nothing else. The counts used to carry their own
-            // parenthetical total (`Inbox 0 个文件（2 项）`), which existed to expose the
-            // `Unsupported` parking folder sitting in the directory — but that folder is
-            // excluded from both counts now, so the two numbers could only ever agree, and
-            // agreeing twice reads as a discrepancy to anyone scanning the log. The names
-            // behind these numbers are in 目录实况 of the copied report.
-            note("扫描\(origin)：共享 \(sharedText)｜收件箱 \(inboxFileCount) 个｜Documents \(docCandidates) 个候选｜导入 \(imported.count) 个")
-        }
 
         // Collection rides along with a real scan — launch, return to the foreground, the
         // 重新扫描 button — and deliberately not with the sweep's silent retries, which run
@@ -849,16 +494,6 @@ final class FileHistory: ObservableObject {
     /// 调用本方法取走并导入到自己的沙盒；重复调用是幂等的。
     @discardableResult
     func consumePendingShareImportIfNeeded(reason: String) -> [RecentFile] {
-        // The reason is bracketed like every other line that carries one. This read
-        // 「分享交接消费冷启动」, a sentence the log had to be split by eye, and the screen
-        // now puts its own timestamp and icon around this text.
-        if let handoff = AppGroup.lastHandoff {
-            let names = handoff.names.isEmpty ? "无" : handoff.names.joined(separator: "、")
-            let failures = handoff.failures.isEmpty ? "无" : handoff.failures.joined(separator: "、")
-            note("扩展交接（\(reason)）：\(names)｜失败 \(failures)｜待取 \(AppGroup.pendingFileCount())")
-        } else {
-            note("扩展交接（\(reason)）：无交接清单｜待取 \(AppGroup.pendingFileCount())")
-        }
         return importFromSandbox(reason: "交接·\(reason)")
     }
 
@@ -933,7 +568,6 @@ final class FileHistory: ObservableObject {
     /// ordinary file hand-over. Anything else is refused *with the shape that would have
     /// worked*, because a hand-typed link is the only way to arrive here wrong.
     private func handleCustomScheme(_ url: URL, source: String) {
-        note("\(source) 收到 \(Self.customScheme)://：\(url.absoluteString)")
 
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             importFailure = "链接无法解析：\(url.absoluteString)"
@@ -949,7 +583,6 @@ final class FileHistory: ObservableObject {
         // the file into App Group/Inbox. There is deliberately no model URL here: the
         // inbox is the payload, and the scan publishes pendingOpen after it finds it.
         if queryItems.contains(where: { $0.name == "handoff" && $0.value == "1" }) {
-            note("  扩展唤起：扫描共享收件箱")
             consumePendingShareImportIfNeeded(reason: "扩展唤起")
             scheduleInboxSweep(reason: "扩展唤起")
             return
@@ -957,13 +590,11 @@ final class FileHistory: ObservableObject {
 
         guard let addressed, !addressed.isEmpty else {
             importFailure = "链接里没有模型地址。正确写法：\(Self.customScheme)://import?file=https://…/part.step"
-            note("  拒绝：没有 file 参数")
             return
         }
 
         guard let target = URL(string: addressed) else {
             importFailure = "链接里的地址无法解析：\(addressed)"
-            note("  拒绝：参数不是合法地址")
             return
         }
 
@@ -974,7 +605,6 @@ final class FileHistory: ObservableObject {
             receiveExternalFile(at: target, source: "\(source)（\(Self.customScheme) 转本地）")
         default:
             importFailure = "只支持 http／https／file 地址，收到「\(target.scheme ?? "无 scheme")」。"
-            note("  拒绝：scheme 不支持")
         }
     }
 
@@ -993,7 +623,6 @@ final class FileHistory: ObservableObject {
     /// returns, so it is moved somewhere this function owns before anything else touches it.
     @discardableResult
     func receiveRemoteFile(at url: URL, source: String) async -> RecentFile? {
-        note("\(source) 下载：\(url.absoluteString)")
 
         // Refused before the download rather than after it: an address whose own file name
         // cannot be a model should not cost the user megabytes of mobile data to rule out.
@@ -1003,7 +632,6 @@ final class FileHistory: ObservableObject {
             } else {
                 importFailure = "链接结尾不是可打开的文件名（\(url.lastPathComponent)）。"
             }
-            note("  拒绝：链接文件名不是支持的格式")
             return nil
         }
 
@@ -1013,7 +641,6 @@ final class FileHistory: ObservableObject {
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         } catch {
             importFailure = "下载失败：无法建立临时目录（\(error.localizedDescription)）。"
-            note("  失败：临时目录")
             return nil
         }
         defer { try? FileManager.default.removeItem(at: staging) }
@@ -1023,7 +650,6 @@ final class FileHistory: ObservableObject {
             let (temporary, response) = try await URLSession.shared.download(from: url)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 importFailure = "下载失败：服务器返回 \(http.statusCode)。"
-                note("  失败：HTTP \(http.statusCode)")
                 return nil
             }
             let name = url.lastPathComponent.isEmpty ? "downloaded.step" : url.lastPathComponent
@@ -1032,43 +658,15 @@ final class FileHistory: ObservableObject {
             downloaded = landed
         } catch {
             importFailure = "下载失败：\(error.localizedDescription)"
-            note("  失败：\(error.localizedDescription)")
             return nil
         }
 
         guard let downloaded else {
             importFailure = "下载失败：没有得到文件。"
-            note("  失败：下载未落地")
             return nil
         }
 
-        note("  下载完成：\(downloaded.lastPathComponent)")
         return receiveExternalFile(at: downloaded, source: "\(source) 下载完成")
-    }
-
-    /// How many files the share extension has left waiting. Shown in `SettingsView`.
-    ///
-    /// The extension is embedded again, so this is a live reading rather than a
-    /// formality: it is normally 0 because the app takes the files out on activation, and
-    /// a number that stays above 0 after a share means the handover landed in the
-    /// container but nothing consumed it. Read from the App Group rather than assumed,
-    /// because the group container also survives an app update.
-    func sharedInboxFileCount() -> Int {
-        AppGroup.pendingFileCount()
-    }
-
-    /// Whether the installed bundle actually carries the share extension. Read from the
-    /// built product rather than the source tree: a side-loaded build need not be the one
-    /// in the repository, and a missing `.appex` changes what the failure means.
-    ///
-    /// Only ever shown, never acted on — no import path branches on this. With the
-    /// extension removed from the bundle it should read `false`; `true` would mean the
-    /// installed build is not the one this source tree describes.
-    static var shareExtensionInstalled: Bool {
-        guard let plugins = Bundle.main.builtInPlugInsURL,
-              let names = try? FileManager.default.contentsOfDirectory(atPath: plugins.path)
-        else { return false }
-        return names.contains { $0.hasSuffix(".appex") }
     }
 
     /// Imports one file found inside our own sandbox. Never throws: a scan runs over
@@ -1077,10 +675,8 @@ final class FileHistory: ObservableObject {
         do {
             let entry = try addFile(sourceURL: source)
             if removeSource { try? FileManager.default.removeItem(at: source) }
-            note("  沙盒导入：\(entry.fileName)")
             return entry
         } catch {
-            note("  沙盒导入失败：\(source.lastPathComponent)（\(error.localizedDescription)）")
             return nil
         }
     }
@@ -1091,10 +687,8 @@ final class FileHistory: ObservableObject {
         do {
             let entry = try addFile(sourceURL: source)
             try? FileManager.default.removeItem(at: source)
-            note("  待处理导入：\(entry.fileName)")
             return entry
         } catch {
-            note("  待处理导入失败：\(source.lastPathComponent)（\(error.localizedDescription)）")
             return nil
         }
     }
@@ -1233,19 +827,15 @@ final class FileHistory: ObservableObject {
     /// anything becomes collectable, and a viewer that is open for seconds at a time would
     /// spend most of a timer's ticks finding nothing.
     private func pruneStorage(verbose: Bool) {
-        let imports = pruneImportedStorage()
-        let fingerprints = pruneStaleFingerprints()
+        pruneImportedStorage()
+        pruneStaleFingerprints()
 
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        var parked = 0
         // The shared inbox is collected through its URL rather than through `ensureInbox()`:
         // collection is not a reason to create a folder.
-        if let shared = AppGroup.inboxURL { parked += pruneParking(in: shared) }
-        parked += pruneParking(in: docs.appendingPathComponent("Inbox", isDirectory: true))
-        let staging = pruneStagingDirectories()
-
-        guard verbose, imports + parked + staging + fingerprints > 0 else { return }
-        note("清理：Imported 回收 \(imports) 个｜停车目录 \(parked) 个｜临时目录 \(staging) 个｜指纹 \(fingerprints) 条")
+        if let shared = AppGroup.inboxURL { _ = pruneParking(in: shared) }
+        _ = pruneParking(in: docs.appendingPathComponent("Inbox", isDirectory: true))
+        _ = pruneStagingDirectories()
     }
 
     /// Releases the bytes of imports that history no longer refers to, plus the crumbs an

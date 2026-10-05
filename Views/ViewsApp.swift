@@ -38,8 +38,7 @@
 //  path, and the document-open route below is the whole mechanism — nothing runs beside it
 //  any more. The extension's source and target are still in the repository and can be
 //  re-embedded with a two-line change to `project.yml`; until then the App Group inbox it
-//  used to fill will simply stay empty, and the diagnostics page says so rather than
-//  reporting it as a fault.
+//  used to fill will simply stay empty.
 
 import SwiftUI
 import UIKit
@@ -57,28 +56,13 @@ import UIKit
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     /// A cold launch caused by opening a document can carry the URL here instead of
-    /// through the scene. Recording the no-URL case too is deliberate: it is
-    /// what separates "the share sheet started the app and the URL went missing" from
-    /// "the app was already running and the URL went missing".
+    /// through the scene.
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Which keys are present is the whole evidence, so they are listed rather than
-        // summarised. "No URL" on its own cannot distinguish a share that carried nothing
-        // from a share whose URL was routed to the scene instead — iOS only fills
-        // `launchOptions[.url]` when UIKit, not a scene, owns the launch.
-        let keys = (launchOptions ?? [:])
-            .keys
-            .map(\.rawValue)
-            .sorted()
-            .joined(separator: ",")
-        let keyText = keys.isEmpty ? "空" : keys
         if let url = launchOptions?[.url] as? URL {
-            FileHistory.shared.note("冷启动，带 URL：\(url.lastPathComponent)｜键：\(keyText)")
             FileHistory.shared.handleIncomingURL(url, source: "AppDelegate 冷启动")
-        } else {
-            FileHistory.shared.note("冷启动，无 URL｜键：\(keyText)")
         }
         // A launch caused by 「拷贝到 3D Views」, and one caused by the share extension
         // depositing into the inbox, both carry no file URL: in each the file is waiting
@@ -125,13 +109,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidBecomeActive(_ application: UIApplication) {
         FileHistory.shared.consumePendingShareImportIfNeeded(reason: "回到前台")
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
-    }
-
-    /// 面板关掉的那一刻，前台到底在谁手里 —— 这条读数就是为它准备的。
-    /// 分享面板盖上来时 App 只会「退到非活跃」，不会进后台，所以是这一条
-    /// 而不是 `sceneDidEnterBackground` 才是那个能分辨的信号。
-    func applicationWillResignActive(_ application: UIApplication) {
-        FileHistory.shared.note("离开前台：App 退到非活跃")
     }
 }
 
@@ -180,16 +157,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func sceneDidBecomeActive(_ scene: UIScene) {
         FileHistory.shared.consumePendingShareImportIfNeeded(reason: "回到前台")
         FileHistory.shared.scheduleInboxSweep(reason: "回到前台")
-    }
-
-    /// 与上面的 `sceneDidBecomeActive` 成对。两者相隔多久、中间插了什么，
-    /// 就是「拉起来之后有没有留住」的直接读数。
-    func sceneWillResignActive(_ scene: UIScene) {
-        FileHistory.shared.note("离开前台：scene 退到非活跃")
-    }
-
-    func sceneDidEnterBackground(_ scene: UIScene) {
-        FileHistory.shared.note("离开前台：scene 进后台")
     }
 
     private func handle(_ contexts: Set<UIOpenURLContext>, source: String) {

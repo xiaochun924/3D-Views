@@ -50,8 +50,7 @@ import UniformTypeIdentifiers
 /// This pairing is the fix for the cold-launch crash. A bare `ShareViewController` in
 /// the plist was measured on device to fail exactly this way: the share sheet still
 /// listed the row and the .appex was still bundled and signed, but the process never
-/// came up at all — no line of this file ran, so the 「扩展启动于」 timestamp stayed
-/// frozen at its previous value.
+/// came up at all — no line of this file ran.
 @objc(ShareViewController)
 final class ShareViewController: UIViewController {
 
@@ -64,22 +63,6 @@ final class ShareViewController: UIViewController {
     private var hostWakeupResolved = false
 
     override func viewDidLoad() {
-        // Left before anything else, including the label. If the principal-class
-        // lookup ever fails the extension dies without running a line of this file —
-        // which looks exactly like the extension never having been launched. This
-        // timestamp is what tells those two apart from the app's side, so it stays the
-        // first thing the extension does.
-        //
-        // The write is dispatched off the main thread deliberately. The *first* access to
-        // the App Group (which `UserDefaults(suiteName:)` triggers) mounts the shared
-        // container, and on a cold extension launch that mount is slow enough that the
-        // system watchdog can kill the extension — the "first share after install
-        // crashes, the second one works" symptom. The timestamp only needs to exist
-        // before the handoff record is read, so it is written asynchronously.
-        Task.detached {
-            AppGroup.recordExtensionStart()
-        }
-
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
@@ -140,18 +123,11 @@ final class ShareViewController: UIViewController {
         // The check itself is dispatched off the main actor. Reading `containerURL` is
         // what mounts the shared container on first access; on a cold launch that mount
         // can take long enough for the watchdog to kill the extension mid-`viewDidAppear`
-        // — the "first share after install crashes" symptom. `viewDidLoad` already
-        // started the mount through `recordExtensionStart`, so by the time this runs the
-        // container is usually warm; keeping the check off the main actor removes the
-        // remaining stall on the very first launch.
+        // — the "first share after install crashes" symptom. Keeping the check off the
+        // main actor removes the remaining stall on the very first launch.
         let containerAvailable = await Task.detached { AppGroup.isAvailable }.value
         guard containerAvailable else {
-            // Recorded off the main actor for the same reason as the check above: the
-            // failure path still touches the shared container for the first time.
             let message = "无法导入：共享容器不可用\n当前安装包的签名里没有 \(AppGroup.identifier)"
-            await Task.detached {
-                AppGroup.recordHandoff(names: [], failures: ["共享容器不可用"])
-            }.value
             await MainActor.run { [weak self] in
                 self?.statusLabel.text = message
                 self?.openButton.isHidden = false
@@ -174,31 +150,6 @@ final class ShareViewController: UIViewController {
             }
         }
 
-        // Dispatched off the main actor for the same reason as the check above.
-        // `recordHandoff` writes through `UserDefaults(suiteName:)` (AppGroup.swift), and
-        // that call is what mounts the shared container on first access. Left bare here,
-        // it ran synchronously on the main actor — the exact stall the check above exists
-        // to avoid, and the reason this file dispatches its other App Group writes.
-        // On a cold launch the mount is slow enough for the watchdog to kill the extension,
-        // which is why the first share after install crashed and the second one worked: by
-        // then the container was already mounted and this line returned instantly.
-        //
-        // Awaited rather than fired off, because the record has to be durable before the
-        // host is asked to wake up — the app reads it to report what arrived.
-        //
-        // The `@Sendable` closure annotation is required by the strict Swift 6.2 build
-        // (`NonisolatedNonsendingByDefault`): this method is `@MainActor`-isolated, so the
-        // captured `deposited`/`failures` would otherwise be treated as non-sending values
-        // crossing into the detached task, and the compiler rejects the closure outright.
-        //
-        // Snapshotting into `let` bindings before the task is also mandatory: a @Sendable
-        // closure may not capture the mutable `var` themselves (they are appended to in the
-        // loop above), only immutable copies of their current values.
-        let depositedSnapshot = deposited
-        let failuresSnapshot = failures
-        await Task.detached { @Sendable in
-            AppGroup.recordHandoff(names: depositedSnapshot, failures: failuresSnapshot)
-        }.value
         await MainActor.run { [weak self] in
             guard let self else { return }
             self.statusLabel.text = self.message(deposited: deposited, failures: failures)
@@ -239,9 +190,6 @@ final class ShareViewController: UIViewController {
     private func scheduleAutoClose() {
         guard !closeScheduled else { return }
         closeScheduled = true
-        // Written off the main thread for the same reason every other trail write is:
-        // the main thread must never touch the App Group container in this extension.
-        Task.detached { AppGroup.recordFinishStep("已安排自动关闭") }
         // GCD rather than Task.sleep — the extension lifecycle's concurrency scheduler
         // is not something we can verify, and this file's known-good timers are GCD.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
@@ -256,18 +204,6 @@ final class ShareViewController: UIViewController {
     /// suspended forever. The host's Inbox sweep is the recovery path when iOS rejects this.
     private func requestHostWakeup() {
         hostWakeupResolved = false
-        // 飞行记录仪的起点。这一步之前的一切都已经有据可查（`recordExtensionStart` 与
-        // `recordHandoff`），之后的一切此前完全没有记录——而收尾正是唯一一段「扩展被杀了，
-        // 还是正常走完了」无法分辨的区间。这里就是那段区间的开头。
-        //
-        // Dispatched off the main thread deliberately. `recordFinishStep` goes through
-        // `UserDefaults(suiteName:)`, and this is the first App Group access the main
-        // thread would otherwise make. Cold-start it can still contend on the suite's
-        // initialization even after the background writes above — the watchdog kills the
-        // extension if that happens on the main thread, which is the "first share after
-        // install crashes, the second one works" symptom. The trail is diagnostic only, so
-        // nothing depends on it landing before the wake-up request goes out.
-        Task.detached { AppGroup.recordFinishStep("请求唤醒主 App") }
         guard let url = URL(string: "views://import?handoff=1") else {
             showWakeupFailure()
             return
@@ -285,10 +221,6 @@ final class ShareViewController: UIViewController {
     /// 有效的主路径。非官方 API，有审核风险，且仍可能被系统拒绝——被拒或无人响应时
     /// 走失败提示，交给重试按钮与收件箱扫描兜底。
     private func openViaResponderChain(_ url: URL) {
-        // Off the main thread; the trail writes are the one thing in this file the main
-        // thread must never do (App Group access on the cold-launch main thread is what
-        // the watchdog kills).
-        Task.detached { AppGroup.recordFinishStep("兜底 open") }
         // The chain is finite in principle and unguarded in practice: `next` is whatever
         // the hierarchy says it is, and during a dismissal it can point back into the chain
         // it came from. A cycle here is a main-thread spin, which the watchdog ends by
@@ -321,7 +253,6 @@ final class ShareViewController: UIViewController {
                 // "the walk found a UIApplication" and a sheet that hangs until iOS gives up.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                     guard let self, !self.hostWakeupResolved else { return }
-                    Task.detached { AppGroup.recordFinishStep("兜底宽限到期") }
                     self.hostWakeupResolved = true
                     self.showWakeupFailure()
                 }
@@ -331,19 +262,12 @@ final class ShareViewController: UIViewController {
         }
 
         // Two ways to reach here: the chain really has no `UIApplication` on it, or the walk
-        // hit its cap. Both leave the user in the same place, so they share the failure path
-        // — but the trail records them apart, because a chain that spun and a chain that was
-        // merely short are not the same finding.
-        let trailMessage = hops >= hopLimit
-            ? "兜底：responder 链超过 \(hopLimit) 跳（疑似成环）"
-            : "兜底：链上找不到 UIApplication"
-        Task.detached { AppGroup.recordFinishStep(trailMessage) }
+        // hit its cap. Both leave the user in the same place, so they share the failure path.
         hostWakeupResolved = true
         showWakeupFailure()
     }
 
     private func showWakeupFailure() {
-        Task.detached { AppGroup.recordFinishStep("显示失败提示") }
         statusLabel.text = "文件已导入，但没有自动打开 3D Views\n请点击下方按钮重试"
         openButton.setTitle("打开 3D Views", for: .normal)
         openButton.isHidden = false
@@ -464,16 +388,6 @@ final class ShareViewController: UIViewController {
     private func completeExtension() {
         guard !handoffFinished else { return }
         handoffFinished = true
-        // 整条轨迹的终点，也是它存在的理由：`completeRequest` 一旦返回，扩展随时可能被系统
-        // 拆掉，而在此之前它一个字节都没写过。有了这一条，诊断页第一次能回答「扩展是被杀了，
-        // 还是正常走完了」——记录停在上一条＝收尾没走完；记录里有这一条＝收尾是完整的，
-        // 闪退另有原因，别再往这条路径上找。
-        //
-        // This is the one trail write deliberately kept on the main thread: it runs only
-        // after a successful host wake-up plus the 600 ms auto-close delay, so the container
-        // is long mounted (no cold-launch risk), and it must land *before* `completeRequest`
-        // returns because the process can be torn down immediately after.
-        AppGroup.recordFinishStep("提交 completeRequest")
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
 }
