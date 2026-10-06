@@ -46,8 +46,12 @@ struct HomeView: View {
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundStyle(.tertiary)
                                 }
+                                // 让整行（包括图标与文字之间的空白、右侧空白）都是可点击区域，
+                                // 而不是只有图标/文字本身能点。`List` 里 `.plain`/`.borderless`
+                                // 按钮的点击区默认只覆盖 label 的有内容形状，透明部分要点不到。
+                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                         }
                         .onDelete { indexSet in
                             // Snapshot the doomed entries first. Removing straight through
